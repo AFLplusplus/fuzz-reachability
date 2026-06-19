@@ -3,8 +3,10 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Which LLVM to build the analyzer against (>= 21). Default: match rustc's LLVM.
-LLVM_MAJOR="${LLVM_MAJOR:-$(rustc -vV | sed -n 's/^LLVM version: \([0-9]*\).*/\1/p')}"
+# Which LLVM to build the analyzer against (>= 21). Default: the smallest
+# installed LLVM whose full version can read rustc's bitcode (a same-major distro
+# LLVM that is an older patch release than rustc's cannot -- see select_llvm.sh).
+LLVM_MAJOR="${LLVM_MAJOR:-$(bash "$ROOT/scripts/select_llvm.sh")}"
 LLVM_CONFIG="llvm-config-${LLVM_MAJOR}"
 
 # 1. gllvm (C/C++ whole-program bitcode extraction) via Go.

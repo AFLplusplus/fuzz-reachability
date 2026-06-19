@@ -7,6 +7,11 @@ Version policy (LLVM 21 is the floor; newer is allowed):
   coherent toolchain produces and merges the bitcode the analyzer reads).
 - rustc's bundled LLVM major must be <= M. LLVM reads older bitcode (auto-upgrade)
   but not newer, so the analyzer/tools must be at least as new as every producer.
+  The major check is a coarse gate; reading rustc's bitcode actually requires the
+  tools' *full* version to be >= rustc's full LLVM version. A same-major distro
+  LLVM that is an older patch release than rustc's cannot read it (llvm-link:
+  "Invalid record"). That full-version requirement is enforced on the Rust path
+  via rust_bitcode_readable / assert_rust_bitcode_readable.
 
 Any violation is a loud, fatal error -- no silent fallback.
 """
@@ -26,6 +31,16 @@ class ToolchainError(RuntimeError):
 
 _RUSTC_MAJOR_RE = re.compile(r"LLVM version[:\s]+(\d+)", re.IGNORECASE)
 _TOOL_MAJOR_RE = re.compile(r"version\s+(\d+)\.", re.IGNORECASE)
+_RUSTC_FULL_RE = re.compile(
+    r"LLVM version[:\s]+(\d+)(?:\.(\d+))?(?:\.(\d+))?", re.IGNORECASE
+)
+_TOOL_FULL_RE = re.compile(
+    r"version\s+(\d+)(?:\.(\d+))?(?:\.(\d+))?", re.IGNORECASE
+)
+
+
+def _version_tuple(m) -> tuple:
+    return tuple(int(g) if g else 0 for g in m.groups())
 
 
 def _parse_llvm_major_from_rustc(text: str) -> int:
@@ -50,6 +65,18 @@ def rustc_llvm_major() -> int:
     return _parse_llvm_major_from_rustc(out)
 
 
+def rustc_llvm_version() -> tuple:
+    """Full (major, minor, patch) of the LLVM that rustc bundles -- the version
+    of the bitcode rustc emits."""
+    out = subprocess.run(
+        ["rustc", "-vV"], capture_output=True, text=True, check=True
+    ).stdout
+    m = _RUSTC_FULL_RE.search(out)
+    if not m:
+        raise ToolchainError(f"cannot parse LLVM version from rustc output:\n{out}")
+    return _version_tuple(m)
+
+
 def find_tool(name: str, env_var: str, versioned: str | None) -> str:
     """Resolve a tool path: explicit env var -> versioned name -> plain name."""
     if env_var and os.environ.get(env_var):
@@ -66,6 +93,17 @@ def tool_llvm_major(path: str) -> int:
         [path, "--version"], capture_output=True, text=True, check=True
     ).stdout
     return _parse_llvm_major(out)
+
+
+def tool_llvm_version(path: str) -> tuple:
+    """Full (major, minor, patch) reported by an LLVM tool's --version."""
+    out = subprocess.run(
+        [path, "--version"], capture_output=True, text=True, check=True
+    ).stdout
+    m = _TOOL_FULL_RE.search(out)
+    if not m:
+        raise ToolchainError(f"cannot parse version from: {out!r}")
+    return _version_tuple(m)
 
 
 def analyzer_llvm_major(path: str) -> int:
@@ -135,3 +173,31 @@ def check_coherence(analyzer_path: str) -> Toolchain:
         )
 
     return Toolchain(clang, clangxx, llvm_link, opt, analyzer_path, M, rustc_major)
+
+
+def rust_bitcode_readable(tc: Toolchain) -> bool:
+    """True if the toolchain's LLVM is new enough to read rustc's bitcode.
+
+    rustc emits bitcode at its bundled LLVM's full version; llvm-link/opt (and the
+    analyzer, built against the same LLVM package) must be at least that full
+    version. Same major is insufficient: a distro LLVM that is an older patch
+    release than rustc's cannot read the newer bitcode.
+    """
+    consumer = min(tool_llvm_version(tc.llvm_link), tool_llvm_version(tc.opt))
+    return consumer >= rustc_llvm_version()
+
+
+def assert_rust_bitcode_readable(tc: Toolchain) -> None:
+    """Raise ToolchainError if the toolchain cannot read rustc's bitcode."""
+    if rust_bitcode_readable(tc):
+        return
+    rv = rustc_llvm_version()
+    cv = min(tool_llvm_version(tc.llvm_link), tool_llvm_version(tc.opt))
+    fmt = lambda t: ".".join(str(x) for x in t)
+    raise ToolchainError(
+        f"rustc's bundled LLVM ({fmt(rv)}) is newer than the analyzer toolchain's "
+        f"LLVM ({fmt(cv)}); newer bitcode cannot be read by older tools. Rebuild "
+        f"the analyzer against an LLVM whose full version is >= rustc's, e.g. "
+        f"`make build LLVM_MAJOR={rv[0] + 1}` (the default auto-selects such a "
+        f"major; see scripts/select_llvm.sh)."
+    )

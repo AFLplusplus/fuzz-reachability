@@ -32,6 +32,22 @@ def _tc(analyzer):
     return toolchain.check_coherence(analyzer)
 
 
+def _require_rust_readable(tc):
+    if not toolchain.rust_bitcode_readable(tc):
+        rv = ".".join(str(x) for x in toolchain.rustc_llvm_version())
+        cv = ".".join(
+            str(x)
+            for x in min(
+                toolchain.tool_llvm_version(tc.llvm_link),
+                toolchain.tool_llvm_version(tc.opt),
+            )
+        )
+        pytest.skip(
+            f"toolchain LLVM {cv} is older than rustc's LLVM {rv}; "
+            f"cannot read rust bitcode"
+        )
+
+
 def _expected(fixture):
     return json.load(open(os.path.join(FIXTURES, fixture, "expected.json")))
 
@@ -52,6 +68,7 @@ def _rust_reachable(analyzer, tmp_path, fixture, entries):
     work = tmp_path / fixture
     shutil.copytree(os.path.join(FIXTURES, fixture), work)
     tc = _tc(analyzer)
+    _require_rust_readable(tc)
     bcs = acquire_rust.acquire_rust_bitcode(str(work))
     merged = link.link_bitcode(bcs, str(work / "merged.bc"), tc)
     return analyze.analyze(merged, tc, entries), tc
@@ -86,6 +103,7 @@ def test_mixed_c_rust_reachable(analyzer, tmp_path):
     work = tmp_path / "mixed_c_rust"
     shutil.copytree(os.path.join(FIXTURES, "mixed_c_rust"), work)
     tc = _tc(analyzer)
+    _require_rust_readable(tc)
     glue_bc = acquire_c.acquire_c_bitcode(str(work), tc, "glue.o")
     rust_bcs = acquire_rust.acquire_rust_bitcode(str(work))
     merged = link.link_bitcode([glue_bc, *rust_bcs], str(work / "merged.bc"), tc)
@@ -124,6 +142,7 @@ def test_svf_rust_dyn_sound(svf_analyzer, tmp_path):
     work = tmp_path / "rust_dyn"
     shutil.copytree(os.path.join(FIXTURES, "rust_dyn"), work)
     tc = _tc(svf_analyzer)
+    _require_rust_readable(tc)
     bcs = acquire_rust.acquire_rust_bitcode(str(work))
     merged = link.link_bitcode(bcs, str(work / "merged.bc"), tc)
     result = analyze.analyze(merged, tc, ["LLVMFuzzerTestOneInput"], backend="svf")

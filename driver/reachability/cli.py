@@ -39,6 +39,8 @@ def _acquire(args, tc):
 
 def cmd_run(args):
     tc = toolchain.check_coherence(default_analyzer())
+    if args.lang in ("rust", "mixed"):
+        toolchain.assert_rust_bitcode_readable(tc)
     bcs = _acquire(args, tc)
     merged = os.path.join(args.project, "merged.bc")
     link.link_bitcode(bcs, merged, tc)

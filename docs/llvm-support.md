@@ -9,12 +9,19 @@ analyzer.** The rules enforced by `reachability check-toolchain`
 1. The analyzer is built against some LLVM major **M**, and **M ≥ 21**.
 2. `clang`, `clang++`, `llvm-link`, and `opt` all share that same major **M**
    (one coherent toolchain produces and merges the bitcode the analyzer reads).
-3. **rustc's** bundled LLVM major must be **≤ M**. LLVM auto-upgrades *older*
-   bitcode but cannot read *newer* bitcode, so the analyzer/tools must be at
-   least as new as every bitcode producer. (rustc here is 21; building the
-   analyzer on 21/22/23 all satisfy this.)
+3. **rustc's** bundled LLVM must be old enough for the tools to read its bitcode.
+   LLVM auto-upgrades *older* bitcode but cannot read *newer* bitcode, so the
+   analyzer/tools must be at least as new as every bitcode producer. The major
+   check (`rustc_major ≤ M`) is a coarse gate; the Rust path additionally
+   requires the tools' **full** version to be ≥ rustc's full LLVM version
+   (enforced by `rust_bitcode_readable` / `assert_rust_bitcode_readable`). A
+   same-major distro LLVM that is an *older patch release* than rustc's cannot
+   read rustc's bitcode (`llvm-link: Invalid record`) — this is the common gotcha
+   when a distro ships, say, LLVM 21.0.0 while rustc bundles 21.1.1.
 
-Pick the version at build time:
+The default build LLVM is chosen by `scripts/select_llvm.sh`: the smallest
+installed `llvm-config-N` (N ≥ 21) whose **full** version can read rustc's
+bitcode. Override it explicitly at build time:
 
 ```bash
 make build LLVM_MAJOR=23      # analyzer on LLVM 23 (uses llvm-config-23, clang-23, …)
@@ -31,12 +38,21 @@ Current results (2026-06-19, this machine):
 
 | LLVM | core (type-based) | SVF (`--backend=svf`) |
 |------|-------------------|-----------------------|
-| 21.1.8 | ✅ PASS | ✅ PASS |
-| 22.1.8 | ✅ PASS | ❌ SVF source does not build (see below) |
+| 21.0.0 | ✅ PASS | ✅ PASS (analyzer goldens) |
+| 22.0.0 | ✅ PASS | ❌ SVF source does not build (see below) |
 | 23.0.0 | ✅ PASS | ❌ SVF source does not build (see below) |
 
 **The core analyzer is fully functional on 21, 22, and 23.** Only the optional
 SVF backend is version-limited.
+
+**Caveat on this machine:** the distro now ships LLVM **21.0.0**, which is an
+*older patch release* than rustc's bundled **21.1.1**, so LLVM-21 tools cannot
+read rustc's bitcode. The matrix PASS/FAIL above is the analyzer's own `.ll`
+goldens (no rustc), so it is unaffected. But end-to-end Rust runs need an LLVM
+whose full version ≥ 21.1.1: the auto-selected default builds the core analyzer
+on LLVM **22**, and the SVF backend — which only builds on LLVM 21 — therefore
+cannot process Rust bitcode here. The `test_svf_rust_dyn_sound` end-to-end test
+**skips** with a clear reason in this configuration (C/C++ SVF tests still run).
 
 ## SVF compatibility
 

@@ -25,6 +25,10 @@ SRC  := $(wildcard src/*.cpp)
 OBJ  := $(patsubst src/%.cpp,$(BUILD)/%.o,$(SRC))
 DEP  := $(OBJ:.o=.d)
 
+# Rebuild objects when LLVM_CONFIG changes, not only when sources change --
+# otherwise switching LLVM_MAJOR silently relinks stale objects from the old LLVM.
+STAMP := $(BUILD)/.llvm-config-stamp
+
 # -Wno-error: never treat warnings as errors, even if a flag source adds -Werror
 # (keeps builds resilient across LLVM versions). Same policy applied to SVF in
 # scripts/build_svf.sh (-DSVF_WARN_AS_ERROR=OFF).
@@ -42,14 +46,19 @@ ifeq ($(SVF),1)
   LDLIBS := $(SVF_PREFIX)/lib/libSvfLLVM.a $(SVF_PREFIX)/lib/libSvfCore.a $(LDLIBS) $(Z3_LIB)
 endif
 
-.PHONY: all clean print-config
+.PHONY: all clean print-config force
 all: $(BIN)
 
 $(BIN): $(OBJ) | $(BUILD)
 	$(CXX) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS)
 
-$(BUILD)/%.o: src/%.cpp | $(BUILD)
+$(BUILD)/%.o: src/%.cpp $(STAMP) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(STAMP): force | $(BUILD)
+	@printf '%s\n' '$(LLVM_CONFIG)' | cmp -s - $@ 2>/dev/null || printf '%s\n' '$(LLVM_CONFIG)' > $@
+
+force:
 
 $(BUILD):
 	mkdir -p $(BUILD)

@@ -1,13 +1,17 @@
 # Top-level convenience targets. The analyzer build lives in analyzer/Makefile.
 #
-#   make build                 # build the analyzer (core / type-based) on LLVM 21
+#   make build                 # build the analyzer (core / type-based); default LLVM
+#                              #   auto-selected by scripts/select_llvm.sh (>= 21)
 #   make build LLVM_MAJOR=23    # ... against LLVM 23
 #   make build-svf             # build the SVF dependency + SVF-enabled analyzer
 #   make test                  # run the full test suite
 #   make matrix                # LLVM 21/22/23(+) compatibility matrix
 #   make clean
 
-LLVM_MAJOR  ?= 21
+# Default LLVM major: the smallest installed llvm-config (>= 21) whose FULL
+# version can read rustc's bitcode (see scripts/select_llvm.sh). Override with
+# e.g. `make build LLVM_MAJOR=23`.
+LLVM_MAJOR  ?= $(shell bash $(CURDIR)/scripts/select_llvm.sh)
 LLVM_CONFIG ?= llvm-config-$(LLVM_MAJOR)
 GOBIN       := $(shell go env GOPATH 2>/dev/null)/bin
 PY          := $(CURDIR)/.venv/bin/python
