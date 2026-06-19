@@ -13,12 +13,25 @@ Only two things are ziggy-specific:
    symbol (the C-ABI shim, which dead-ends in precompiled `std`; see the gotcha
    below).
 
-## TL;DR
+## TL;DR (via the driver)
+
+The driver knows the ziggy shape — `--lang ziggy` acquires the Rust bitcode and
+roots at `main` automatically:
+
+```bash
+reachability run --lang ziggy --project <harness> --out reach.json
+```
+
+(Caveats for large/aptos-style projects — custom `rustflags`, stale `.bc` — are
+below under "Using the driver".)
+
+## TL;DR (manual)
 
 Here `reachability-analyzer` is the built binary
 (`analyzer/build/reachability-analyzer`, or `$REACHABILITY_ANALYZER`), and
-`llvm-link-22` / `llvm-nm-22` are the LLVM tools matching the analyzer's major
-(≥ rustc's LLVM — see step 2).
+`llvm-link-22` is the LLVM tool matching the analyzer's major (≥ rustc's LLVM —
+see step 2). `--entry main` is resolved flexibly to the Rust `main`; no mangled
+symbol is needed.
 
 ```bash
 cd <harness>                      # the ziggy bin crate directory
@@ -30,11 +43,8 @@ RUSTFLAGS="--emit=llvm-bc -Cembed-bitcode=yes -Ccodegen-units=1" cargo build
 # 2. Merge with an llvm-link whose LLVM major matches the analyzer (>= rustc's).
 llvm-link-22 target/debug/deps/*.bc -o merged.bc
 
-# 3. Find the mangled Rust main (the symbol that demangles to <crate>::main).
-llvm-nm-22 --defined-only target/debug/deps/<bin>-*.bc | grep ' T ' | grep main
-
-# 4. Analyze, rooted at that symbol.
-reachability-analyzer merged.bc --entry '<mangled main>' \
+# 3. Analyze, rooted at the Rust main (resolved from the bare token `main`).
+reachability-analyzer merged.bc --entry main \
   --out reach.json --reached-out reached.txt --not-reached-out not_reached.txt
 ```
 
@@ -71,40 +81,35 @@ bundled LLVM (the analyzer reads the merged module; see
 [`llvm-support.md`](llvm-support.md)). On a box where the default toolchain is
 LLVM 22, use `llvm-link-22`.
 
-### 3. Find the Rust `main` entry — and avoid the C `main` shim
+### 3. Root at `main` — the C `main` shim is handled for you
 
-`--entry` matches the **exact mangled symbol** (`Module::getFunction`), so you
-must pass `main`'s mangled name. A Rust bin produces *two* `main`-ish symbols:
+Pass `--entry main`. The analyzer resolves it flexibly (exact symbol, demangled
+name, or `::main` suffix), so you never type a mangled symbol. A Rust bin has
+*two* `main`-ish symbols, and `main` matches both:
 
-| symbol | what it is | use as entry? |
-|--------|------------|---------------|
-| `main` | C-ABI shim that calls `std::rt::lang_start` | **No** — `lang_start` lives in precompiled `std` (a declaration in the bitcode), so the BFS dead-ends almost immediately (≈2 functions reachable). |
-| `_ZN…<crate>…main…E` / `_RNvC…<crate>…main` | the real Rust `main` (your harness body, incl. the `ziggy::fuzz!` closure) | **Yes.** |
+| symbol | what it is |
+|--------|------------|
+| `main` | C-ABI shim that calls `std::rt::lang_start` (in precompiled `std`, a declaration here — dead-ends on its own). |
+| `_ZN…<crate>…main…E` / `_RNvC…<crate>…main` | the real Rust `main` — your harness body, incl. the `ziggy::fuzz!` closure. |
 
-Find it by listing defined text symbols and picking the one that demangles to
-`<crate>::main`:
+Because the token `main` matches the **demangled** `<crate>::main` too, rooting at
+`main` includes the real Rust `main` (and the harmless shim), so reachability is
+complete. If you prefer to be explicit, pass the demangled name, e.g.
+`--entry global_storage::main`. To see the exact symbol:
 
 ```bash
 llvm-nm-22 --defined-only target/debug/deps/<bin>-*.bc | grep ' T ' | grep main
-# then confirm with the analyzer's demangler:
-reachability-analyzer --selftest-demangle '<symbol>'
+reachability-analyzer --selftest-demangle '<symbol>'   # confirm it is <crate>::main
 ```
 
 The crate name is the **bin target's** name with `-` → `_` (e.g. a `[[bin]]
 name = "global-storage"` → `global_storage`); for a default-named bin it is the
-package name. So the symbol looks like
-`_ZN14global_storage4main17h…E` (legacy) or `_RNvCs…_14global_storage4main`
-(v0 — when the project builds with `-Csymbol-mangling-version=v0`).
-
-If you guess wrong and the entry does not resolve, the analyzer prints the
-defined symbols whose names contain your string — a handy way to discover the
-exact mangled `main`.
+package name.
 
 ### 4. Analyze
 
 ```bash
-reachability-analyzer merged.bc \
-  --entry '_ZN14global_storage4main17h…E' \
+reachability-analyzer merged.bc --entry main \
   --out reach.json --reached-out reached.txt --not-reached-out not_reached.txt
 ```
 
@@ -113,10 +118,11 @@ Output is the usual triple (JSON report + sancov allow/ignore lists; see
 (`<crate>::main::{{closure}}`) is reached from `main` and pulls in the whole
 per-input code path.
 
-## Using the driver instead
+## Using the driver
 
-`reachability run --lang rust --project <harness> --entry '<mangled main>' --out reach.json`
-does steps 1–4 in one shot. Caveats for ziggy/large projects:
+`reachability run --lang ziggy --project <harness> --out reach.json` does steps
+1–4 in one shot (`--lang ziggy` acquires the Rust bitcode and defaults `--entry`
+to `main`). Caveats for large/aptos-style projects:
 
 - It sets its own `RUSTFLAGS` (no project `--cfg` flags) and globs **all**
   `<project>/target/debug/deps/*.bc`, so it needs a project that builds under
@@ -136,17 +142,16 @@ does steps 1–4 in one shot. Caveats for ziggy/large projects:
 cd ~/aptos/move-smith/fuzz-ziggy
 RUSTFLAGS="--cfg tokio_unstable --emit=llvm-bc -Cembed-bitcode=yes -Ccodegen-units=1" cargo build
 llvm-link-22 target/debug/deps/*.bc -o /tmp/merged.bc        # keep one .bc per crate
-llvm-nm-22 --defined-only target/debug/deps/global_storage-*.bc | grep ' T ' | grep main
-#   T _ZN14global_storage4main17hcc7e51cc3974f743E              <- the Rust main
-#   t _ZN14global_storage4main28_$u7b$…closure…$u7d$…E          <- the ziggy::fuzz! body
-reachability-analyzer /tmp/merged.bc \
-  --entry _ZN14global_storage4main17hcc7e51cc3974f743E \
+reachability-analyzer /tmp/merged.bc --entry main \
   --out /tmp/reach.json --reached-out /tmp/reached.txt --not-reached-out /tmp/not_reached.txt
 ```
 
-Result (type-based backend): **227,492 reachable / 296,199 defined**
-(7,690 indirect-only, 68,707 unreachable). The reachable set includes the
-`ziggy::fuzz!` closure and the full execution stack it drives —
+`--entry main` resolves to the demangled `global_storage::main` (the Rust main,
+`_ZN14global_storage4main17hcc7e51cc3974f743E`) plus the C-ABI shim.
+
+Result (type-based backend): **229,419 reachable / 296,199 defined** rooted at
+`main` (227,492 if you root only at `global_storage::main`). The reachable set
+includes the `ziggy::fuzz!` closure and the full execution stack it drives —
 `msmith::…::execute_without_save`, `TransactionalInputBuilder`,
 `TransactionalExecutor`, `TransactionalResult::is_bug`, etc. Rooting at the bare
 `main` shim instead yields only 2 — the lang_start gotcha above.

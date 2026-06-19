@@ -13,16 +13,22 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
+#include <cctype>
 #include <functional>
 #include <memory>
+#include <set>
+#include <utility>
 
 using namespace llvm;
 
 static cl::opt<std::string> InputIR(cl::Positional, cl::desc("<input .ll/.bc>"),
                                     cl::init(""));
 static cl::list<std::string> EntryList("entry",
-                                       cl::desc("entry symbol (repeatable; default "
-                                                "LLVMFuzzerTestOneInput)"));
+                                       cl::desc("entry function (repeatable; default "
+                                                "LLVMFuzzerTestOneInput). Matches a "
+                                                "mangled symbol, a demangled name, a "
+                                                "'::name' suffix (e.g. 'main'), or the "
+                                                "alias 'fuzz_target!'."));
 static cl::opt<std::string> Backend("backend", cl::init("type-based"),
                                     cl::desc("indirect-call backend: type-based|svf"));
 static cl::opt<bool> IndirectAny("indirect-any",
@@ -74,6 +80,66 @@ void suggestEntries(Module &m, const std::vector<std::string> &requested) {
   }
 }
 
+// Rust legacy mangling appends a ::h<hex> disambiguator to the demangled path
+// (e.g. "crate::main::hcc7e51cc..."). Strip it so demangled-name matching can use
+// the human-readable path ("crate::main").
+std::string stripLegacyHash(const std::string &s) {
+  std::string::size_type pos = s.rfind("::h");
+  if (pos == std::string::npos)
+    return s;
+  StringRef tail = StringRef(s).substr(pos + 3);
+  if (tail.empty())
+    return s;
+  for (char c : tail)
+    if (!std::isxdigit(static_cast<unsigned char>(c)))
+      return s;
+  return s.substr(0, pos);
+}
+
+// Resolve each requested entry token to the mangled names of defined functions,
+// so callers never have to spell out a mangled symbol. A token matches by, in
+// order and unioned: exact mangled symbol; exact demangled name; demangled
+// "<path>::<token>" suffix (e.g. "main" -> "crate::main"). The alias
+// "fuzz_target!" expands to the cargo-fuzz/libFuzzer entries. Unioning roots is
+// sound: extra roots only widen the over-approximation. A token matching nothing
+// is reported in `unresolved`.
+void resolveEntries(Module &m, const std::vector<std::string> &requested,
+                    std::vector<std::string> &resolved,
+                    std::vector<std::string> &unresolved) {
+  std::vector<std::pair<std::string, std::string>> defs;
+  for (Function &f : m) {
+    if (f.isDeclaration())
+      continue;
+    std::string name = f.getName().str();
+    defs.emplace_back(name, stripLegacyHash(reach::demangle(name)));
+  }
+  std::set<std::string> seen;
+  for (const auto &req : requested) {
+    std::vector<std::string> tokens;
+    if (req == "fuzz_target!" || req == "fuzz_target")
+      tokens = {"LLVMFuzzerTestOneInput", "rust_fuzzer_test_input"};
+    else
+      tokens = {req};
+    std::vector<std::string> matches;
+    for (const auto &tok : tokens) {
+      if (Function *f = m.getFunction(tok))
+        if (!f->isDeclaration())
+          matches.push_back(f->getName().str());
+      std::string suffix = "::" + tok;
+      for (const auto &[mn, dem] : defs)
+        if (dem == tok || StringRef(dem).ends_with(suffix))
+          matches.push_back(mn);
+    }
+    if (matches.empty()) {
+      unresolved.push_back(req);
+      continue;
+    }
+    for (const auto &mn : matches)
+      if (seen.insert(mn).second)
+        resolved.push_back(mn);
+  }
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -111,9 +177,11 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  std::vector<std::string> entries(EntryList.begin(), EntryList.end());
-  if (entries.empty())
-    entries.push_back("LLVMFuzzerTestOneInput");
+  std::vector<std::string> requested(EntryList.begin(), EntryList.end());
+  if (requested.empty())
+    requested.push_back("LLVMFuzzerTestOneInput");
+  std::vector<std::string> entries, unresolved;
+  resolveEntries(*mod, requested, entries, unresolved);
 
   reach::CallGraph graph;
   reach::buildDirectEdges(*mod, graph);
@@ -142,17 +210,21 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  reach::ReachResult res = reach::computeReachability(*mod, graph, entries);
-
-  if (res.reached.empty()) {
-    suggestEntries(*mod, entries);
+  if (entries.empty()) {
+    suggestEntries(*mod, requested);
     return 1;
   }
-  if (!res.missingNames.empty()) {
+  if (!unresolved.empty()) {
     errs() << "warning: unresolved entry symbols:";
-    for (auto &n : res.missingNames)
+    for (auto &n : unresolved)
       errs() << " " << n;
     errs() << "\n";
+  }
+
+  reach::ReachResult res = reach::computeReachability(*mod, graph, entries);
+  if (res.reached.empty()) {
+    suggestEntries(*mod, requested);
+    return 1;
   }
 
   auto writeFile = [&](const std::string &path, const char *what,

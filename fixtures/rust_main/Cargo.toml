@@ -1,0 +1,11 @@
+[package]
+name = "rust_main"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "rust_main"
+path = "src/main.rs"
+
+[profile.dev]
+panic = "abort"

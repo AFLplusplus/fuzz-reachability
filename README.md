@@ -72,8 +72,11 @@ reachability check-toolchain                 # verifies LLVM version coherence
 
 ## Running it
 
-The driver subcommand is `reachability run --lang {c,cpp,rust,mixed} --project DIR --out FILE`.
-The default entry is `LLVMFuzzerTestOneInput` (override with `--entry`, repeatable).
+The driver subcommand is `reachability run --lang TARGET --project DIR --out FILE`,
+where `TARGET` is a source language (`c`/`cpp`/`rust`/`mixed`) or a Rust fuzz
+harness (`libfuzzer`/`ziggy`/`afl`). Each target sets a default entry point, so
+the common case needs no `--entry` at all. Full flag reference:
+[Command-line reference](#command-line-reference).
 
 ### 1. A simple C target
 
@@ -153,6 +156,71 @@ reachability-analyzer merged.bc --entry "$main" --out reach.json \
 
 Full walkthrough, gotchas (custom `rustflags`, workspace target dirs, finding the
 symbol), and a worked move-smith example: [`docs/ziggy.md`](docs/ziggy.md).
+
+## Command-line reference
+
+The `reachability` CLI has two subcommands.
+
+### `reachability check-toolchain`
+
+Resolves and validates the LLVM toolchain (analyzer, `clang`/`clang++`,
+`llvm-link`, `opt`, rustc) for version coherence and prints what it found. Takes
+no options. Exits non-zero on any incoherence. Run it first. See
+[`docs/llvm-support.md`](docs/llvm-support.md) for the version policy.
+
+### `reachability run`
+
+Build a project, merge its bitcode, and compute the reachable set from the entry
+point(s).
+
+| Option | Default | Meaning |
+|--------|---------|---------|
+| `--project DIR` | *(required)* | Project directory to build and analyze. |
+| `--lang TARGET` | *(required)* | Target type — see the table below. Selects how bitcode is acquired and the default entry. |
+| `--out FILE` | *(required)* | Path for the JSON report. The two sancov lists default to `reached.txt` / `not_reached.txt` next to it. |
+| `--entry NAME` | per `--lang` | Entry function to root reachability at. **Repeatable.** Overrides the target default. Accepts a mangled symbol, a demangled name, a `::name` suffix (e.g. `main`), or the alias `fuzz_target!` — no mangled name required. |
+| `--backend {type-based,svf}` | `type-based` | Indirect-call resolution backend. `svf` needs an SVF-enabled analyzer (`make build-svf`). |
+| `--artifact PATH` | `main.o` | C/C++ only: the built object/binary `get-bc` extracts whole-program bitcode from (relative to `--project`). |
+| `--build-cmd CMD` | `make` | C/C++ only: shell build command, run with gllvm wrappers injected. E.g. `"cmake -S . -B build && cmake --build build"`. |
+| `--build-std` | off | Rust only: build the standard library from source too (`-Zbuild-std`), so std functions appear in the graph instead of as external declarations. |
+| `--dot FILE` | *(none)* | Also write the reachable subgraph as Graphviz DOT (indirect edges dashed/red). |
+| `--reached FILE` | `reached.txt` next to `--out` | Path for the sancov **allowlist** of reachable functions. |
+| `--not-reached FILE` | `not_reached.txt` next to `--out` | Path for the sancov **ignorelist** of unreachable functions. |
+| `-v`, `--verbose` | off | Print a per-function breakdown in the summary. |
+
+**Target types (`--lang`)** — each maps to a bitcode-acquisition method and a
+default entry:
+
+| `--lang` | acquires via | default entry |
+|----------|--------------|---------------|
+| `c` | gllvm (`gclang`) | `LLVMFuzzerTestOneInput` |
+| `cpp` | gllvm (`gclang++`) | `LLVMFuzzerTestOneInput` |
+| `rust` | `cargo` + `--emit=llvm-bc` | `LLVMFuzzerTestOneInput` |
+| `mixed` | gllvm **and** cargo (merged) | `LLVMFuzzerTestOneInput` |
+| `libfuzzer` | cargo (Rust) | `fuzz_target!` (→ `LLVMFuzzerTestOneInput` + `rust_fuzzer_test_input`) |
+| `ziggy` | cargo (Rust) | `main` |
+| `afl` | cargo (Rust) | `main` |
+
+The harness targets (`libfuzzer`/`ziggy`/`afl`) are the Rust shapes; a C/C++
+libFuzzer or afl harness uses `--lang c`/`cpp` (default `LLVMFuzzerTestOneInput`,
+or `--entry main` for a C afl harness).
+
+**Entry resolution.** `--entry` never requires a mangled symbol. A token matches,
+unioned across all of: an exact mangled symbol; an exact demangled name; a
+demangled `::token` suffix (so `main` finds `crate::main`, and the Rust legacy
+`::h<hash>` disambiguator is ignored); and the alias `fuzz_target!`. Matching more
+than one function just adds roots — always sound (over-approximating). For a Rust
+binary, root at `main` (resolves the real Rust `main`), not the bare C-ABI `main`
+shim which dead-ends in precompiled `std`.
+
+**Environment variables.**
+
+| Variable | Purpose |
+|----------|---------|
+| `REACHABILITY_ANALYZER` | Path to the analyzer binary (default `analyzer/build/reachability-analyzer`). |
+| `REACHABILITY_ANALYZER_SVF` | Path to an SVF-enabled analyzer (used by `--backend=svf`/tests). |
+| `CLANG` / `CLANGXX` / `LLVM_LINK` / `OPT` | Override individual tool paths (otherwise resolved by major from the analyzer's LLVM). |
+| `PATH` | Must contain `gclang`/`gclang++`/`get-bc` (gllvm) for C/C++/mixed targets. |
 
 ## Output
 

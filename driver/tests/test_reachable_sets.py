@@ -112,6 +112,14 @@ def test_mixed_c_rust_reachable(analyzer, tmp_path):
 
 
 @pytest.mark.skipif(not shutil.which("cargo"), reason="cargo not installed")
+def test_rust_main_entry(analyzer, tmp_path):
+    # ziggy/afl harness shape: a Rust bin rooted at `main`, resolved flexibly
+    # (the bare token `main` matches the mangled Rust main -- no symbol needed).
+    result, _ = _rust_reachable(analyzer, tmp_path, "rust_main", ["main"])
+    assert_soundness(result, _expected("rust_main"))
+
+
+@pytest.mark.skipif(not shutil.which("cargo"), reason="cargo not installed")
 def test_rust_only_entry_rooting(analyzer, tmp_path):
     # No C++ glue: root directly at the Rust entry symbol.
     result, _ = _rust_reachable(

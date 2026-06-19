@@ -109,6 +109,36 @@ def test_rust_entry_rooting(run_analyzer):
     assert {"rust_fuzzer_test_input", "inner"} <= names
 
 
+def test_entry_main_resolves_rust_and_c(run_analyzer):
+    # `main` matches the C-ABI shim (exact) and the Rust main (demangled ::main).
+    r = run_analyzer([ll("entry_resolve.ll"), "--entry", "main"])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {"main", "_ZN4demo4main17h1111111111111111E", "rust_main_leaf"} <= names
+    assert "orphan" not in names
+    assert "lf_leaf" not in names
+
+
+def test_entry_demangled_name(run_analyzer):
+    # A demangled name roots precisely the Rust main, not the C shim.
+    r = run_analyzer([ll("entry_resolve.ll"), "--entry", "demo::main"])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {"_ZN4demo4main17h1111111111111111E", "rust_main_leaf"} <= names
+    assert "main" not in names
+
+
+def test_entry_fuzz_target_alias(run_analyzer):
+    # `fuzz_target!` expands to the cargo-fuzz / libFuzzer entries.
+    r = run_analyzer([ll("entry_resolve.ll"), "--entry", "fuzz_target!"])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {"LLVMFuzzerTestOneInput", "rust_fuzzer_test_input",
+            "lf_leaf", "rf_leaf"} <= names
+    assert "orphan" not in names
+    assert "_ZN4demo4main17h1111111111111111E" not in names
+
+
 def test_v0_demangle_selftest(run_analyzer):
     r = run_analyzer(["--selftest-demangle", "_RNvCs1234_4core3foo"])
     assert r.returncode == 0

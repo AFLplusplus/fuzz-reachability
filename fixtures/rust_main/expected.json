@@ -1,0 +1,4 @@
+{
+  "must_reach": ["reached_one", "reached_two"],
+  "must_not_reach": ["not_reached"]
+}

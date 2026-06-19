@@ -1,7 +1,7 @@
 """Command-line front-end: chains the pipeline stages end-to-end.
 
   reachability check-toolchain
-  reachability run --project DIR --lang {c,cpp,rust,mixed} --out FILE [...]
+  reachability run --project DIR --lang {c,cpp,rust,mixed,libfuzzer,ziggy,afl} --out FILE [...]
 """
 
 import argparse
@@ -10,6 +10,23 @@ import os
 import sys
 
 from . import acquire_c, acquire_rust, analyze, link, report, toolchain
+
+# --lang selects a target type: a source language (how to acquire bitcode) or a
+# fuzz-harness shape (which also implies the default entry point). Each maps to
+# (acquire mode, default entries). Entries are resolved flexibly by the analyzer
+# (mangled, demangled, '::name' suffix, or the 'fuzz_target!' alias), so harness
+# targets never need a mangled symbol. libfuzzer/ziggy/afl are the Rust harness
+# shapes; C/C++ libfuzzer or afl use --lang c/cpp (default LLVMFuzzerTestOneInput,
+# or --entry main for a C afl harness).
+TARGETS = {
+    "c":         ("c",     ["LLVMFuzzerTestOneInput"]),
+    "cpp":       ("cpp",   ["LLVMFuzzerTestOneInput"]),
+    "rust":      ("rust",  ["LLVMFuzzerTestOneInput"]),
+    "mixed":     ("mixed", ["LLVMFuzzerTestOneInput"]),
+    "libfuzzer": ("rust",  ["fuzz_target!"]),
+    "ziggy":     ("rust",  ["main"]),
+    "afl":       ("rust",  ["main"]),
+}
 
 
 def default_analyzer():
@@ -22,15 +39,16 @@ def default_analyzer():
 
 def _acquire(args, tc):
     """Return the list of .bc files for the project per --lang."""
+    mode = TARGETS[args.lang][0]
     bcs = []
-    if args.lang in ("c", "cpp", "mixed"):
+    if mode in ("c", "cpp", "mixed"):
         # A custom --build-cmd (e.g. a CMake invocation) runs under a shell so
         # it can be a compound command; gllvm wrappers are injected via env.
         build_cmd = ["sh", "-c", args.build_cmd] if args.build_cmd else None
         bcs.append(
             acquire_c.acquire_c_bitcode(args.project, tc, args.artifact, build_cmd)
         )
-    if args.lang in ("rust", "mixed"):
+    if mode in ("rust", "mixed"):
         bcs.extend(
             acquire_rust.acquire_rust_bitcode(args.project, build_std=args.build_std)
         )
@@ -39,7 +57,7 @@ def _acquire(args, tc):
 
 def cmd_run(args):
     tc = toolchain.check_coherence(default_analyzer())
-    if args.lang in ("rust", "mixed"):
+    if TARGETS[args.lang][0] in ("rust", "mixed"):
         toolchain.assert_rust_bitcode_readable(tc)
     bcs = _acquire(args, tc)
     merged = os.path.join(args.project, "merged.bc")
@@ -80,14 +98,19 @@ def build_parser():
 
     r = sub.add_parser("run")
     r.add_argument("--project", required=True)
-    r.add_argument("--lang", required=True, choices=["c", "cpp", "rust", "mixed"])
+    r.add_argument("--lang", required=True, choices=list(TARGETS),
+                   help="target type: source language (c/cpp/rust/mixed) or Rust "
+                        "fuzz harness (libfuzzer/ziggy/afl). The harness types set "
+                        "the default entry: libfuzzer->fuzz_target!, ziggy/afl->main")
     r.add_argument("--artifact", default="main.o",
                    help="built object/binary to extract C/C++ bitcode from")
     r.add_argument("--build-cmd", default=None, dest="build_cmd",
                    help="shell build command for C/C++ (default: make); "
                         "e.g. 'cmake -S . -B build && cmake --build build'")
     r.add_argument("--entry", action="append", default=None,
-                   help="entry symbol (repeatable; default LLVMFuzzerTestOneInput)")
+                   help="entry function (repeatable; overrides the --lang default). "
+                        "Accepts a mangled symbol, a demangled name, a '::name' "
+                        "suffix like 'main', or the alias 'fuzz_target!'")
     r.add_argument("--backend", default="type-based", choices=["type-based", "svf"])
     r.add_argument("--build-std", action="store_true", dest="build_std")
     r.add_argument("--dot", default=None)
@@ -104,7 +127,7 @@ def build_parser():
 def main(argv=None):
     args = build_parser().parse_args(argv)
     if getattr(args, "entry", None) is None and args.cmd == "run":
-        args.entry = ["LLVMFuzzerTestOneInput"]
+        args.entry = list(TARGETS[args.lang][1])
     try:
         return args.func(args)
     except (toolchain.ToolchainError, acquire_c.AcquireError,

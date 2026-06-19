@@ -10,6 +10,17 @@ from reachability import cli
 HAVE_GLLVM = shutil.which("gclang") is not None
 
 
+def test_target_entry_defaults():
+    # harness target types imply their default entry; parser accepts them.
+    assert cli.TARGETS["ziggy"] == ("rust", ["main"])
+    assert cli.TARGETS["afl"] == ("rust", ["main"])
+    assert cli.TARGETS["libfuzzer"] == ("rust", ["fuzz_target!"])
+    p = cli.build_parser()
+    for lang in ("c", "cpp", "rust", "mixed", "ziggy", "afl", "libfuzzer"):
+        args = p.parse_args(["run", "--project", "x", "--lang", lang, "--out", "o"])
+        assert args.lang == lang
+
+
 def test_check_toolchain_ok(analyzer, monkeypatch):
     monkeypatch.setenv("REACHABILITY_ANALYZER", analyzer)
     assert cli.main(["check-toolchain"]) == 0
