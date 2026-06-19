@@ -1,0 +1,4 @@
+{
+  "must_reach": ["LLVMFuzzerTestOneInput", "handler_a", "handler_b", "unused_handler"],
+  "must_not_reach": ["truly_dead"]
+}

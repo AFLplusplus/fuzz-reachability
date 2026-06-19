@@ -1,0 +1,4 @@
+{
+  "must_reach": ["LLVMFuzzerTestOneInput", "rust_fuzzer_test_input", "parse"],
+  "must_not_reach": ["never_called"]
+}

@@ -1,0 +1,18 @@
+# build artifacts
+analyzer/build/
+analyzer/build-svf/
+**/*.bc
+**/*.o
+**/target/
+examples/**/build/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+fixtures/**/build/
+fixtures/**/prog
+fixtures/**/merged.bc
+.venv/
+third_party/
+compile_commands.json
+.claude/
