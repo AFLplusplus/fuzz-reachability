@@ -13,6 +13,7 @@ unreachable. Over-approximation is expected; under-approximation is a bug.
 - **ziggy fuzz harness (Rust `main` entry):** [`docs/ziggy.md`](docs/ziggy.md)
 
 Author: Marc "vanHauser" Heuse
+
 License: GNU Affero General Public License 3 or newer
 
 ## How it works
@@ -21,7 +22,7 @@ License: GNU Affero General Public License 3 or newer
  driver (Python)            analyzer (C++ / LLVM)
  ───────────────            ─────────────────────
    acquire bitcode ─┐
-   C/C++ : gllvm    │  llvm-link      load .bc → call graph → indirect resolve
+   C/C++ : gllvm    │   llvm-link     load .bc → call graph → indirect resolve
    Rust  : rustc    ├─► merge .bc ─►  (type-based | SVF) → BFS from entry →
    --emit=llvm-bc  ─┘                 JSON report (+ optional DOT)
 ```
