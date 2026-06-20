@@ -51,6 +51,8 @@ Two components, joined by merged bitcode:
 - **LLVM ≥ 21.** One coherent toolchain: `clang`, `clang++`, `llvm-link`, `opt`,
   and the analyzer all share one major **M ≥ 21**, and rustc's LLVM is no newer
   than M. See [`docs/llvm-support.md`](docs/llvm-support.md).
+  **NOTE!** especially as a Rust user, we recommend to install LLVM via
+  https://apt.llvm.org/llvm.sh instead of the distribution, as those will be outdated!
 - **Go** (to install `gllvm`), **Python ≥ 3.12**, and a **C++17** compiler. Rust
   targets also need **rustc / cargo** (nightly).
 
