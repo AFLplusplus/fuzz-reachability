@@ -18,7 +18,9 @@ only reachable code — cheaper, more focused fuzzing.
 - LLVM version support and the SVF fallback plan — [`docs/llvm-support.md`](docs/llvm-support.md)
 - ziggy harnesses (Rust `main` entry) — [`docs/ziggy.md`](docs/ziggy.md)
 
-Author: Marc "vanHauser" Heuse · License: GNU AGPL v3 or newer
+Author: Marc "vanHauser" Heuse
+
+License: GNU AGPL v3 or newer
 
 ## How it works
 
@@ -26,9 +28,9 @@ Author: Marc "vanHauser" Heuse · License: GNU AGPL v3 or newer
  driver (Python)              analyzer (C++ / LLVM)
  ───────────────              ─────────────────────
    acquire bitcode ─┐
-   C/C++ : gllvm    │  llvm-link    load .bc → build call graph →
+   C/C++ : gllvm    │   llvm-link    load .bc → build call graph →
    Rust  : rustc    ├─► merge .bc ─► resolve indirect calls → BFS from
-   --emit=llvm-bc  ─┘               entry → JSON report + sancov lists
+   --emit=llvm-bc  ─┘                entry → JSON report + sancov lists
 ```
 
 Two components, joined by merged bitcode:
@@ -87,7 +89,9 @@ reachability run --lang <target> --project <dir> --out <file>
 harness (`libfuzzer`, `ziggy`, `afl`). Each sets a default entry point, so the
 common case needs no `--entry`. The build command and the artifact are
 auto-detected for C/C++; override them with `--build-cmd` / `--artifact` when
-needed. Full options: [Command-line reference](#command-line-reference).
+needed.
+
+Full options: [Command-line reference](#command-line-reference).
 
 ## Examples
 
