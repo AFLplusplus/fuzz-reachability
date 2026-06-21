@@ -147,7 +147,13 @@ def build_parser():
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        parser.print_help()
+        return 0
+    args = parser.parse_args(argv)
     if getattr(args, "entry", None) is None and args.cmd == "run":
         args.entry = list(TARGETS[args.lang][1])
     try:
