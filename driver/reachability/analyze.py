@@ -9,10 +9,12 @@ class AnalyzeError(RuntimeError):
 
 
 def analyze(merged_bc, tc, entries, backend="type-based", dot=None,
-            indirect_any=False, reached_out=None, not_reached_out=None):
+            indirect_any=False, reached_out=None, not_reached_out=None,
+            verbose=False):
     """Run the analyzer on `merged_bc`; return the parsed JSON report.
 
     reached_out / not_reached_out: paths for the sancov allowlist / ignorelist.
+    verbose: echo the exact analyzer command and pass its warnings through.
     """
     cmd = [tc.analyzer, merged_bc, "--backend", backend]
     for e in entries:
@@ -25,7 +27,11 @@ def analyze(merged_bc, tc, entries, backend="type-based", dot=None,
         cmd += ["--reached-out", reached_out]
     if not_reached_out:
         cmd += ["--not-reached-out", not_reached_out]
+    if verbose:
+        print("  " + " ".join(cmd))
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise AnalyzeError(f"analyzer failed (exit {r.returncode}):\n{r.stderr}")
+    if verbose and r.stderr.strip():
+        print(r.stderr.strip())
     return json.loads(r.stdout)

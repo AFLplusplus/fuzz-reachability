@@ -170,8 +170,13 @@ def _dedup_newest_per_crate(paths):
     return sorted(p for _, p in best.values())
 
 
-def acquire_rust_bitcode(project_dir, profile="debug", build_std=False):
+def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
+                         verbose=False):
     """Build the Rust project and collect every .bc this build emitted.
+
+    verbose: echo the cargo command and pass its diagnostics through (the
+    artifact stream on stdout must be captured to be parsed, so the build cannot
+    stream live; its rendered diagnostics on stderr are reprinted afterwards).
 
     Returns a list of .bc paths. Raises AcquireError on a compile failure or when
     no .bc were produced.
@@ -182,7 +187,11 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False):
         cmd.append("--release")
     if build_std:
         cmd += ["-Zbuild-std", "--target", "x86_64-unknown-linux-gnu"]
+    if verbose:
+        print("  " + " ".join(cmd))
     r = subprocess.run(cmd, cwd=project_dir, env=env, capture_output=True, text=True)
+    if verbose and r.stderr.strip():
+        print(r.stderr.strip())
 
     errs = _compile_errors(r.stderr)
     if errs:

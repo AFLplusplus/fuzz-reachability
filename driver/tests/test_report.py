@@ -10,8 +10,8 @@ def test_print_summary(capsys):
             {"demangled": "bar", "indirect_only": True},
         ],
     }
-    report.print_summary(result, verbose=True)
+    report.print_summary(result)
     out = capsys.readouterr().out
     assert "reachable 3 / defined 5" in out
     assert "1 indirect-only" in out
-    assert "bar" in out  # indirect-only listing
+    assert "foo" not in out and "bar" not in out  # no per-function listing

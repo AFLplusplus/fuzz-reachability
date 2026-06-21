@@ -39,7 +39,7 @@ def default_analyzer():
     return os.path.join(repo, "analyzer", "build", "reachability-analyzer")
 
 
-def _acquire(args, tc):
+def _acquire(args, tc, verbose=False):
     """Return the list of .bc files for the project per --lang."""
     mode = TARGETS[args.lang][0]
     bcs = []
@@ -48,41 +48,68 @@ def _acquire(args, tc):
         # from the project's files. Either runs under a shell so it can be a
         # compound command; gllvm wrappers are injected via env.
         build = args.build_cmd or acquire_c.detect_build_cmd(args.project)
-        if not args.build_cmd:
+        if args.build_cmd:
+            if verbose:
+                print(f"build command: {build} (from --build-cmd)")
+        else:
             print(f"build command: {build or 'make'}"
                   f"{'' if build else ' (default; no build system detected)'}")
         build_cmd = ["sh", "-c", build] if build else None
         bcs.extend(
             acquire_c.acquire_c_bitcode(
                 args.project, tc, args.artifact, build_cmd,
-                static_libs=args.static_libs,
+                static_libs=args.static_libs, verbose=verbose,
             )
         )
     if mode in ("rust", "mixed"):
         bcs.extend(
-            acquire_rust.acquire_rust_bitcode(args.project, build_std=args.build_std)
+            acquire_rust.acquire_rust_bitcode(
+                args.project, build_std=args.build_std, verbose=verbose
+            )
         )
     return bcs
 
 
 def cmd_run(args):
+    v = args.verbose
     tc = toolchain.check_coherence(default_analyzer())
+    if v:
+        print(f"==> [1/4] toolchain: LLVM {tc.llvm_major} (rustc LLVM {tc.rustc_major})")
+        print(f"  clang     {tc.clang}")
+        print(f"  clang++   {tc.clangxx}")
+        print(f"  llvm-link {tc.llvm_link}")
+        print(f"  opt       {tc.opt}")
+        print(f"  analyzer  {tc.analyzer}")
     if TARGETS[args.lang][0] in ("rust", "mixed"):
         toolchain.assert_rust_bitcode_readable(tc)
-    bcs = _acquire(args, tc)
+
+    if v:
+        print(f"==> [2/4] acquiring bitcode (lang={args.lang})")
+    bcs = _acquire(args, tc, verbose=v)
+    if v:
+        print(f"  collected {len(bcs)} bitcode module(s):")
+        for b in bcs:
+            print(f"    {b}")
+
     merged = os.path.join(args.project, "merged.bc")
+    if v:
+        print(f"==> [3/4] merging {len(bcs)} module(s) with llvm-link -> {merged}")
     link.link_bitcode(bcs, merged, tc)
+
     # The two sancov lists land next to the JSON output (override with flags).
     outdir = os.path.dirname(os.path.abspath(args.out))
     reached = args.reached or os.path.join(outdir, "reached.txt")
     not_reached = args.not_reached or os.path.join(outdir, "not_reached.txt")
+    if v:
+        print(f"==> [4/4] analyzing from entries [{', '.join(args.entry)}] "
+              f"with backend={args.backend}")
     result = analyze.analyze(
         merged, tc, args.entry, backend=args.backend, dot=args.dot,
-        reached_out=reached, not_reached_out=not_reached,
+        reached_out=reached, not_reached_out=not_reached, verbose=v,
     )
     with open(args.out, "w") as fh:
         json.dump(result, fh, indent=2)
-    report.print_summary(result, verbose=args.verbose)
+    report.print_summary(result)
     print(f"wrote {args.out}")
     print(f"wrote {reached}  (sancov allowlist of reachable functions)")
     print(f"wrote {not_reached}  (sancov ignorelist of unreachable functions)")
@@ -141,7 +168,10 @@ def build_parser():
     r.add_argument("--not-reached", default=None, dest="not_reached",
                    help="sancov ignorelist path (default: not_reached.txt next to --out)")
     r.add_argument("--out", required=True)
-    r.add_argument("-v", "--verbose", action="store_true")
+    r.add_argument("-v", "--verbose", action="store_true",
+                   help="narrate each pipeline stage (toolchain, build, merge, "
+                        "analyze): echo the tool commands, stream the build "
+                        "output, and list the collected bitcode.")
     r.set_defaults(func=cmd_run)
     return p
 

@@ -22,6 +22,7 @@ import os
 import shutil
 import struct
 import subprocess
+import sys
 import time
 
 
@@ -285,7 +286,7 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode):
 
 
 def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
-                      static_libs="auto"):
+                      static_libs="auto", verbose=False):
     """Build `project_dir` with gllvm wrappers and extract its bitcode.
 
     artifact: path (relative to project_dir) of the built binary/object/archive.
@@ -294,6 +295,7 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     static_libs: "auto" (default) also extracts, in full, every static archive
     the target links; "none" keeps only the linker's view; "all" pulls in every
     bitcode archive in the tree (see the module docstring).
+    verbose: stream the build's output live instead of capturing it silently.
 
     Returns a list of absolute .bc paths to be linked together.
     """
@@ -303,9 +305,13 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     env = _build_env(clang_bindir)
     cmd = build_cmd or ["make"]
     before = time.time()
-    r = subprocess.run(cmd, cwd=project_dir, env=env, capture_output=True, text=True)
+    if verbose:
+        sys.stdout.flush()
+    r = subprocess.run(cmd, cwd=project_dir, env=env,
+                       capture_output=not verbose, text=True)
     if r.returncode != 0:
-        raise AcquireError(f"build failed:\n{r.stdout}\n{r.stderr}")
+        detail = "" if verbose else f":\n{r.stdout}\n{r.stderr}"
+        raise AcquireError(f"build failed (exit {r.returncode}){detail}")
 
     explicit = os.path.join(project_dir, artifact) if artifact else None
     if explicit and os.path.exists(explicit):

@@ -228,7 +228,7 @@ entry point(s).
 | `--dot FILE` | *(none)* | Also write the reachable subgraph as Graphviz DOT (indirect edges dashed/red). |
 | `--reached FILE` | beside `--out` | Path for the sancov **allowlist** of reachable functions. |
 | `--not-reached FILE` | beside `--out` | Path for the sancov **ignorelist** of unreachable functions. |
-| `-v`, `--verbose` | off | Print a per-function breakdown in the summary. |
+| `-v`, `--verbose` | off | Narrate each pipeline stage (toolchain → build → merge → analyze): echoes the tool commands run, streams the build output live, and lists the collected bitcode modules. |
 
 #### Target types (`--lang`)
 
