@@ -1,12 +1,15 @@
 # Worked examples
 
-Three complete, start-to-finish runs on real targets:
+Four complete, start-to-finish runs on real targets:
 
 1. [**libxml2 + a libFuzzer harness**](#1-libxml2--a-libfuzzer-harness-cc) — the
    C/C++ path, with static-library expansion and an indirect error callback.
 2. [**The `url` crate + a ziggy harness**](#2-the-url-crate--a-ziggy-harness-rust)
    — the Rust path, rooted at the Rust `main`.
-3. [**rustyknife + a cargo-afl harness**](#3-rustyknife--a-cargo-afl-harness-rust)
+3. [**cpp_demangle + a cargo-afl harness**](#3-cpp_demangle--a-cargo-afl-harness-rust)
+   — the Rust manual route on a parse-only harness, where the unused render half
+   is generic and never emitted at all.
+4. [**rustyknife + a cargo-afl harness**](#4-rustyknife--a-cargo-afl-harness-rust)
    — the Rust manual route, for a feature-gated AFL bin.
 
 The exact counts below come from real runs (LLVM 22, type-based backend); yours
@@ -264,8 +267,6 @@ What happens:
   not `examples/url/target/`, where the driver looks. Pointing it at the crate's
   own `target/` keeps the two in sync. (A standalone crate needs no such step.)
 
-For more on the ziggy shape and its caveats, see [`ziggy.md`](ziggy.md).
-
 ### Step 3 — Read the report
 
 The summary on this machine:
@@ -309,7 +310,124 @@ the proc-macro crates (`proc_macro2`, parts of `syn`) are unreachable too.
 
 ---
 
-## 3. rustyknife + a cargo-afl harness (Rust)
+## 3. cpp_demangle + a cargo-afl harness (Rust)
+
+[cpp_demangle](https://github.com/gimli-rs/cpp_demangle) is a pure-Rust demangler
+for C++ (Itanium) symbols. It ships a cargo-afl harness at
+`src/bin/afl_runner.rs` that feeds raw fuzz bytes straight into the parser:
+
+```rust
+#[macro_use]
+extern crate afl;
+extern crate cpp_demangle;
+
+fn main() {
+    afl::fuzz!(|bytes| {
+        let _ = cpp_demangle::Symbol::new(bytes);
+    });
+}
+```
+
+Like ziggy, a cargo-afl harness keeps its fuzz loop in `main`, so reachability
+roots at the Rust `main` (the `--lang afl` shape). But `afl_runner` is
+**feature-gated** (`required-features = ["afl"]`), and `reachability run` issues a
+plain `cargo build` with no `--features afl`, so the one-liner never builds the
+harness. This target therefore takes the **manual route** — emit bitcode with the
+feature enabled, `llvm-link`, then run the analyzer directly.
+
+Unlike rustyknife's ancient `afl` 0.8, cpp_demangle pins a current `afl` 0.17 that
+compiles cleanly on a modern toolchain — only the final link fails (the AFL
+runtime is absent), which is exactly what `--emit=llvm-bc` expects.
+
+### Step 1 — Get it
+
+```bash
+git clone https://github.com/gimli-rs/cpp_demangle
+cd cpp_demangle
+```
+
+### Step 2 — Emit the bitcode
+
+```bash
+RUSTFLAGS="--emit=llvm-bc -Cembed-bitcode=yes -Ccodegen-units=1" \
+  cargo build --features afl --bin afl_runner
+```
+
+The link fails with `undefined symbol: __afl_manual_init` (and
+`__afl_persistent_loop`, `__afl_fuzz_len`) — AFL runtime symbols injected only by
+`cargo afl build`. That is expected under `--emit=llvm-bc`; the per-crate `.bc` in
+`target/debug/deps/` are already written.
+
+### Step 3 — Link and analyze
+
+```bash
+llvm-link-22 target/debug/deps/*.bc -o merged.bc     # one .bc per crate; clean deps/ first if you rebuilt
+reachability-analyzer merged.bc --entry main \
+  --out cpp_demangle.json --reached-out reached.txt --not-reached-out not_reached.txt
+```
+
+(`reachability-analyzer` is the built binary or `$REACHABILITY_ANALYZER`;
+`llvm-link-22` is the LLVM tool matching the analyzer's major.)
+
+### Step 4 — Read the report
+
+```
+reachable 1134 / defined 2446  (26 indirect-only, 1312 unreachable)  [backend=type-based]
+```
+
+As with ziggy, `--entry main` resolves to both the C-ABI shim and the real Rust
+main — `entries: ["main", "_ZN10afl_runner4main17h…E"]`.
+
+**Reachable** — within cpp_demangle, the parser and little past it:
+`afl_runner::main` → the `afl::fuzz!` closure → `cpp_demangle::Symbol::new`, then
+the recursive-descent grammar beneath it — the `ast::*::parse_internal` rules,
+`OperatorName` / `CtorDtorName`, the `starts_with` lookahead predicates,
+`ParseContext`, and the `subs::SubstitutionTable` *inserts* that record
+back-reference candidates as the parse runs. (Most of the 1,134 total are the
+Rust runtime — `core` / `alloc` / `std` — that the parser pulls in.)
+
+```json
+{
+  "mangled": "_ZN12cpp_demangle15Symbol$LT$T$GT$3new17h66f1211aad4bb946E",
+  "demangled": "cpp_demangle::Symbol$LT$T$GT$::new::h66f1211aad4bb946",
+  "file": "src/lib.rs",
+  "line": 179,
+  "via": "direct",
+  "indirect_only": false
+}
+```
+
+**Unreachable** (`not_reached.txt`) — the *render* side of the library, because
+the harness parses but never demangles. `Symbol::new` builds the AST; it never
+calls `Symbol::demangle`, so the substitution-*resolution* helpers
+(`SubstitutionTable::get_type`, `pop`, `non_substitution`), the back-reference
+resolvers (`TypeHandle::back_reference`, `TemplateParam::resolve`, …) and the AST
+accessors used only while printing (`BareFunctionType::args` / `ret`) are
+defined-but-unreachable — as is the whole options-builder API
+(`DemangleOptions::new`, `no_params`, `recursion_limit`, …) the harness never
+constructs.
+
+> **Dead *generic* code is absent, not merely unreachable.** The demangler proper
+> — `Symbol::demangle`, the `Demangle` / `DemangleWrite` impls, the `Display`
+> rendering — appears in *neither* list. It is generic, and nothing in this build
+> instantiates it, so rustc never monomorphizes it and emits no bitcode for it.
+> Reachability can only classify functions that exist; an uninstantiated generic
+> is invisible to it. (cpp_demangle's *other* harness — the cargo-fuzz
+> `fuzz/fuzzers/parse_and_stringify.rs` — does call `sym.demangle()`; point a run
+> at that one and the render half of the library snaps into `defined`, much of it
+> then reachable.)
+
+> **The defined set includes the build toolchain.** `afl` 0.17 pulls in `semver`,
+> `xdg`, `home`, and `rustc_version` (its build-script and runtime-config crates);
+> their bitcode is emitted and merged, padding `defined` (2,446), and a few even
+> read as reachable through type-based over-approximation. The 26 `indirect-only`
+> functions are almost all `catch_unwind` / `FnOnce::call_once` vtable shims from
+> the `afl::fuzz!` panic-handling machinery — the harness's dispatch surface, not
+> the library's.
+
+---
+
+## 4. rustyknife + a cargo-afl harness (Rust)
 
 [rustyknife](https://github.com/zerospam/rustyknife) is an email-parsing library
 with a cargo-afl harness at `src/bin/fuzz_mailbox.rs`. Like ziggy, a cargo-afl
@@ -328,8 +446,7 @@ fn main() {
 ```
 
 Two things differ from the `url` walkthrough, so this one uses the **manual
-route** — emit bitcode, `llvm-link`, then run the analyzer directly (the same
-path [`ziggy.md`](ziggy.md) describes for projects that need custom build flags):
+route** — emit bitcode, `llvm-link`, then run the analyzer directly:
 
 - The `fuzz_mailbox` bin is **feature-gated** (`required-features = ["fuzz"]`),
   so it builds only with `cargo build --features fuzz`.

@@ -129,11 +129,34 @@ def _compile_errors(text):
             if any(s.startswith(m) for m in _COMPILE_ERROR_MARKERS)]
 
 
+def _bin_bc_path(msg, files):
+    """The .bc for a bin artifact, whose cargo message carries only the bare
+    executable path (target/<profile>/<name>, no build hash) -- so the hash-based
+    collection below cannot match it and the harness body would be dropped. rustc
+    emits the unit's bitcode as deps/<name with '-' -> '_'>-<hash>.bc; pick the
+    newest match (a rebuild rewrites it, so newest is this build's), mirroring the
+    per-crate dedup fallback. Returns None for non-bin targets or when no
+    matching .bc exists."""
+    kind = msg.get("target", {}).get("kind") or []
+    if "bin" not in kind:
+        return None
+    name = msg.get("target", {}).get("name")
+    if not name or not files:
+        return None
+    deps = os.path.join(os.path.dirname(files[0]), "deps")
+    stem = name.replace("-", "_")
+    cands = [p for p in glob.glob(os.path.join(deps, f"{stem}-*.bc"))
+             if _BASE_RE.sub("", os.path.basename(p)) == stem]
+    return max(cands, key=os.path.getmtime) if cands else None
+
+
 def _build_bc_paths(stdout):
     """The .bc files this build produced, from cargo's json compiler-artifact
-    messages: each carries the build hash in its output filenames, and the
-    matching deps/*-<hash>.bc lives beside them. One .bc per built crate; stale
-    .bc from other builds (different or absent hash) are not included."""
+    messages: a library unit carries the build hash in its output filenames, and
+    the matching deps/*-<hash>.bc lives beside them. A bin unit carries only the
+    bare executable path (no hash), so its bitcode is resolved by name via
+    _bin_bc_path. One .bc per built crate; stale .bc from other builds (different
+    or absent hash) are not included."""
     bcs = set()
     for line in stdout.splitlines():
         line = line.strip()
@@ -148,10 +171,16 @@ def _build_bc_paths(stdout):
         files = list(msg.get("filenames") or [])
         if msg.get("executable"):
             files.append(msg["executable"])
+        matched = False
         for f in files:
             m = _HASH_RE.search(os.path.basename(f))
             if m:
                 bcs.update(glob.glob(os.path.join(os.path.dirname(f), f"*-{m.group(1)}.bc")))
+                matched = True
+        if not matched:
+            bc = _bin_bc_path(msg, files)
+            if bc:
+                bcs.add(bc)
     return sorted(bcs)
 
 

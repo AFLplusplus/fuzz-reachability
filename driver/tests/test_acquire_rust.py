@@ -107,3 +107,47 @@ def test_build_bc_paths_from_artifact_stream(tmp_path):
     noise = "Compiling msmith v0.1.0\n" + json.dumps({"reason": "build-finished", "success": True})
     bcs = acquire_rust._build_bc_paths(line + "\n" + noise)
     assert bcs == [str(keep)]
+
+
+def test_build_bc_paths_includes_bin_crate(tmp_path):
+    debug = tmp_path / "target" / "debug"
+    deps = debug / "deps"
+    deps.mkdir(parents=True)
+    lib_bc = deps / "dep_lib-abcdef0123456789.bc"
+    bin_bc = deps / "my_fuzz_bin-1111111111111111.bc"
+    lib_bc.write_text("x")
+    bin_bc.write_text("x")
+    lib = json.dumps({
+        "reason": "compiler-artifact",
+        "target": {"name": "dep_lib", "kind": ["lib"]},
+        "filenames": [str(deps / "libdep_lib-abcdef0123456789.rlib")],
+        "executable": None,
+    })
+    binmsg = json.dumps({
+        "reason": "compiler-artifact",
+        "target": {"name": "my-fuzz-bin", "kind": ["bin"]},
+        "filenames": [str(debug / "my-fuzz-bin")],
+        "executable": str(debug / "my-fuzz-bin"),
+    })
+    bcs = acquire_rust._build_bc_paths(lib + "\n" + binmsg)
+    assert bcs == sorted([str(lib_bc), str(bin_bc)])
+
+
+def test_build_bc_paths_bin_picks_newest(tmp_path):
+    debug = tmp_path / "target" / "debug"
+    deps = debug / "deps"
+    deps.mkdir(parents=True)
+    old = deps / "harness-0000000000000000.bc"
+    new = deps / "harness-ffffffffffffffff.bc"
+    old.write_text("x")
+    new.write_text("x")
+    os.utime(old, (1, 1))
+    os.utime(new, (10, 10))
+    binmsg = json.dumps({
+        "reason": "compiler-artifact",
+        "target": {"name": "harness", "kind": ["bin"]},
+        "filenames": [str(debug / "harness")],
+        "executable": str(debug / "harness"),
+    })
+    bcs = acquire_rust._build_bc_paths(binmsg)
+    assert bcs == [str(new)]

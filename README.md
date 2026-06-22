@@ -20,7 +20,7 @@ only reachable code — cheaper, more focused fuzzing:
 Additionally you can feed the output files into [cov-analysis](github.com/AFLplusplus/cov-analysis) - the state-of-the-art coverage analysis tooling.
 
 **Deep dives:**
-- Worked examples, step by step — a generic `LLVMFuzzerTestOneInput` harness for AFL++/libfuzzer (libxml2), a ziggy harness (the `url` crate), and a cargo-afl harness (rustyknife) — [`docs/EXAMPLES.md`](docs/EXAMPLES.md)
+- Worked examples, step by step — a generic `LLVMFuzzerTestOneInput` harness for AFL++/libfuzzer (libxml2), a ziggy harness (the `url` crate), and cargo-afl harnesses (cpp_demangle and rustyknife) — [`docs/EXAMPLES.md`](docs/EXAMPLES.md)
 - LLVM version support and the SVF fallback plan — [`docs/llvm-support.md`](docs/llvm-support.md)
 
 
@@ -201,8 +201,8 @@ reachability run --lang ziggy --project <harness> --out z.json
 ```
 
 > For complete, start-to-finish walkthroughs on real targets — ziggy (the `url`
-> crate), cargo-afl (rustyknife), and libFuzzer (libxml2) harnesses — see
-> [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
+> crate), cargo-afl (cpp_demangle and rustyknife), and libFuzzer (libxml2)
+> harnesses — see [`docs/EXAMPLES.md`](docs/EXAMPLES.md).
 
 ## Command-line reference
 
@@ -343,7 +343,7 @@ driver/     Python driver (toolchain, acquire_*, link, analyze, cli)
 fixtures/   per-language test targets with expected reachable sets
 examples/   worked examples (cpp_cmake/)
 scripts/    setup.sh, build_svf.sh, test_matrix.sh, select_llvm.sh
-docs/        worked examples (EXAMPLES.md), LLVM support, SVF notes, ziggy guide
+docs/        worked examples (EXAMPLES.md), LLVM support, SVF notes
 ```
 
 ## Limitations

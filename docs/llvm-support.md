@@ -50,11 +50,24 @@ SVF backend is version-limited.
 **Caveat on this machine:** the distro now ships LLVM **21.0.0**, which is an
 *older patch release* than rustc's bundled **21.1.1**, so LLVM-21 tools cannot
 read rustc's bitcode. The matrix PASS/FAIL above is the analyzer's own `.ll`
-goldens (no rustc), so it is unaffected. But end-to-end Rust runs need an LLVM
-whose full version ≥ 21.1.1: the auto-selected default builds the core analyzer
-on LLVM **22**, and the SVF backend — which only builds on LLVM 21 — therefore
-cannot process Rust bitcode here. The `test_svf_rust_dyn_sound` end-to-end test
-**skips** with a clear reason in this configuration (C/C++ SVF tests still run).
+goldens (no rustc), so it is unaffected. But end-to-end **Rust** runs need an LLVM
+whose full version ≥ 21.1.1, and the auto-selected default
+(`scripts/select_llvm.sh`) prefers LLVM **21** whenever `llvm-config-21` is
+installed — so the default `make build` yields a 21.0.0 analyzer that **cannot**
+read rustc's bitcode here. Build an LLVM-22 analyzer explicitly and point the
+driver at it:
+
+```bash
+make -C analyzer LLVM_CONFIG=llvm-config-22 BUILD=build/22
+export REACHABILITY_ANALYZER="$PWD/analyzer/build/22/reachability-analyzer"
+```
+
+(`make build LLVM_MAJOR=22` also works but overwrites the default `analyzer/build`;
+the `build/22` subdir is the same per-version layout `make matrix` uses, is
+git-ignored, and `make clean` removes it.) The SVF backend — which only builds on
+LLVM 21 — therefore cannot process Rust bitcode here; the `test_svf_rust_dyn_sound`
+end-to-end test **skips** with a clear reason in this configuration (C/C++ SVF
+tests still run).
 
 ## SVF compatibility
 
