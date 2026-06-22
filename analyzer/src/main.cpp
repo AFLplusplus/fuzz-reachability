@@ -185,6 +185,10 @@ int main(int argc, char **argv) {
 
   reach::CallGraph graph;
   reach::buildDirectEdges(*mod, graph);
+  // Must run before the resolver's prepare(): SVF's buildSVFModule() links
+  // extapi and gives external functions (e.g. bsearch) stub bodies, which would
+  // hide their escaping callback arguments from buildEscapeEdges.
+  reach::buildEscapeEdges(*mod, graph);
 
   std::unique_ptr<reach::IndirectResolver> resolver;
   if (IndirectAny) {
@@ -201,7 +205,6 @@ int main(int argc, char **argv) {
     resolver = std::make_unique<reach::TypeBasedResolver>();
   }
   reach::buildIndirectEdges(*mod, graph, *resolver);
-  reach::buildEscapeEdges(*mod, graph);
 
   if (DumpEdges) {
     for (auto &kv : graph.edges())

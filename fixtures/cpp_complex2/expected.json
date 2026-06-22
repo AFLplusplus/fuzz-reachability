@@ -6,9 +6,9 @@
   ],
   "summary": {
     "defined": 1196,
-    "reachable": 1177,
-    "indirect_only": 111,
-    "unreachable": 19
+    "reachable": 1178,
+    "indirect_only": 112,
+    "unreachable": 18
   },
   "reachable": [
     {
@@ -498,6 +498,14 @@
       "line": null,
       "via": "direct",
       "indirect_only": false
+    },
+    {
+      "mangled": "_ZL26c_callback_bsearch_comparePKvS0_",
+      "demangled": "c_callback_bsearch_compare(void const*, void const*)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
     },
     {
       "mangled": "_ZL26control_block_erased_entryR11fuzz_stream",
@@ -9432,12 +9440,6 @@
     {
       "mangled": "_GLOBAL__sub_I_main.cpp",
       "demangled": "_GLOBAL__sub_I_main.cpp",
-      "file": null,
-      "line": null
-    },
-    {
-      "mangled": "_ZL26c_callback_bsearch_comparePKvS0_",
-      "demangled": "c_callback_bsearch_compare(void const*, void const*)",
       "file": null,
       "line": null
     },
