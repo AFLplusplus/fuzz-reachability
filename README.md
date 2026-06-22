@@ -17,6 +17,8 @@ only reachable code — cheaper, more focused fuzzing:
 
 **Recommendation:** use the allow feature with `reached.txt` rather than the deny/ignore feature.
 
+Additionally you can feed the output files into [cov-analysis](github.com/AFLplusplus/cov-analysis) - the state-of-the-art coverage analysis tooling.
+
 **Deep dives:**
 - Worked examples, step by step — a generic `LLVMFuzzerTestOneInput` harness for AFL++/libfuzzer (libxml2), a ziggy harness (the `url` crate), and a cargo-afl harness (rustyknife) — [`docs/EXAMPLES.md`](docs/EXAMPLES.md)
 - LLVM version support and the SVF fallback plan — [`docs/llvm-support.md`](docs/llvm-support.md)
