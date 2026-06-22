@@ -65,6 +65,22 @@ def test_target_entry_defaults():
         assert args.lang == lang
 
 
+def test_out_optional_defaults_to_project(monkeypatch):
+    p = cli.build_parser()
+    args = p.parse_args(["run", "--project", "myproj", "--lang", "c"])
+    assert args.out is None
+    monkeypatch.setattr(cli.toolchain, "check_coherence", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "default_analyzer", lambda *a, **k: "analyzer")
+
+    def boom(*a, **k):
+        raise RuntimeError("stop after defaulting --out")
+
+    monkeypatch.setattr(cli, "_acquire", boom)
+    with pytest.raises(RuntimeError):
+        cli.cmd_run(args)
+    assert args.out == os.path.join("myproj", "reachability.json")
+
+
 def test_check_toolchain_ok(analyzer, monkeypatch):
     monkeypatch.setenv("REACHABILITY_ANALYZER", analyzer)
     assert cli.main(["check-toolchain"]) == 0
