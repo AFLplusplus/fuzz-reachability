@@ -1,0 +1,1577 @@
+{
+  "llvm_version": "21",
+  "backend": "svf",
+  "entries": [
+    "LLVMFuzzerTestOneInput"
+  ],
+  "summary": {
+    "defined": 199,
+    "reachable": 183,
+    "indirect_only": 52,
+    "unreachable": 16
+  },
+  "reachable": [
+    {
+      "mangled": "LLVMFuzzerTestOneInput",
+      "demangled": "LLVMFuzzerTestOneInput",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_Z21redherrings_samesig_xi",
+      "demangled": "redherrings_samesig_x(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_Z21redherrings_samesig_yi",
+      "demangled": "redherrings_samesig_y(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_Z22unreachable_standalonei",
+      "demangled": "unreachable_standalone(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_Z23redherrings_addrtaken_ai",
+      "demangled": "redherrings_addrtaken_a(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_Z23redherrings_addrtaken_bi",
+      "demangled": "redherrings_addrtaken_b(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_Z28redherrings_deadbranch_consti",
+      "demangled": "redherrings_deadbranch_const(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_Z31redherrings_deadbranch_volatilei",
+      "demangled": "redherrings_deadbranch_volatile(int)",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL13fnptr_add_onei",
+      "demangled": "fnptr_add_one(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL14coroutine_bodyi",
+      "demangled": "coroutine_body(int)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL14coroutine_bodyi.__await_suspend_wrapper__await",
+      "demangled": "coroutine_body(int) (.__await_suspend_wrapper__await)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL14coroutine_bodyi.__await_suspend_wrapper__final",
+      "demangled": "coroutine_body(int) (.__await_suspend_wrapper__final)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL14coroutine_bodyi.__await_suspend_wrapper__init",
+      "demangled": "coroutine_body(int) (.__await_suspend_wrapper__init)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL14coroutine_bodyi.cleanup",
+      "demangled": "coroutine_body(int) (.cleanup)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL14coroutine_bodyi.destroy",
+      "demangled": "coroutine_body(int) (.destroy)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL14coroutine_bodyi.resume",
+      "demangled": "coroutine_body(int) (.resume)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL14fnptr_table_sqi",
+      "demangled": "fnptr_table_sq(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL14stdbind_targetii",
+      "demangled": "stdbind_target(int, int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL15asm_call_invokei",
+      "demangled": "asm_call_invoke(int)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL15asm_call_targeti",
+      "demangled": "asm_call_target(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL15fnptr_table_negi",
+      "demangled": "fnptr_table_neg(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL15fnptr_times_twoi",
+      "demangled": "fnptr_times_two(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL17plt_external_callPKc",
+      "demangled": "plt_external_call(char const*)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL18stdfunction_targeti",
+      "demangled": "stdfunction_target(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZL19plant_dead_branchesi",
+      "demangled": "plant_dead_branches(int)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL21setjmp_longjmp_targeti",
+      "demangled": "setjmp_longjmp_target(int)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL22computed_goto_dispatchi",
+      "demangled": "computed_goto_dispatch(int)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL24exception_unwind_handleri",
+      "demangled": "exception_unwind_handler(int)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZL24exception_unwind_throweri",
+      "demangled": "exception_unwind_thrower(int)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN10CovDerived9cov_cloneEv",
+      "demangled": "CovDerived::cov_clone()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN10CovDerivedC2Ev",
+      "demangled": "CovDerived::CovDerived()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN10CovDerivedD0Ev",
+      "demangled": "CovDerived::~CovDerived()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN10CovDerivedD2Ev",
+      "demangled": "CovDerived::~CovDerived()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN10ThunkBaseA6from_aEv",
+      "demangled": "ThunkBaseA::from_a()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN10ThunkBaseAC2Ev",
+      "demangled": "ThunkBaseA::ThunkBaseA()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN10ThunkBaseAD0Ev",
+      "demangled": "ThunkBaseA::~ThunkBaseA()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN10ThunkBaseAD2Ev",
+      "demangled": "ThunkBaseA::~ThunkBaseA()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN10ThunkBaseB6from_bEv",
+      "demangled": "ThunkBaseB::from_b()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN10ThunkBaseBC2Ev",
+      "demangled": "ThunkBaseB::ThunkBaseB()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN10ThunkBaseBD0Ev",
+      "demangled": "ThunkBaseB::~ThunkBaseB()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN10ThunkBaseBD2Ev",
+      "demangled": "ThunkBaseB::~ThunkBaseB()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN12ThunkDerived6from_bEv",
+      "demangled": "ThunkDerived::from_b()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN12ThunkDerivedC2Ev",
+      "demangled": "ThunkDerived::ThunkDerived()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN12ThunkDerivedD0Ev",
+      "demangled": "ThunkDerived::~ThunkDerived()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN12ThunkDerivedD2Ev",
+      "demangled": "ThunkDerived::~ThunkDerived()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN12functor_BaseC2Ev",
+      "demangled": "functor_Base::functor_Base()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN12functor_BaseD0Ev",
+      "demangled": "functor_Base::~functor_Base()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN12functor_BaseD2Ev",
+      "demangled": "functor_Base::~functor_Base()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN12functor_ImplC2Ev",
+      "demangled": "functor_Impl::functor_Impl()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN12functor_ImplD0Ev",
+      "demangled": "functor_Impl::~functor_Impl()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN12functor_ImplD2Ev",
+      "demangled": "functor_Impl::~functor_Impl()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN12functor_ImplclEi",
+      "demangled": "functor_Impl::operator()(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN14virtual_Circle4areaEv",
+      "demangled": "virtual_Circle::area()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN14virtual_Circle8describeEv",
+      "demangled": "virtual_Circle::describe()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN14virtual_CircleC2Ev",
+      "demangled": "virtual_Circle::virtual_Circle()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN14virtual_CircleD0Ev",
+      "demangled": "virtual_Circle::~virtual_Circle()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN14virtual_CircleD2Ev",
+      "demangled": "virtual_Circle::~virtual_Circle()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN14virtual_Square4areaEv",
+      "demangled": "virtual_Square::area()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN14virtual_Square8describeEv",
+      "demangled": "virtual_Square::describe()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN14virtual_SquareC2Ev",
+      "demangled": "virtual_Square::virtual_Square()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN14virtual_SquareD0Ev",
+      "demangled": "virtual_Square::~virtual_Square()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN14virtual_SquareD2Ev",
+      "demangled": "virtual_Square::~virtual_Square()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN23redherrings_UninstShape8describeEv",
+      "demangled": "redherrings_UninstShape::describe()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN5MixinC2Ev",
+      "demangled": "Mixin::Mixin()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN5MixinD0Ev",
+      "demangled": "Mixin::~Mixin()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN5MixinD2Ev",
+      "demangled": "Mixin::~Mixin()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN5ShapeC2Ev",
+      "demangled": "Shape::Shape()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN5ShapeD0Ev",
+      "demangled": "Shape::~Shape()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN5ShapeD2Ev",
+      "demangled": "Shape::~Shape()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN7CovBaseC2Ev",
+      "demangled": "CovBase::CovBase()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN7CovBaseD0Ev",
+      "demangled": "CovBase::~CovBase()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN7CovBaseD2Ev",
+      "demangled": "CovBase::~CovBase()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN8CoroTask12promise_type11return_voidEv",
+      "demangled": "CoroTask::promise_type::return_void()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN8CoroTask12promise_type13final_suspendEv",
+      "demangled": "CoroTask::promise_type::final_suspend()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN8CoroTask12promise_type15initial_suspendEv",
+      "demangled": "CoroTask::promise_type::initial_suspend()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN8CoroTask12promise_type17get_return_objectEv",
+      "demangled": "CoroTask::promise_type::get_return_object()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN8CoroTaskD2Ev",
+      "demangled": "CoroTask::~CoroTask()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN8ExcGuardD2Ev",
+      "demangled": "ExcGuard::~ExcGuard()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN9PmfHolder13pmf_virtual_aEi",
+      "demangled": "PmfHolder::pmf_virtual_a(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN9PmfHolder13pmf_virtual_bEi",
+      "demangled": "PmfHolder::pmf_virtual_b(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN9PmfHolder18pmf_nonvirtual_decEi",
+      "demangled": "PmfHolder::pmf_nonvirtual_dec(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN9PmfHolder18pmf_nonvirtual_incEi",
+      "demangled": "PmfHolder::pmf_nonvirtual_inc(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN9PmfHolderC2Ev",
+      "demangled": "PmfHolder::PmfHolder()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZN9PmfHolderD0Ev",
+      "demangled": "PmfHolder::~PmfHolder()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZN9PmfHolderD2Ev",
+      "demangled": "PmfHolder::~PmfHolder()",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt14_Function_base8_M_emptyEv",
+      "demangled": "std::_Function_base::_M_empty() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt7__n486114suspend_always11await_readyEv",
+      "demangled": "std::__n4861::suspend_always::await_ready() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt7__n486114suspend_always12await_resumeEv",
+      "demangled": "std::__n4861::suspend_always::await_resume() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt7__n486114suspend_always13await_suspendENS_16coroutine_handleIvEE",
+      "demangled": "std::__n4861::suspend_always::await_suspend(std::__n4861::coroutine_handle<void>) const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt7__n486116coroutine_handleIN8CoroTask12promise_typeEE4doneEv",
+      "demangled": "std::__n4861::coroutine_handle<CoroTask::promise_type>::done() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt7__n486116coroutine_handleIN8CoroTask12promise_typeEE6resumeEv",
+      "demangled": "std::__n4861::coroutine_handle<CoroTask::promise_type>::resume() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt7__n486116coroutine_handleIN8CoroTask12promise_typeEE7addressEv",
+      "demangled": "std::__n4861::coroutine_handle<CoroTask::promise_type>::address() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt7__n486116coroutine_handleIN8CoroTask12promise_typeEE7destroyEv",
+      "demangled": "std::__n4861::coroutine_handle<CoroTask::promise_type>::destroy() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt7__n486116coroutine_handleIN8CoroTask12promise_typeEEcvNS0_IvEEEv",
+      "demangled": "std::__n4861::coroutine_handle<CoroTask::promise_type>::operator std::__n4861::coroutine_handle<void>() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt7__n486116coroutine_handleIN8CoroTask12promise_typeEEcvbEv",
+      "demangled": "std::__n4861::coroutine_handle<CoroTask::promise_type>::operator bool() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt8functionIFiiEEclEi",
+      "demangled": "std::function<int (int)>::operator()(int) const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt9_Any_data9_M_accessEv",
+      "demangled": "std::_Any_data::_M_access() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt9_Any_data9_M_accessIPFiiEEERKT_v",
+      "demangled": "int (* const&std::_Any_data::_M_access<int (*)(int)>())(int) const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNKSt9_Any_data9_M_accessIZ22LLVMFuzzerTestOneInputE3$_0EERKT_v",
+      "demangled": "LLVMFuzzerTestOneInput::$_0 const& std::_Any_data::_M_access<LLVMFuzzerTestOneInput::$_0>() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt10_Head_baseILm0ERKiLb0EE7_M_headERS2_",
+      "demangled": "std::_Head_base<0ul, int const&, false>::_M_head(std::_Head_base<0ul, int const&, false>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt10_Head_baseILm0ERKiLb0EEC2ES1_",
+      "demangled": "std::_Head_base<0ul, int const&, false>::_Head_base(int const&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt10_Head_baseILm0ESt12_PlaceholderILi1EELb1EE7_M_headERS2_",
+      "demangled": "std::_Head_base<0ul, std::_Placeholder<1>, true>::_M_head(std::_Head_base<0ul, std::_Placeholder<1>, true>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt10_Head_baseILm0ESt12_PlaceholderILi1EELb1EEC2ERKS1_",
+      "demangled": "std::_Head_base<0ul, std::_Placeholder<1>, true>::_Head_base(std::_Placeholder<1> const&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt10_Head_baseILm1EiLb0EE7_M_headERS0_",
+      "demangled": "std::_Head_base<1ul, int, false>::_M_head(std::_Head_base<1ul, int, false>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt10_Head_baseILm1EiLb0EEC2IiEEOT_",
+      "demangled": "std::_Head_base<1ul, int, false>::_Head_base<int>(int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt11_Tuple_implILm0EJRKiEE7_M_headERS2_",
+      "demangled": "std::_Tuple_impl<0ul, int const&>::_M_head(std::_Tuple_impl<0ul, int const&>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt11_Tuple_implILm0EJRKiEEC2ES1_",
+      "demangled": "std::_Tuple_impl<0ul, int const&>::_Tuple_impl(int const&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt11_Tuple_implILm0EJSt12_PlaceholderILi1EEiEE7_M_headERS2_",
+      "demangled": "std::_Tuple_impl<0ul, std::_Placeholder<1>, int>::_M_head(std::_Tuple_impl<0ul, std::_Placeholder<1>, int>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt11_Tuple_implILm0EJSt12_PlaceholderILi1EEiEEC2IRKS1_JiEvEEOT_DpOT0_",
+      "demangled": "std::_Tuple_impl<0ul, std::_Placeholder<1>, int>::_Tuple_impl<std::_Placeholder<1> const&, int, void>(std::_Placeholder<1> const&, int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt11_Tuple_implILm1EJiEE7_M_headERS0_",
+      "demangled": "std::_Tuple_impl<1ul, int>::_M_head(std::_Tuple_impl<1ul, int>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt11_Tuple_implILm1EJiEEC2IiEEOT_",
+      "demangled": "std::_Tuple_impl<1ul, int>::_Tuple_impl<int>(int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIPFiiEE10_M_destroyERSt9_Any_dataSt17integral_constantIbLb1EE",
+      "demangled": "std::_Function_base::_Base_manager<int (*)(int)>::_M_destroy(std::_Any_data&, std::integral_constant<bool, true>)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIPFiiEE10_M_managerERSt9_Any_dataRKS4_St18_Manager_operation",
+      "demangled": "std::_Function_base::_Base_manager<int (*)(int)>::_M_manager(std::_Any_data&, std::_Any_data const&, std::_Manager_operation)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIPFiiEE14_M_get_pointerERKSt9_Any_data",
+      "demangled": "std::_Function_base::_Base_manager<int (*)(int)>::_M_get_pointer(std::_Any_data const&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIPFiiEE15_M_init_functorIRKS2_EEvRSt9_Any_dataOT_",
+      "demangled": "void std::_Function_base::_Base_manager<int (*)(int)>::_M_init_functor<int (* const&)(int)>(std::_Any_data&, int (* const&)(int))",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIPFiiEE15_M_init_functorIRS1_EEvRSt9_Any_dataOT_",
+      "demangled": "void std::_Function_base::_Base_manager<int (*)(int)>::_M_init_functor<int (&)(int)>(std::_Any_data&, int (&)(int))",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIPFiiEE21_M_not_empty_functionIS1_EEbPT_",
+      "demangled": "bool std::_Function_base::_Base_manager<int (*)(int)>::_M_not_empty_function<int (int)>(int (*)(int))",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIPFiiEE9_M_createIRKS2_EEvRSt9_Any_dataOT_St17integral_constantIbLb1EE",
+      "demangled": "void std::_Function_base::_Base_manager<int (*)(int)>::_M_create<int (* const&)(int)>(std::_Any_data&, int (* const&)(int), std::integral_constant<bool, true>)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIPFiiEE9_M_createIRS1_EEvRSt9_Any_dataOT_St17integral_constantIbLb1EE",
+      "demangled": "void std::_Function_base::_Base_manager<int (*)(int)>::_M_create<int (&)(int)>(std::_Any_data&, int (&)(int), std::integral_constant<bool, true>)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIZ22LLVMFuzzerTestOneInputE3$_0E10_M_destroyERSt9_Any_dataSt17integral_constantIbLb1EE",
+      "demangled": "std::_Function_base::_Base_manager<LLVMFuzzerTestOneInput::$_0>::_M_destroy(std::_Any_data&, std::integral_constant<bool, true>)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIZ22LLVMFuzzerTestOneInputE3$_0E10_M_managerERSt9_Any_dataRKS3_St18_Manager_operation",
+      "demangled": "std::_Function_base::_Base_manager<LLVMFuzzerTestOneInput::$_0>::_M_manager(std::_Any_data&, std::_Any_data const&, std::_Manager_operation)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIZ22LLVMFuzzerTestOneInputE3$_0E14_M_get_pointerERKSt9_Any_data",
+      "demangled": "std::_Function_base::_Base_manager<LLVMFuzzerTestOneInput::$_0>::_M_get_pointer(std::_Any_data const&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIZ22LLVMFuzzerTestOneInputE3$_0E15_M_init_functorIRKS1_EEvRSt9_Any_dataOT_",
+      "demangled": "void std::_Function_base::_Base_manager<LLVMFuzzerTestOneInput::$_0>::_M_init_functor<LLVMFuzzerTestOneInput::$_0 const&>(std::_Any_data&, LLVMFuzzerTestOneInput::$_0 const&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIZ22LLVMFuzzerTestOneInputE3$_0E15_M_init_functorIRS1_EEvRSt9_Any_dataOT_",
+      "demangled": "void std::_Function_base::_Base_manager<LLVMFuzzerTestOneInput::$_0>::_M_init_functor<LLVMFuzzerTestOneInput::$_0&>(std::_Any_data&, LLVMFuzzerTestOneInput::$_0&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIZ22LLVMFuzzerTestOneInputE3$_0E21_M_not_empty_functionIS1_EEbRKT_",
+      "demangled": "bool std::_Function_base::_Base_manager<LLVMFuzzerTestOneInput::$_0>::_M_not_empty_function<LLVMFuzzerTestOneInput::$_0>(LLVMFuzzerTestOneInput::$_0 const&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIZ22LLVMFuzzerTestOneInputE3$_0E9_M_createIRKS1_EEvRSt9_Any_dataOT_St17integral_constantIbLb1EE",
+      "demangled": "void std::_Function_base::_Base_manager<LLVMFuzzerTestOneInput::$_0>::_M_create<LLVMFuzzerTestOneInput::$_0 const&>(std::_Any_data&, LLVMFuzzerTestOneInput::$_0 const&, std::integral_constant<bool, true>)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_base13_Base_managerIZ22LLVMFuzzerTestOneInputE3$_0E9_M_createIRS1_EEvRSt9_Any_dataOT_St17integral_constantIbLb1EE",
+      "demangled": "void std::_Function_base::_Base_manager<LLVMFuzzerTestOneInput::$_0>::_M_create<LLVMFuzzerTestOneInput::$_0&>(std::_Any_data&, LLVMFuzzerTestOneInput::$_0&, std::integral_constant<bool, true>)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_baseC2Ev",
+      "demangled": "std::_Function_base::_Function_base()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt14_Function_baseD2Ev",
+      "demangled": "std::_Function_base::~_Function_base()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt17_Function_handlerIFiiEPS0_E10_M_managerERSt9_Any_dataRKS3_St18_Manager_operation",
+      "demangled": "std::_Function_handler<int (int), int (*)(int)>::_M_manager(std::_Any_data&, std::_Any_data const&, std::_Manager_operation)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZNSt17_Function_handlerIFiiEPS0_E9_M_invokeERKSt9_Any_dataOi",
+      "demangled": "std::_Function_handler<int (int), int (*)(int)>::_M_invoke(std::_Any_data const&, int&&)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZNSt17_Function_handlerIFiiEZ22LLVMFuzzerTestOneInputE3$_0E10_M_managerERSt9_Any_dataRKS3_St18_Manager_operation",
+      "demangled": "std::_Function_handler<int (int), LLVMFuzzerTestOneInput::$_0>::_M_manager(std::_Any_data&, std::_Any_data const&, std::_Manager_operation)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZNSt17_Function_handlerIFiiEZ22LLVMFuzzerTestOneInputE3$_0E9_M_invokeERKSt9_Any_dataOi",
+      "demangled": "std::_Function_handler<int (int), LLVMFuzzerTestOneInput::$_0>::_M_invoke(std::_Any_data const&, int&&)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZNSt5_BindIFPFiiiESt12_PlaceholderILi1EEiEE6__callIiJRKiEJLm0ELm1EEEET_OSt5tupleIJDpT0_EESt12_Index_tupleIJXspT1_EEE",
+      "demangled": "int std::_Bind<int (* (std::_Placeholder<1>, int))(int, int)>::__call<int, int const&, 0ul, 1ul>(std::tuple<int const&>&&, std::_Index_tuple<0ul, 1ul>)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt5_BindIFPFiiiESt12_PlaceholderILi1EEiEEC2IJRKS3_iEEEOS1_DpOT_",
+      "demangled": "std::_Bind<int (* (std::_Placeholder<1>, int))(int, int)>::_Bind<std::_Placeholder<1> const&, int>(int (*&&)(int, int), std::_Placeholder<1> const&, int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt5_BindIFPFiiiESt12_PlaceholderILi1EEiEEclIJRKiEiEET0_DpOT_",
+      "demangled": "int std::_Bind<int (* (std::_Placeholder<1>, int))(int, int)>::operator()<int const&, int>(int const&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt5tupleIJRKiEEC2IvEES1_Qcl15__constructibleIDpRKT_EE",
+      "demangled": "std::tuple<int const&>::tuple<void>(int const&) requires __constructible<T const&...>()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt5tupleIJSt12_PlaceholderILi1EEiEEC2IJRKS1_iEQaaaacl27__disambiguating_constraintIDpTL0__EEcl15__constructibleIS7_EEntcl9__danglesIS7_EEEEDpOT_",
+      "demangled": "std::tuple<std::_Placeholder<1>, int>::tuple<std::_Placeholder<1> const&, int>(std::_Placeholder<1> const&, int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt7__n486116coroutine_handleIN8CoroTask12promise_typeEE12from_addressEPv",
+      "demangled": "std::__n4861::coroutine_handle<CoroTask::promise_type>::from_address(void*)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt7__n486116coroutine_handleIN8CoroTask12promise_typeEE12from_promiseERS2_",
+      "demangled": "std::__n4861::coroutine_handle<CoroTask::promise_type>::from_promise(CoroTask::promise_type&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt7__n486116coroutine_handleIN8CoroTask12promise_typeEEC2Ev",
+      "demangled": "std::__n4861::coroutine_handle<CoroTask::promise_type>::coroutine_handle()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt7__n486116coroutine_handleIvE12from_addressEPv",
+      "demangled": "std::__n4861::coroutine_handle<void>::from_address(void*)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt7__n486116coroutine_handleIvEC2Ev",
+      "demangled": "std::__n4861::coroutine_handle<void>::coroutine_handle()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt8functionIFiiEEC2IRS0_vEEOT_",
+      "demangled": "std::function<int (int)>::function<int (&)(int), void>(int (&)(int))",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt8functionIFiiEEC2IRZ22LLVMFuzzerTestOneInputE3$_0vEEOT_",
+      "demangled": "std::function<int (int)>::function<LLVMFuzzerTestOneInput::$_0&, void>(LLVMFuzzerTestOneInput::$_0&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt8functionIFiiEED2Ev",
+      "demangled": "std::function<int (int)>::~function()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt9_Any_data9_M_accessEv",
+      "demangled": "std::_Any_data::_M_access()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt9_Any_data9_M_accessIPFiiEEERT_v",
+      "demangled": "int (*&std::_Any_data::_M_access<int (*)(int)>())(int)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt9_Any_data9_M_accessIPKSt9type_infoEERT_v",
+      "demangled": "std::type_info const*& std::_Any_data::_M_access<std::type_info const*>()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt9_Any_data9_M_accessIPPFiiEEERT_v",
+      "demangled": "int (**&std::_Any_data::_M_access<int (**)(int)>())(int)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt9_Any_data9_M_accessIPZ22LLVMFuzzerTestOneInputE3$_0EERT_v",
+      "demangled": "LLVMFuzzerTestOneInput::$_0*& std::_Any_data::_M_access<LLVMFuzzerTestOneInput::$_0*>()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNSt9_Any_data9_M_accessIZ22LLVMFuzzerTestOneInputE3$_0EERT_v",
+      "demangled": "LLVMFuzzerTestOneInput::$_0& std::_Any_data::_M_access<LLVMFuzzerTestOneInput::$_0>()",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNVKSt3_MuISt12_PlaceholderILi1EELb0ELb1EEclISt5tupleIJRKiEEEEONSt9enable_ifIXltLm0Esr10tuple_sizeIT_EE5valueESt13tuple_elementILm0ES9_EE4type4typeERVKS1_RS9_",
+      "demangled": "std::enable_if<0ul < tuple_size<std::tuple<int const&>>::value, std::tuple_element<0ul, std::tuple<int const&>>>::type::type&& std::_Mu<std::_Placeholder<1>, false, true>::operator()<std::tuple<int const&>>(std::_Placeholder<1> const volatile&, std::tuple<int const&>&) const volatile",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZNVKSt3_MuIiLb0ELb0EEclIRiSt5tupleIJRKiEEEEOT_S8_RT0_",
+      "demangled": "int& std::_Mu<int, false, false>::operator()<int&, std::tuple<int const&>>(int&, std::tuple<int const&>&) const volatile",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt10__invoke_rIiRPFiiEJiEENSt9enable_ifIX16is_invocable_r_vIT_T0_DpT1_EES4_E4typeEOS5_DpOS6_",
+      "demangled": "std::enable_if<is_invocable_r_v<int, int (*&)(int), int>, int>::type std::__invoke_r<int, int (*&)(int), int>(int (*&)(int), int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt10__invoke_rIiRZ22LLVMFuzzerTestOneInputE3$_0JiEENSt9enable_ifIX16is_invocable_r_vIT_T0_DpT1_EES3_E4typeEOS4_DpOS5_",
+      "demangled": "std::enable_if<is_invocable_r_v<int, LLVMFuzzerTestOneInput::$_0&, int>, int>::type std::__invoke_r<int, LLVMFuzzerTestOneInput::$_0&, int>(LLVMFuzzerTestOneInput::$_0&, int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt12__get_helperILm0ERKiJEERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE",
+      "demangled": "int const& std::__get_helper<0ul, int const&>(std::_Tuple_impl<0ul, int const&>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt12__get_helperILm0ESt12_PlaceholderILi1EEJiEERT0_RSt11_Tuple_implIXT_EJS2_DpT1_EE",
+      "demangled": "std::_Placeholder<1>& std::__get_helper<0ul, std::_Placeholder<1>, int>(std::_Tuple_impl<0ul, std::_Placeholder<1>, int>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt12__get_helperILm1EiJEERT0_RSt11_Tuple_implIXT_EJS0_DpT1_EE",
+      "demangled": "int& std::__get_helper<1ul, int>(std::_Tuple_impl<1ul, int>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt13__invoke_implIiRPFiiEJiEET_St14__invoke_otherOT0_DpOT1_",
+      "demangled": "int std::__invoke_impl<int, int (*&)(int), int>(std::__invoke_other, int (*&)(int), int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt13__invoke_implIiRPFiiiEJRKiRiEET_St14__invoke_otherOT0_DpOT1_",
+      "demangled": "int std::__invoke_impl<int, int (*&)(int, int), int const&, int&>(std::__invoke_other, int (*&)(int, int), int const&, int&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt13__invoke_implIiRZ22LLVMFuzzerTestOneInputE3$_0JiEET_St14__invoke_otherOT0_DpOT1_",
+      "demangled": "int std::__invoke_impl<int, LLVMFuzzerTestOneInput::$_0&, int>(std::__invoke_other, LLVMFuzzerTestOneInput::$_0&, int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt16forward_as_tupleIJRKiEESt5tupleIJDpOT_EES5_",
+      "demangled": "std::tuple<int const&> std::forward_as_tuple<int const&>(int const&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt3getILm0EJRKiEEONSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeEOS6_",
+      "demangled": "std::tuple_element<0ul, std::tuple<int const&>>::type&& std::get<0ul, int const&>(std::tuple<int const&>&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt3getILm0EJSt12_PlaceholderILi1EEiEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS6_",
+      "demangled": "std::tuple_element<0ul, std::tuple<std::_Placeholder<1>, int>>::type& std::get<0ul, std::_Placeholder<1>, int>(std::tuple<std::_Placeholder<1>, int>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt3getILm1EJSt12_PlaceholderILi1EEiEERNSt13tuple_elementIXT_ESt5tupleIJDpT0_EEE4typeERS6_",
+      "demangled": "std::tuple_element<1ul, std::tuple<std::_Placeholder<1>, int>>::type& std::get<1ul, std::_Placeholder<1>, int>(std::tuple<std::_Placeholder<1>, int>&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt4bindIRFiiiEJRKSt12_PlaceholderILi1EEiEENSt12_Bind_helperIXsr15__is_socketlikeIT_EE5valueES7_JDpT0_EE4typeEOS7_DpOS8_",
+      "demangled": "std::_Bind_helper<__is_socketlike<int (&)(int, int)>::value, int (&)(int, int), std::_Placeholder<1> const&, int>::type std::bind<int (&)(int, int), std::_Placeholder<1> const&, int>(int (&)(int, int), std::_Placeholder<1> const&, int&&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZSt8__invokeIRPFiiiEJRKiRiEENSt15__invoke_resultIT_JDpT0_EE4typeEOS7_DpOS8_",
+      "demangled": "std::__invoke_result<int (*&)(int, int), int const&, int&>::type std::__invoke<int (*&)(int, int), int const&, int&>(int (*&)(int, int), int const&, int&)",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZTchn16_h16_N10CovDerived9cov_cloneEv",
+      "demangled": "covariant return thunk to CovDerived::cov_clone()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZThn16_N10CovDerivedD0Ev",
+      "demangled": "non-virtual thunk to CovDerived::~CovDerived()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZThn16_N10CovDerivedD1Ev",
+      "demangled": "non-virtual thunk to CovDerived::~CovDerived()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZThn16_N12ThunkDerived6from_bEv",
+      "demangled": "non-virtual thunk to ThunkDerived::from_b()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZThn16_N12ThunkDerivedD0Ev",
+      "demangled": "non-virtual thunk to ThunkDerived::~ThunkDerived()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZThn16_N12ThunkDerivedD1Ev",
+      "demangled": "non-virtual thunk to ThunkDerived::~ThunkDerived()",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZZ22LLVMFuzzerTestOneInputEN3$_18__invokeEi",
+      "demangled": "LLVMFuzzerTestOneInput::$_1::__invoke(int)",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "_ZZ22LLVMFuzzerTestOneInputENK3$_0clEi",
+      "demangled": "LLVMFuzzerTestOneInput::$_0::operator()(int) const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZZ22LLVMFuzzerTestOneInputENK3$_1clEi",
+      "demangled": "LLVMFuzzerTestOneInput::$_1::operator()(int) const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "_ZZ22LLVMFuzzerTestOneInputENK3$_1cvPFiiEEv",
+      "demangled": "LLVMFuzzerTestOneInput::$_1::operator int (*)(int)() const",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "__clang_call_terminate",
+      "demangled": "__clang_call_terminate",
+      "file": null,
+      "line": null,
+      "via": "direct",
+      "indirect_only": false
+    },
+    {
+      "mangled": "dlsym_target_fn",
+      "demangled": "dlsym_target_fn",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "ifunc_impl_default",
+      "demangled": "ifunc_impl_default",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "signal_handler_fn",
+      "demangled": "signal_handler_fn",
+      "file": null,
+      "line": null,
+      "via": "indirect",
+      "indirect_only": true
+    },
+    {
+      "mangled": "weak_interposable_fn",
+      "demangled": "weak_interposable_fn",
+      "file": null,
+      "line": null,
+      "via": "both",
+      "indirect_only": false
+    }
+  ],
+  "unreachable_defined": [
+    {
+      "mangled": "_GLOBAL__sub_I_main.cpp",
+      "demangled": "_GLOBAL__sub_I_main.cpp",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "_Z15unreachable_midv",
+      "demangled": "unreachable_mid()",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "_Z16unreachable_leafv",
+      "demangled": "unreachable_leaf()",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "_Z16unreachable_rootv",
+      "demangled": "unreachable_root()",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "_Z22unreachable_calls_realv",
+      "demangled": "unreachable_calls_real()",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "_ZL18staticinit_ctor_fnv",
+      "demangled": "staticinit_ctor_fn()",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "_ZL20staticinit_attr_ctorv",
+      "demangled": "staticinit_attr_ctor()",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "_ZN15StaticInitProbeC2Ev",
+      "demangled": "StaticInitProbe::StaticInitProbe()",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "_ZN23redherrings_UninstShape4areaEv",
+      "demangled": "redherrings_UninstShape::area()",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "_ZN7CovBase9cov_cloneEv",
+      "demangled": "CovBase::cov_clone()",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "__cxx_global_var_init",
+      "demangled": "__cxx_global_var_init",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "__cxx_global_var_init.1",
+      "demangled": "__cxx_global_var_init.1",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "atexit_handler_fn",
+      "demangled": "atexit_handler_fn",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "callback_qsort_cmp",
+      "demangled": "callback_qsort_cmp",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "ifunc_target_resolver",
+      "demangled": "ifunc_target_resolver",
+      "file": null,
+      "line": null
+    },
+    {
+      "mangled": "pthread_start_fn",
+      "demangled": "pthread_start_fn",
+      "file": null,
+      "line": null
+    }
+  ]
+}

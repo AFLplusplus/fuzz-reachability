@@ -1,5 +1,7 @@
 #include "CallGraph.h"
 #include "IndirectResolver.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
@@ -62,6 +64,72 @@ void buildIndirectEdges(Module &m, CallGraph &g, IndirectResolver &r) {
         if (isIndirect(*cb))
           for (Function *callee : r.resolve(*cb))
             g.addEdge(&f, callee, EdgeKind::Indirect);
+  }
+}
+
+static void collectEscapedFunctions(Value *v,
+                                    SmallPtrSetImpl<Function *> &out) {
+  if (!v)
+    return;
+  v = v->stripPointerCasts();
+  if (auto *f = dyn_cast<Function>(v)) {
+    out.insert(f);
+    return;
+  }
+  if (auto *ga = dyn_cast<GlobalAlias>(v)) {
+    collectEscapedFunctions(ga->getAliasee(), out);
+    return;
+  }
+  if (auto *ce = dyn_cast<ConstantExpr>(v)) {
+    for (Use &u : ce->operands())
+      collectEscapedFunctions(u.get(), out);
+    return;
+  }
+  if (auto *ca = dyn_cast<ConstantAggregate>(v)) {
+    for (Use &u : ca->operands())
+      collectEscapedFunctions(u.get(), out);
+    return;
+  }
+}
+
+static bool callsAnalyzableCallee(CallBase &cb) {
+  if (cb.isInlineAsm())
+    return false;
+  Function *callee = cb.getCalledFunction();
+  if (!callee) {
+    Value *v = cb.getCalledOperand()->stripPointerCasts();
+    callee = dyn_cast<Function>(v);
+    if (!callee)
+      if (auto *ga = dyn_cast<GlobalAlias>(v))
+        callee = dyn_cast<Function>(ga->getAliasee()->stripPointerCasts());
+  }
+  return callee && !callee->isDeclaration();
+}
+
+void buildEscapeEdges(Module &m, CallGraph &g) {
+  SmallPtrSet<Function *, 4> fns;
+  auto addAll = [&](Function *from) {
+    for (Function *callee : fns)
+      g.addEdge(from, callee, EdgeKind::Indirect);
+  };
+  for (Function &f : m) {
+    if (f.isDeclaration())
+      continue;
+    for (Instruction &i : instructions(f)) {
+      if (auto *cb = dyn_cast<CallBase>(&i)) {
+        if (callsAnalyzableCallee(*cb))
+          continue;
+        for (const Use &argU : cb->args()) {
+          fns.clear();
+          collectEscapedFunctions(argU.get(), fns);
+          addAll(&f);
+        }
+      } else if (auto *ret = dyn_cast<ReturnInst>(&i)) {
+        fns.clear();
+        collectEscapedFunctions(ret->getReturnValue(), fns);
+        addAll(&f);
+      }
+    }
   }
 }
 

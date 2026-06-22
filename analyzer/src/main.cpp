@@ -201,6 +201,7 @@ int main(int argc, char **argv) {
     resolver = std::make_unique<reach::TypeBasedResolver>();
   }
   reach::buildIndirectEdges(*mod, graph, *resolver);
+  reach::buildEscapeEdges(*mod, graph);
 
   if (DumpEdges) {
     for (auto &kv : graph.edges())

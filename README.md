@@ -44,8 +44,11 @@ Two components, joined by merged bitcode:
   analyzer.
 - **Analyzer** (C++ linking LLVM) — loads the merged `.bc`, builds the call
   graph, resolves indirect calls (C function pointers, C++ virtual dispatch, Rust
-  `dyn`/`fn` pointers), computes reachability from the entry, and emits a JSON
-  report plus the two sancov lists. It demangles C++ (Itanium) and Rust names.
+  `dyn`/`fn` pointers), treats function pointers that escape to code outside the
+  bitcode (handed to an external/indirect call or returned — e.g. qsort/bsearch
+  comparators, atexit/pthread/`std::call_once` callbacks) as reachable, computes
+  reachability from the entry, and emits a JSON report plus the two sancov lists.
+  It demangles C++ (Itanium) and Rust names.
 
 ## Prerequisites
 
@@ -221,7 +224,7 @@ entry point(s).
 | `--lang TARGET` | *(required)* | Target type (see the table below): sets how bitcode is acquired and the default entry. |
 | `--out FILE` | *(required)* | Path for the JSON report. The two sancov lists default to `reached.txt` / `not_reached.txt` beside it. |
 | `--entry NAME` | per `--lang` | Entry to root reachability at. **Repeatable**; overrides the target default. See [Entry resolution](#entry-resolution). |
-| `--backend {type-based,svf}` | `type-based` | Indirect-call resolution backend. `svf` needs an SVF-enabled analyzer (`make build-svf`). |
+| `--backend {type-based,svf}` | `type-based` | Indirect-call resolution backend. `svf` needs an SVF-enabled analyzer: run `make build-svf` and `--backend=svf` picks up `analyzer/build-svf/reachability-analyzer` automatically (override with `$REACHABILITY_ANALYZER_SVF`). |
 | `--artifact PATH` | auto-detect | C/C++ only: the built binary/object/archive to extract bitcode from (relative to `--project`). Auto-detected otherwise, preferring an executable over a shared library, archive, then object. |
 | `--build-cmd CMD` | auto-detect | C/C++ only: shell build command, run with `gllvm` injected. E.g. `"cmake -S . -B build && cmake --build build"`. Auto-detected from the project files otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`). |
 | `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree (best-effort; can fail to link if two archives define the same symbol). |
@@ -312,6 +315,10 @@ rather than degrading silently. Build SVF with:
 ```bash
 make build-svf      # builds the SVF dependency + an SVF-enabled analyzer (pins LLVM 21)
 ```
+
+This writes `analyzer/build-svf/reachability-analyzer`; `--backend=svf` finds it
+automatically (no env var needed). Setting `$REACHABILITY_ANALYZER` selects the
+type-based binary only — the SVF binary is selected via `$REACHABILITY_ANALYZER_SVF`.
 
 See [`docs/llvm-support.md`](docs/llvm-support.md) for the compatibility matrix
 and the full fallback plan.

@@ -31,12 +31,20 @@ TARGETS = {
 }
 
 
-def default_analyzer():
-    env = os.environ.get("REACHABILITY_ANALYZER")
-    if env:
-        return env
+def default_analyzer(backend="type-based"):
     repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    return os.path.join(repo, "analyzer", "build", "reachability-analyzer")
+    if backend == "svf":
+        path = os.environ.get("REACHABILITY_ANALYZER_SVF") or os.path.join(
+            repo, "analyzer", "build-svf", "reachability-analyzer")
+        hint = ("build it with `make build-svf`, or set $REACHABILITY_ANALYZER_SVF "
+                "to an SVF-enabled analyzer")
+    else:
+        path = os.environ.get("REACHABILITY_ANALYZER") or os.path.join(
+            repo, "analyzer", "build", "reachability-analyzer")
+        hint = "build it with `make build`, or set $REACHABILITY_ANALYZER"
+    if not os.path.isfile(path):
+        raise toolchain.ToolchainError(f"analyzer binary not found: {path}\n{hint}")
+    return path
 
 
 def _acquire(args, tc, verbose=False):
@@ -72,7 +80,7 @@ def _acquire(args, tc, verbose=False):
 
 def cmd_run(args):
     v = args.verbose
-    tc = toolchain.check_coherence(default_analyzer())
+    tc = toolchain.check_coherence(default_analyzer(args.backend))
     if v:
         print(f"==> [1/4] toolchain: LLVM {tc.llvm_major} (rustc LLVM {tc.rustc_major})")
         print(f"  clang     {tc.clang}")

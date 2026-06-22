@@ -32,4 +32,6 @@ void buildDirectEdges(llvm::Module &m, CallGraph &g);
 // Add Indirect edges for every indirect CallBase, using the resolver.
 void buildIndirectEdges(llvm::Module &m, CallGraph &g, IndirectResolver &r);
 
+void buildEscapeEdges(llvm::Module &m, CallGraph &g);
+
 } // namespace reach

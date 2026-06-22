@@ -5,9 +5,50 @@ import shutil
 import pytest
 
 from conftest import FIXTURES
-from reachability import cli
+from reachability import cli, toolchain
 
 HAVE_GLLVM = shutil.which("gclang") is not None
+
+
+def test_default_analyzer_default_paths(monkeypatch):
+    monkeypatch.delenv("REACHABILITY_ANALYZER", raising=False)
+    monkeypatch.delenv("REACHABILITY_ANALYZER_SVF", raising=False)
+    monkeypatch.setattr(os.path, "isfile", lambda p: True)
+    typed = os.path.join("analyzer", "build", "reachability-analyzer")
+    svf = os.path.join("analyzer", "build-svf", "reachability-analyzer")
+    assert cli.default_analyzer().endswith(typed)
+    assert cli.default_analyzer("type-based").endswith(typed)
+    assert cli.default_analyzer("svf").endswith(svf)
+
+
+def test_default_analyzer_env_overrides(monkeypatch, tmp_path):
+    typed = tmp_path / "typed"; typed.write_text("")
+    svf = tmp_path / "svf"; svf.write_text("")
+    monkeypatch.setenv("REACHABILITY_ANALYZER", str(typed))
+    monkeypatch.setenv("REACHABILITY_ANALYZER_SVF", str(svf))
+    assert cli.default_analyzer() == str(typed)
+    assert cli.default_analyzer("type-based") == str(typed)
+    assert cli.default_analyzer("svf") == str(svf)
+
+
+def test_default_analyzer_svf_ignores_type_based_env(monkeypatch, tmp_path):
+    typed = tmp_path / "typed"; typed.write_text("")
+    monkeypatch.setenv("REACHABILITY_ANALYZER", str(typed))
+    monkeypatch.delenv("REACHABILITY_ANALYZER_SVF", raising=False)
+    monkeypatch.setattr(os.path, "isfile", lambda p: True)
+    assert cli.default_analyzer("svf").endswith(
+        os.path.join("analyzer", "build-svf", "reachability-analyzer")
+    )
+
+
+def test_default_analyzer_missing_binary_errors(monkeypatch):
+    monkeypatch.setenv("REACHABILITY_ANALYZER", "/no/such/analyzer")
+    with pytest.raises(toolchain.ToolchainError):
+        cli.default_analyzer()
+    monkeypatch.setenv("REACHABILITY_ANALYZER_SVF", "/no/such/svf-analyzer")
+    with pytest.raises(toolchain.ToolchainError) as excinfo:
+        cli.default_analyzer("svf")
+    assert "build-svf" in str(excinfo.value)
 
 
 def test_target_entry_defaults():
