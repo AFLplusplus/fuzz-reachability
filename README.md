@@ -112,6 +112,8 @@ Full options: [Command-line reference](#command-line-reference).
 
 ## Examples
 
+Read about real-world target examples in [docs/EXAMPLES.md](docs/EXAMPLES.md)
+
 ### A C target
 
 `fixtures/c_direct` is a small C fuzz target. Its build and artifact are
@@ -352,7 +354,7 @@ driver/     Python driver (toolchain, acquire_*, link, analyze, cli)
 fixtures/   per-language test targets with expected reachable sets
 examples/   worked examples (cpp_cmake/)
 scripts/    setup.sh, test_matrix.sh, select_llvm.sh
-docs/        worked examples (EXAMPLES.md), LLVM support
+docs/       worked examples (EXAMPLES.md), LLVM support
 ```
 
 ## Limitations
