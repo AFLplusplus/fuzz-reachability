@@ -12,7 +12,6 @@ fixtures/**/build/
 fixtures/**/prog
 fixtures/**/merged.bc
 .venv/
-compile_commands.json
 not_reached.txt
 reached.txt
 test.json
