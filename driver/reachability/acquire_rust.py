@@ -1,6 +1,12 @@
 """Rust bitcode acquisition via rustc --emit=llvm-bc.
 
-With codegen-units=1, rustc emits one .bc per crate into target/<profile>/deps/.
+rustc emits bitcode into target/<profile>/deps/: one .bc per crate at
+codegen-units=1, or several (deps/<crate>-<hash>.<cgu>.rcgu.bc) when the build
+splits a crate across codegen units. Collection handles both. profile and
+codegen_units should mirror the fuzz binary's build: opt level governs generic
+sharing and codegen-units governs inlining, both of which decide which
+monomorphizations are emitted -- a mismatch yields a reachable set that does not
+line up with the instrumented binary.
 The final link step is expected to fail under --emit=llvm-bc; that is fine -- we
 only consume the .bc files, so collection proceeds past a link error. A genuine
 *compile* error (a crate or build script that fails to build) is fatal instead,
@@ -35,7 +41,7 @@ class AcquireError(RuntimeError):
 
 
 _HASH_RE = re.compile(r"-([0-9a-f]{16})\.")
-_BASE_RE = re.compile(r"-[0-9a-f]{16}\.bc$")
+_BASE_RE = re.compile(r"-[0-9a-f]{16}.*\.bc$")
 _COMPILE_ERROR_MARKERS = (
     "error[E",
     "error: failed to run custom build command",
@@ -46,15 +52,16 @@ _COMPILE_ERROR_MARKERS = (
 )
 
 
-def _emit_flags(build_std: bool):
-    flags = ["--emit=llvm-bc", "-Cembed-bitcode=yes", "-Ccodegen-units=1"]
+def _emit_flags(build_std: bool, codegen_units: int = 1):
+    flags = ["--emit=llvm-bc", "-Cembed-bitcode=yes",
+             f"-Ccodegen-units={codegen_units}"]
     if build_std:
         flags.append("-Zbuild-std")
     return flags
 
 
-def _rustflags(build_std: bool) -> str:
-    return " ".join(_emit_flags(build_std))
+def _rustflags(build_std: bool, codegen_units: int = 1) -> str:
+    return " ".join(_emit_flags(build_std, codegen_units))
 
 
 def _read_config_rustflags(path):
@@ -98,7 +105,7 @@ def _config_rustflags(project_dir):
     return []
 
 
-def _compose_rustflags(project_dir, build_std):
+def _compose_rustflags(project_dir, build_std, codegen_units=1):
     """The full rustc flag list: our emit flags plus whatever flags cargo would
     otherwise apply -- the caller's CARGO_ENCODED_RUSTFLAGS / RUSTFLAGS, or the
     project's config build.rustflags when the environment sets neither."""
@@ -110,14 +117,15 @@ def _compose_rustflags(project_dir, build_std):
         existing = shlex.split(env_rf)
     else:
         existing = _config_rustflags(project_dir)
-    return _emit_flags(build_std) + existing
+    return _emit_flags(build_std, codegen_units) + existing
 
 
-def _build_env(project_dir, build_std):
+def _build_env(project_dir, build_std, codegen_units=1):
     """Build environment with the composed flags in CARGO_ENCODED_RUSTFLAGS, which
     cargo honours verbatim and in preference to both RUSTFLAGS and config."""
     env = dict(os.environ)
-    env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(_compose_rustflags(project_dir, build_std))
+    env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
+        _compose_rustflags(project_dir, build_std, codegen_units))
     env.pop("RUSTFLAGS", None)
     return env
 
@@ -129,25 +137,31 @@ def _compile_errors(text):
             if any(s.startswith(m) for m in _COMPILE_ERROR_MARKERS)]
 
 
-def _bin_bc_path(msg, files):
-    """The .bc for a bin artifact, whose cargo message carries only the bare
+def _bin_bc_paths(msg, files):
+    """The .bc files for a bin artifact, whose cargo message carries only the bare
     executable path (target/<profile>/<name>, no build hash) -- so the hash-based
     collection below cannot match it and the harness body would be dropped. rustc
-    emits the unit's bitcode as deps/<name with '-' -> '_'>-<hash>.bc; pick the
-    newest match (a rebuild rewrites it, so newest is this build's), mirroring the
-    per-crate dedup fallback. Returns None for non-bin targets or when no
-    matching .bc exists."""
+    emits the unit's bitcode as deps/<name with '-' -> '_'>-<hash>.bc (or several
+    .<cgu>.rcgu.bc under codegen-units > 1); take every .bc of the newest build's
+    hash (a rebuild rewrites them, so newest is this build's). Returns [] for
+    non-bin targets or when no matching .bc exists."""
     kind = msg.get("target", {}).get("kind") or []
     if "bin" not in kind:
-        return None
+        return []
     name = msg.get("target", {}).get("name")
     if not name or not files:
-        return None
+        return []
     deps = os.path.join(os.path.dirname(files[0]), "deps")
     stem = name.replace("-", "_")
     cands = [p for p in glob.glob(os.path.join(deps, f"{stem}-*.bc"))
              if _BASE_RE.sub("", os.path.basename(p)) == stem]
-    return max(cands, key=os.path.getmtime) if cands else None
+    if not cands:
+        return []
+    newest = max(cands, key=os.path.getmtime)
+    m = _HASH_RE.search(os.path.basename(newest))
+    if not m:
+        return [newest]
+    return sorted(p for p in cands if f"-{m.group(1)}." in os.path.basename(p))
 
 
 def _build_bc_paths(stdout):
@@ -155,7 +169,7 @@ def _build_bc_paths(stdout):
     messages: a library unit carries the build hash in its output filenames, and
     the matching deps/*-<hash>.bc lives beside them. A bin unit carries only the
     bare executable path (no hash), so its bitcode is resolved by name via
-    _bin_bc_path. One .bc per built crate; stale .bc from other builds (different
+    _bin_bc_paths. One or more .bc per built crate; stale .bc from other builds (different
     or absent hash) are not included."""
     bcs = set()
     for line in stdout.splitlines():
@@ -175,12 +189,10 @@ def _build_bc_paths(stdout):
         for f in files:
             m = _HASH_RE.search(os.path.basename(f))
             if m:
-                bcs.update(glob.glob(os.path.join(os.path.dirname(f), f"*-{m.group(1)}.bc")))
+                bcs.update(glob.glob(os.path.join(os.path.dirname(f), f"*-{m.group(1)}*.bc")))
                 matched = True
         if not matched:
-            bc = _bin_bc_path(msg, files)
-            if bc:
-                bcs.add(bc)
+            bcs.update(_bin_bc_paths(msg, files))
     return sorted(bcs)
 
 
@@ -200,8 +212,11 @@ def _dedup_newest_per_crate(paths):
 
 
 def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
-                         verbose=False):
+                         codegen_units=1, verbose=False):
     """Build the Rust project and collect every .bc this build emitted.
+
+    profile / codegen_units should match the fuzz binary's build so the emitted
+    monomorphizations line up with the instrumented binary.
 
     verbose: echo the cargo command and pass its diagnostics through (the
     artifact stream on stdout must be captured to be parsed, so the build cannot
@@ -210,7 +225,7 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     Returns a list of .bc paths. Raises AcquireError on a compile failure or when
     no .bc were produced.
     """
-    env = _build_env(project_dir, build_std)
+    env = _build_env(project_dir, build_std, codegen_units)
     cmd = ["cargo", "build", "--message-format=json-render-diagnostics"]
     if profile == "release":
         cmd.append("--release")

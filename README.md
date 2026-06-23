@@ -238,6 +238,8 @@ entry point(s).
 | `--artifact PATH` | auto-detect | C/C++ only: the built binary/object/archive to extract bitcode from (relative to `--project`). Auto-detected otherwise, preferring an executable over a shared library, archive, then object. |
 | `--build-cmd CMD` | auto-detect | C/C++ only: shell build command, run with `gllvm` injected. E.g. `"cmake -S . -B build && cmake --build build"`. Auto-detected from the project files otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`). |
 | `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree, skipping any whose members another archive already covers and resolving residual overlaps at link time (`llvm-link --override`). |
+| `--profile {debug,release}` | `debug` | Rust only: cargo profile for the bitcode build. Match the fuzz binary's profile — opt level decides generic sharing, so a mismatch emits a different set of monomorphizations than the instrumented binary. |
+| `--codegen-units N` | `1` | Rust only: `-Ccodegen-units` for the bitcode build. Match the fuzz binary's value — it decides inlining, hence which functions are emitted as standalone symbols. |
 | `--build-std` | off | Rust only: build the standard library from source (`-Zbuild-std`) so std functions appear in the graph instead of as external declarations. |
 | `--dot FILE` | *(none)* | Also write the reachable subgraph as Graphviz DOT (indirect edges dashed/red). |
 | `--reached FILE` | beside `--out` | Path for the sancov **allowlist** of reachable functions. |
@@ -294,9 +296,9 @@ need to type a mangled symbol.
 - **`not_reached.txt`** — a SanitizerCoverage **ignorelist** of unreachable
   functions.
 
-Both lists use each function's **mangled** (LLVM symbol) name — what clang
-matches `fun:` against — so they cover C, C++, and Rust. Feed either to clang to
-instrument only reachable code:
+Both lists use each function's **mangled** (LLVM symbol) name — what clang and
+AFL++ match `fun:` against — so they cover C, C++, and Rust. Feed either to clang
+or AFL++ to instrument only reachable code:
 
 ```bash
 # instrument ONLY reachable functions:
@@ -309,6 +311,18 @@ clang -fsanitize-coverage=trace-pc-guard -fsanitize-coverage-ignorelist=not_reac
 > `fun:` entry match, so `reached.txt` opens with a `src:*` line. An ignorelist
 > has no such requirement, so `not_reached.txt` is pure `fun:` lines. (Verified
 > against clang in `driver/tests/test_covlists.py`.)
+
+> **Rust mangling disambiguator.** A Rust generic instance is mangled with a
+> trailing `17h<hash>` disambiguator whose value depends on the build (opt level,
+> codegen units, instantiating crate). The exact value differs between this
+> bitcode snapshot and the instrumented fuzz binary, so an exact-name entry would
+> miss. Each `fun:` entry therefore replaces that disambiguator with a `*` glob,
+> which both clang sancov and AFL++ honour, so an entry matches the instance in
+> any build. An ignorelist pattern that would also match a *reachable* instance
+> is dropped, so excluding unreachable code never excludes reachable code.
+> For best fidelity still build the snapshot with the same `--profile` and
+> `--codegen-units` as the fuzz binary, so the *set* of emitted monomorphizations
+> matches; the `*` only tolerates the disambiguator, not a different function set.
 
 ## Indirect-call resolution
 

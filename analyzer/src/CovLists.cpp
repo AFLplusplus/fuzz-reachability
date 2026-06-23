@@ -1,22 +1,40 @@
 #include "CovLists.h"
-#include <algorithm>
-#include <vector>
+#include <set>
+#include <string>
 
 using namespace llvm;
 
 namespace reach {
 
-// Mangled names of defined functions, partitioned by reachability and sorted.
-static std::vector<StringRef> definedNames(Module &m, const ReachResult &res,
-                                           bool reached) {
-  std::vector<StringRef> out;
+static std::string toPattern(StringRef name) {
+  const size_t tail = 20;
+  if (name.size() > tail && name.ends_with("E")) {
+    StringRef t = name.substr(name.size() - tail);
+    if (t.starts_with("17h")) {
+      bool hex = true;
+      for (size_t i = 3; i < 19; ++i) {
+        char ch = t[i];
+        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
+          hex = false;
+          break;
+        }
+      }
+      if (hex)
+        return (name.substr(0, name.size() - tail) + "*").str();
+    }
+  }
+  return name.str();
+}
+
+static std::set<std::string> patterns(Module &m, const ReachResult &res,
+                                       bool reached) {
+  std::set<std::string> out;
   for (Function &f : m) {
     if (f.isDeclaration())
       continue;
     if (static_cast<bool>(res.reached.count(&f)) == reached)
-      out.push_back(f.getName());
+      out.insert(toPattern(f.getName()));
   }
-  std::sort(out.begin(), out.end());
   return out;
 }
 
@@ -26,17 +44,27 @@ void writeAllowlist(raw_ostream &os, Module &m, const ReachResult &res) {
         "-fsanitize-coverage-allowlist=reached.txt\n"
      << "# A coverage allowlist matches a function only when BOTH a src: and a\n"
      << "# fun: entry match, hence the src:* line below.\n"
+     << "# Rust generic instances carry a codegen-dependent '17h<hash>' mangling\n"
+     << "# disambiguator; it is replaced by '*' so an entry matches the same\n"
+     << "# instance regardless of which build emitted it (clang sancov and AFL++\n"
+     << "# both treat '*' as a glob in fun: entries).\n"
      << "src:*\n";
-  for (StringRef n : definedNames(m, res, /*reached=*/true))
-    os << "fun:" << n << "\n";
+  for (const std::string &p : patterns(m, res, /*reached=*/true))
+    os << "fun:" << p << "\n";
 }
 
 void writeIgnorelist(raw_ostream &os, Module &m, const ReachResult &res) {
   os << "# SanitizerCoverage ignorelist: statically-unreachable functions.\n"
      << "# Use with: clang -fsanitize-coverage=<...> "
-        "-fsanitize-coverage-ignorelist=not_reached.txt\n";
-  for (StringRef n : definedNames(m, res, /*reached=*/false))
-    os << "fun:" << n << "\n";
+        "-fsanitize-coverage-ignorelist=not_reached.txt\n"
+     << "# The Rust '17h<hash>' mangling disambiguator is replaced by '*' (see\n"
+     << "# the allowlist header). A pattern that also matches a reachable instance\n"
+     << "# is omitted, so excluding an unreachable instance never excludes a\n"
+     << "# reachable one that shares its name.\n";
+  std::set<std::string> reached = patterns(m, res, /*reached=*/true);
+  for (const std::string &p : patterns(m, res, /*reached=*/false))
+    if (!reached.count(p))
+      os << "fun:" << p << "\n";
 }
 
 } // namespace reach

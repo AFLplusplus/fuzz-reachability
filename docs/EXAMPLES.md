@@ -260,7 +260,14 @@ reachability run --lang ziggy --project examples/url --out url.json -v
 What happens:
 
 - **`--lang ziggy`** builds with `RUSTFLAGS="--emit=llvm-bc …"`, collects the
-  per-crate `.bc` from `target/debug/deps/`, merges them, and roots at `main`.
+  per-crate `.bc` from `target/<profile>/deps/`, merges them, and roots at `main`.
+- **Match the fuzz binary's build.** Pass `--profile release` and
+  `--codegen-units N` to mirror the `cargo ziggy build` that produces the binary
+  you instrument (opt level decides generic sharing, codegen units decide
+  inlining — both change which monomorphizations exist). The emitted `fun:`
+  patterns already tolerate the Rust `17h<hash>` mangling disambiguator drifting
+  between builds, but only matching profile/codegen-units lines up the function
+  *set*.
 - **`CARGO_TARGET_DIR`** — because `examples/url` is a member of ziggy's
   workspace, cargo would otherwise emit bitcode into the *workspace* `target/`,
   not `examples/url/target/`, where the driver looks. Pointing it at the crate's
@@ -482,6 +489,12 @@ RUSTFLAGS="--emit=llvm-bc -Cembed-bitcode=yes -Ccodegen-units=1" \
 The final link fails (`undefined reference to __afl_manual_init` — AFL runtime
 symbols added only by `cargo afl build`); that is expected under `--emit=llvm-bc`.
 Only the per-crate `.bc` in `target/debug/deps/` matter, and they are now there.
+
+Match the profile and `-Ccodegen-units` here to the build that produces the
+instrumented binary (add `--release` and the matching codegen-units for a release
+fuzz build); they decide which monomorphizations are emitted. With
+`-Ccodegen-units` above 1, rustc splits each crate into several
+`deps/<crate>-<hash>.<cgu>.rcgu.bc` — pass all of them to `llvm-link`.
 
 ### Step 3 — Link and analyze
 

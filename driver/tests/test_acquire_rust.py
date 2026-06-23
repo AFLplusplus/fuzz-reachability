@@ -15,6 +15,18 @@ def test_rustflags_build_std():
     assert "-Zbuild-std" in acquire_rust._rustflags(build_std=True)
 
 
+def test_emit_flags_codegen_units():
+    assert "-Ccodegen-units=1" in acquire_rust._emit_flags(False)
+    assert "-Ccodegen-units=8" in acquire_rust._emit_flags(False, 8)
+
+
+def test_base_re_strips_codegen_unit_split():
+    assert acquire_rust._BASE_RE.sub(
+        "", "cgutest-35522b9e3b1fcb3e.bc") == "cgutest"
+    assert acquire_rust._BASE_RE.sub(
+        "", "bintest-210615be512f3a47.0hz4fx5p6ud5e1erzexk3zjx4.0e3d7bm.rcgu.bc") == "bintest"
+
+
 def test_config_rustflags_read_array(tmp_path):
     cfg = tmp_path / ".cargo" / "config.toml"
     cfg.parent.mkdir(parents=True)

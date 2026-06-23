@@ -66,7 +66,8 @@ def _acquire(args, tc, verbose=False):
     if mode in ("rust", "mixed"):
         bcs.extend(
             acquire_rust.acquire_rust_bitcode(
-                args.project, build_std=args.build_std, verbose=verbose
+                args.project, profile=args.profile, build_std=args.build_std,
+                codegen_units=args.codegen_units, verbose=verbose
             )
         )
     return bcs
@@ -171,6 +172,13 @@ def build_parser():
     r.add_argument("--backend", default=None,
                    help="deprecated and ignored; the type-based backend is "
                         "always used")
+    r.add_argument("--profile", default="debug", choices=["debug", "release"],
+                   help="cargo profile for the Rust bitcode build; match the "
+                        "fuzz binary's profile so generic sharing (opt level) "
+                        "lines up (default: debug)")
+    r.add_argument("--codegen-units", type=int, default=1, dest="codegen_units",
+                   help="-Ccodegen-units for the Rust bitcode build; match the "
+                        "fuzz binary's value so inlining lines up (default: 1)")
     r.add_argument("--build-std", action="store_true", dest="build_std")
     r.add_argument("--dot", default=None)
     r.add_argument("--reached", default=None,
