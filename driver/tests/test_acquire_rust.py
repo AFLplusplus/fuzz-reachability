@@ -1,6 +1,8 @@
 import json
 import os
 
+import pytest
+
 from reachability import acquire_rust
 
 
@@ -12,7 +14,7 @@ def test_rustflags_contains_emit_bc():
 
 
 def test_rustflags_build_std():
-    assert "-Zbuild-std" in acquire_rust._rustflags(build_std=True)
+    assert "-Zbuild-std" not in acquire_rust._rustflags(build_std=True)
 
 
 def test_emit_flags_codegen_units():
@@ -131,6 +133,71 @@ def test_compile_errors_flags_real_failure_not_link():
     assert acquire_rust._compile_errors(real)
     bs = "error: failed to run custom build command for `ring v0.16.0`\n"
     assert acquire_rust._compile_errors(bs)
+    assert acquire_rust._compile_errors("error: expected item\n")
+
+
+def test_cargo_errors_parse_json():
+    compile_error = json.dumps({
+        "reason": "compiler-message",
+        "message": {"level": "error", "message": "expected item"},
+    })
+    link_error = json.dumps({
+        "reason": "compiler-message",
+        "message": {"level": "error", "message": "linking with `cc` failed"},
+    })
+    errors, linked = acquire_rust._cargo_errors(compile_error + "\n" + link_error)
+    assert errors == ["expected item"]
+    assert linked
+
+
+def test_rustc_host(monkeypatch):
+    class R:
+        returncode = 0
+        stdout = "rustc 1.92.0-nightly\nhost: aarch64-unknown-linux-gnu\n"
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", lambda *a, **k: R())
+    assert acquire_rust._rustc_host() == "aarch64-unknown-linux-gnu"
+
+
+def test_failed_cargo_never_uses_stale_bitcode(tmp_path, monkeypatch):
+    stale = tmp_path / "target" / "debug" / "deps" / "x-1234567890abcdef.bc"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale")
+
+    class R:
+        returncode = 1
+        stdout = ""
+        stderr = "error: expected item\n"
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", lambda *a, **k: R())
+    with pytest.raises(acquire_rust.AcquireError):
+        acquire_rust.acquire_rust_bitcode(str(tmp_path))
+
+
+def test_build_std_is_only_a_cargo_option(tmp_path, monkeypatch):
+    seen = {}
+
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def run(cmd, **kwargs):
+        if cmd[:2] == ["rustc", "-vV"]:
+            result = R()
+            result.stdout = "host: aarch64-unknown-linux-gnu\n"
+            return result
+        seen["cmd"] = cmd
+        seen["env"] = kwargs["env"]
+        return R()
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", run)
+    with pytest.raises(acquire_rust.AcquireError):
+        acquire_rust.acquire_rust_bitcode(str(tmp_path), build_std=True)
+    assert seen["cmd"][-3:] == [
+        "-Zbuild-std", "--target", "aarch64-unknown-linux-gnu",
+    ]
+    assert "-Zbuild-std" not in seen["env"]["CARGO_ENCODED_RUSTFLAGS"]
 
 
 def test_dedup_newest_per_crate(tmp_path):

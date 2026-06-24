@@ -31,14 +31,14 @@ def test_check_coherence_raises_on_tool_mismatch(monkeypatch):
 
 def test_check_coherence_passes_on_llvm21(monkeypatch):
     _patch(monkeypatch, analyzer=21, tools=21, rustc=21)
-    tc = toolchain.check_coherence("/fake/analyzer")
+    tc = toolchain.check_coherence("/fake/analyzer", require_rust=True)
     assert tc.llvm_major == 21 and tc.rustc_major == 21
 
 
 def test_check_coherence_allows_newer_llvm(monkeypatch):
     # Analyzer + tools on LLVM 23, rustc on 21: allowed (23 reads 21 bitcode).
     _patch(monkeypatch, analyzer=23, tools=23, rustc=21)
-    tc = toolchain.check_coherence("/fake/analyzer")
+    tc = toolchain.check_coherence("/fake/analyzer", require_rust=True)
     assert tc.llvm_major == 23
 
 
@@ -52,4 +52,14 @@ def test_check_coherence_rejects_rustc_newer_than_toolchain(monkeypatch):
     # Analyzer LLVM 21 cannot read rustc's hypothetical LLVM 22 bitcode.
     _patch(monkeypatch, analyzer=21, tools=21, rustc=22)
     with pytest.raises(toolchain.ToolchainError):
-        toolchain.check_coherence("/fake/analyzer")
+        toolchain.check_coherence("/fake/analyzer", require_rust=True)
+
+
+def test_check_coherence_c_only_skips_rustc(monkeypatch):
+    _patch(monkeypatch, analyzer=21, tools=21, rustc=99)
+    monkeypatch.setattr(
+        toolchain, "rustc_llvm_major",
+        lambda: (_ for _ in ()).throw(AssertionError("rustc must not run")),
+    )
+    tc = toolchain.check_coherence("/fake/analyzer", require_rust=False)
+    assert tc.rustc_major is None

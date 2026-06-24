@@ -109,15 +109,17 @@ def cmd_run(args):
         args.out = os.path.join(args.project, "reachability.json")
     elif os.path.isdir(args.out):
         args.out = os.path.join(args.out, "reachability.json")
-    tc = toolchain.check_coherence(default_analyzer())
+    rust_target = TARGETS[args.lang][0] in ("rust", "mixed")
+    tc = toolchain.check_coherence(default_analyzer(), require_rust=rust_target)
     if v:
-        print(f"==> [1/4] toolchain: LLVM {tc.llvm_major} (rustc LLVM {tc.rustc_major})")
+        rust_version = f" (rustc LLVM {tc.rustc_major})" if rust_target else ""
+        print(f"==> [1/4] toolchain: LLVM {tc.llvm_major}{rust_version}")
         print(f"  clang     {tc.clang}")
         print(f"  clang++   {tc.clangxx}")
         print(f"  llvm-link {tc.llvm_link}")
         print(f"  opt       {tc.opt}")
         print(f"  analyzer  {tc.analyzer}")
-    if TARGETS[args.lang][0] in ("rust", "mixed"):
+    if rust_target:
         toolchain.assert_rust_bitcode_readable(tc)
 
     if v:
@@ -153,7 +155,7 @@ def cmd_run(args):
 
 
 def cmd_check_toolchain(args):
-    tc = toolchain.check_coherence(default_analyzer())
+    tc = toolchain.check_coherence(default_analyzer(), require_rust=True)
     print(f"OK: analyzer toolchain on LLVM {tc.llvm_major} "
           f"(min {toolchain.MIN_LLVM_MAJOR}); rustc LLVM {tc.rustc_major}")
     print(f"  clang     {tc.clang}")

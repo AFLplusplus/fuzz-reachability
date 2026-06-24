@@ -267,7 +267,7 @@ The `reachability` CLI has two subcommands.
 ### `reachability check-toolchain`
 
 Resolves and validates the LLVM toolchain (analyzer, `clang`/`clang++`,
-`llvm-link`, `opt`, rustc) for version coherence and prints what it found. Run it
+`llvm-link`, `opt`, `rustc`) for version coherence and prints what it found. Run it
 first; it exits non-zero on any incoherence. See
 [`docs/llvm-support.md`](docs/llvm-support.md) for the policy.
 
@@ -285,10 +285,10 @@ entry point(s).
 | `--backend NAME` | *(none)* | Deprecated and ignored; the type-based backend is always used. Accepted for backward compatibility — passing it prints a warning. |
 | `--artifact PATH` | auto-detect | C/C++ only: the built binary/object/archive to extract bitcode from (relative to `--project`). Auto-detected otherwise, preferring an executable over a shared library, archive, then object. |
 | `--build-cmd CMD` | auto-detect | Shell build command. C/C++: run with `gllvm` injected, auto-detected otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`); e.g. `"cmake -S . -B build && cmake --build build"`. `libfuzzer`/`ziggy`/`afl`: overrides the native build command (default `cargo fuzz build` / `cargo ziggy build --no-honggfuzz` / `cargo afl build`). |
-| `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree, skipping any whose members another archive already covers and resolving residual overlaps at link time (`llvm-link --override`). |
+| `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree. Exact archive manifests prevent linked objects from being dropped; unresolved duplicate definitions fail the merge instead of silently replacing one body. |
 | `--profile {debug,release}` | tool default | Build profile. `libfuzzer`/`ziggy`/`afl`: `release` adds `--release` to the native command (else the tool's default). Plain `--lang rust`: the cargo profile (default `debug`). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--codegen-units N` | auto | Plain `--lang rust` only (positive integer): rustc `-Ccodegen-units`, auto-detected from `Cargo.toml` else cargo's per-profile default. Ignored for `libfuzzer`/`ziggy`/`afl` (their build sets it). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
-| `--build-std` | off | Rust only: build the standard library from source (`-Zbuild-std`) so std functions appear in the graph instead of as external declarations. |
+| `--build-std` | off | Rust only: build the standard library from source with Cargo's `-Zbuild-std` option and rustc's detected host target, so std functions appear in the graph instead of as external declarations. |
 | `--dot FILE` | *(none)* | Also write the reachable subgraph as Graphviz DOT (indirect edges dashed/red). |
 | `--reached FILE` | beside `--out` | Path for the sancov **allowlist** of reachable functions. |
 | `--not-reached FILE` | beside `--out` | Path for the sancov **ignorelist** of unreachable functions. |
@@ -503,3 +503,10 @@ docs/       worked examples (EXAMPLES.md), LLVM support
 This is a static over-approximation, not dynamic coverage. Its precision is
 bounded by indirect-call resolution and by any missing bitcode — precompiled
 libraries, or the Rust standard library without `--build-std`.
+
+**Callbacks that escape to external code.** A function pointer is treated as
+reachable when it is handed to an external/indirect call as an argument, or
+returned (qsort/bsearch comparators, atexit/pthread/`std::call_once` callbacks,
+etc.). The escape analysis follows local loads/stores, globals, aggregates,
+select/PHI values, defined wrapper arguments, and defined functions that return
+callbacks.

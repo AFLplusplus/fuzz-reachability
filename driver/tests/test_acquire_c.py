@@ -142,7 +142,7 @@ def test_plan_static_libs_auto_no_manifest_picks_nothing():
     assert roots == []
 
 
-def test_plan_static_libs_all_skips_subset_archive():
+def test_plan_static_libs_all_keeps_distinct_archives():
     manifest = ["/p/tools/.thumbnail.o.bc"]
     members = {
         "/p/port/libport.a": {"dummy.o"},
@@ -150,6 +150,48 @@ def test_plan_static_libs_all_skips_subset_archive():
         "/p/lt/libtiffxx.a": {"tif_stream.o", "dummy.o"},
     }
     chosen, roots = acquire_c._plan_static_libs(manifest, members, "all")
-    assert set(chosen) == {"/p/lt/libtiff.a", "/p/lt/libtiffxx.a"}
-    assert "/p/port/libport.a" not in chosen
+    assert set(chosen) == {
+        "/p/port/libport.a", "/p/lt/libtiff.a", "/p/lt/libtiffxx.a",
+    }
     assert roots == ["/p/tools/.thumbnail.o.bc"]
+
+
+def test_include_static_libs_uses_exact_manifest_paths(monkeypatch):
+    archives = ["/p/a/libsame.a", "/p/b/libsame.a"]
+    primary = ["/p/app/.main.o.bc", "/p/a/.same.o.bc"]
+    manifests = {
+        "/p/a/libsame.a.full.bc.llvm.manifest": ["/p/a/.same.o.bc"],
+        "/p/b/libsame.a.full.bc.llvm.manifest": ["/p/b/.same.o.bc"],
+        "/p/app.bc.llvm.manifest": primary,
+    }
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: archives)
+    monkeypatch.setattr(acquire_c, "_archive_members", lambda p: {"same.o"})
+    monkeypatch.setattr(acquire_c, "_extract_bc", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(
+        acquire_c, "_manifest_objects", lambda p: manifests.get(p, []),
+    )
+    result = acquire_c._include_static_libs(
+        "/p", "/p/app", "exec", "/p/app.bc", "auto",
+    )
+    assert result == ["/p/app/.main.o.bc", "/p/a/libsame.a.full.bc"]
+
+
+def test_include_static_libs_partial_failure_is_atomic(monkeypatch):
+    archives = ["/p/a.a", "/p/b.a"]
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: archives)
+    monkeypatch.setattr(
+        acquire_c, "_manifest_objects",
+        lambda p: ["/p/.main.o.bc", "/p/.a.o.bc", "/p/.b.o.bc"]
+        if p == "/p/app.bc.llvm.manifest" else [p],
+    )
+    monkeypatch.setattr(
+        acquire_c, "_archive_members",
+        lambda p: {"a.o"} if p.endswith("a.a") else {"b.o"},
+    )
+    monkeypatch.setattr(
+        acquire_c, "_extract_bc",
+        lambda p, *a, **k: (not p.endswith("a.a"), "failed"),
+    )
+    assert acquire_c._include_static_libs(
+        "/p", "/p/app", "exec", "/p/app.bc", "auto",
+    ) is None

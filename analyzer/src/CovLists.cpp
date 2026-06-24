@@ -1,6 +1,8 @@
 #include "CovLists.h"
+#include <algorithm>
 #include <set>
 #include <string>
+#include <vector>
 
 using namespace llvm;
 
@@ -53,17 +55,39 @@ void writeAllowlist(raw_ostream &os, Module &m, const ReachResult &res) {
     os << "fun:" << p << "\n";
 }
 
+static std::vector<std::string> reachedNames(Module &m, const ReachResult &res) {
+  std::vector<std::string> out;
+  for (Function &f : m) {
+    if (f.isDeclaration())
+      continue;
+    if (res.reached.count(&f))
+      out.push_back(f.getName().str());
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+static bool matchesReached(StringRef pattern,
+                           const std::vector<std::string> &reached) {
+  if (pattern.ends_with("*")) {
+    std::string prefix = pattern.drop_back().str();
+    auto it = std::lower_bound(reached.begin(), reached.end(), prefix);
+    return it != reached.end() && StringRef(*it).starts_with(prefix);
+  }
+  return std::binary_search(reached.begin(), reached.end(), pattern.str());
+}
+
 void writeIgnorelist(raw_ostream &os, Module &m, const ReachResult &res) {
   os << "# SanitizerCoverage ignorelist: statically-unreachable functions.\n"
      << "# Use with: clang -fsanitize-coverage=<...> "
         "-fsanitize-coverage-ignorelist=not_reached.txt\n"
      << "# The Rust '17h<hash>' mangling disambiguator is replaced by '*' (see\n"
-     << "# the allowlist header). A pattern that also matches a reachable instance\n"
-     << "# is omitted, so excluding an unreachable instance never excludes a\n"
-     << "# reachable one that shares its name.\n";
-  std::set<std::string> reached = patterns(m, res, /*reached=*/true);
+     << "# the allowlist header). A pattern that also matches a reachable\n"
+     << "# function's name as a glob is omitted, so excluding an unreachable\n"
+     << "# instance never excludes a reachable one that shares its name or prefix.\n";
+  std::vector<std::string> reached = reachedNames(m, res);
   for (const std::string &p : patterns(m, res, /*reached=*/false))
-    if (!reached.count(p))
+    if (!matchesReached(p, reached))
       os << "fun:" << p << "\n";
 }
 

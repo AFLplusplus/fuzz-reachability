@@ -14,10 +14,9 @@ function in the library is classified reachable/unreachable rather than silently
 dropped. "none" keeps only the linker's view; "all" pulls in every bitcode
 archive found in the tree, save those whose members are already covered by a
 larger one. Merging the full archive with the target's *non-archive* objects (its
-manifest minus the archive members) avoids the duplicate-symbol clash that linking
-the executable's own bitcode against the full archive causes; any residual overlap
-between two chosen archives (a shared member object) is resolved by the link stage
-(llvm-link --override).
+manifest minus the archive members) avoids duplicate definitions. Archive manifests
+provide exact object provenance; incomplete extraction falls back atomically to the
+linker's view.
 """
 
 import mmap
@@ -232,11 +231,7 @@ def _plan_static_libs(manifest, archive_members, mode):
     manifest: per-object .bc paths the linker pulled into the target.
     archive_members: {archive_path: {member object name, ...}}.
     mode: "auto" includes only archives the target links (members intersect the
-    manifest); "all" includes every archive given. Either way archives are
-    considered largest-first and one whose members are already covered by an
-    archive chosen earlier is skipped, so an archive embedded whole into another
-    (e.g. libport, which is archived into both libtiff.a and libtiffxx.a) is not
-    pulled in twice.
+    manifest); "all" includes every archive given.
 
     Returns (chosen_archive_paths, root_bc_paths): the roots are the manifest
     objects that belong to no chosen archive, so merging them with the full
@@ -251,8 +246,6 @@ def _plan_static_libs(manifest, archive_members, mode):
         if not members:
             continue
         if mode == "all" or (mode == "auto" and members & manifest_member_names):
-            if members <= union:
-                continue
             chosen.append(arch)
             union |= members
     roots = [p for p in manifest if _member_name(p) not in union]
@@ -274,33 +267,67 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode):
         manifest = _manifest_objects(primary_bc + ".llvm.manifest")
 
     members = {a: _archive_members(a) for a in archives}
-    chosen, roots = _plan_static_libs(manifest, members, mode)
+    chosen, _ = _plan_static_libs(manifest, members, mode)
     if not chosen:
         return None
 
-    lib_bcs = []
+    extracted = []
+    failed = False
     for a in chosen:
         out = a + ".full.bc"
-        ok, err = _extract_bc(a, out, archive=True)
+        ok, err = _extract_bc(a, out, archive=True, manifest=True)
         if ok:
-            lib_bcs.append(out)
-            print(f"static library (full): {os.path.relpath(a, project_dir)}")
+            objects = _manifest_objects(out + ".llvm.manifest")
+            if objects:
+                extracted.append((a, out, objects))
+            else:
+                failed = True
+                print(f"warning: full bitcode manifest is empty for "
+                      f"{os.path.relpath(a, project_dir)}")
         else:
+            failed = True
             print(f"warning: could not extract full bitcode from "
                   f"{os.path.relpath(a, project_dir)}: {err}")
-    if not lib_bcs:
+    if failed or not extracted:
+        if extracted:
+            print("warning: static-library expansion was incomplete; keeping the "
+                  "linker's view only")
         return None
 
     if kind in ("exec", "shared"):
-        if not roots:
-            print("warning: could not separate the target's own objects from the "
-                  "static library; keeping the linker's view only")
+        if not manifest:
+            print("warning: could not read the target object manifest; keeping the "
+                  "linker's view only")
             return None
-        parts = roots
+        primary_objects = {os.path.realpath(p) for p in manifest}
+        if mode == "auto":
+            extracted = [
+                item for item in extracted
+                if primary_objects & {os.path.realpath(p) for p in item[2]}
+            ]
+            if not extracted:
+                return None
+        ordered = sorted(extracted, key=lambda item: len(item[2]), reverse=True)
+        extracted = []
+        covered_objects = set()
+        for item in ordered:
+            objects = {os.path.realpath(p) for p in item[2]}
+            if objects <= covered_objects:
+                continue
+            extracted.append(item)
+            covered_objects |= objects
+        covered = {
+            os.path.realpath(p)
+            for _, _, objects in extracted
+            for p in objects
+        }
+        parts = [p for p in manifest if os.path.realpath(p) not in covered]
     else:
-        # An object/archive target has no embedded copy of the archive members,
-        # so it cannot clash with the full archives.
         parts = [primary_bc]
+    lib_bcs = []
+    for a, out, _ in extracted:
+        lib_bcs.append(out)
+        print(f"static library (full): {os.path.relpath(a, project_dir)}")
     return parts + lib_bcs
 
 

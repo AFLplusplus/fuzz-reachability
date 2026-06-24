@@ -108,6 +108,26 @@ def test_backend_flag_deprecated_warns(monkeypatch, capsys):
     assert "deprecated and ignored" in capsys.readouterr().err
 
 
+def test_c_run_does_not_require_rust(monkeypatch):
+    p = cli.build_parser()
+    args = p.parse_args(["run", "--project", "x", "--lang", "c", "--out", "o"])
+    seen = {}
+
+    def check(*a, **k):
+        seen.update(k)
+        return None
+
+    monkeypatch.setattr(cli.toolchain, "check_coherence", check)
+    monkeypatch.setattr(cli, "default_analyzer", lambda: "analyzer")
+    monkeypatch.setattr(
+        cli, "_acquire",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop")),
+    )
+    with pytest.raises(RuntimeError):
+        cli.cmd_run(args)
+    assert seen["require_rust"] is False
+
+
 def test_check_toolchain_ok(analyzer, monkeypatch):
     monkeypatch.setenv("REACHABILITY_ANALYZER", analyzer)
     assert cli.main(["check-toolchain"]) == 0

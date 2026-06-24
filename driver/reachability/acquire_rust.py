@@ -47,16 +47,6 @@ class AcquireError(RuntimeError):
 
 _HASH_RE = re.compile(r"-([0-9a-f]{16})\.")
 _BASE_RE = re.compile(r"-[0-9a-f]{16}.*\.bc$")
-_COMPILE_ERROR_MARKERS = (
-    "error[E",
-    "error: failed to run custom build command",
-    "error: cannot find",
-    "error: unresolved import",
-    "error: cannot determine",
-    "error: could not find",
-)
-
-
 def _build_looks_cached(output):
     """True when the build tool reported it (re)compiled nothing, so its
     artifacts/bitcode reflect an earlier compile rather than this run."""
@@ -68,11 +58,8 @@ def _build_looks_cached(output):
 
 
 def _emit_flags(build_std: bool, codegen_units: int = 1):
-    flags = ["--emit=llvm-bc", "-Cembed-bitcode=yes",
-             f"-Ccodegen-units={codegen_units}"]
-    if build_std:
-        flags.append("-Zbuild-std")
-    return flags
+    return ["--emit=llvm-bc", "-Cembed-bitcode=yes",
+            f"-Ccodegen-units={codegen_units}"]
 
 
 def _rustflags(build_std: bool, codegen_units: int = 1) -> str:
@@ -190,8 +177,51 @@ def _build_env(project_dir, build_std, codegen_units=1):
 def _compile_errors(text):
     """Lines indicating a genuine compile failure -- as opposed to the expected
     final-link failure under --emit=llvm-bc (`error: linking with ...`)."""
-    return [s for s in (ln.strip() for ln in text.splitlines())
-            if any(s.startswith(m) for m in _COMPILE_ERROR_MARKERS)]
+    errors = []
+    for s in (ln.strip() for ln in text.splitlines()):
+        if not s.startswith("error"):
+            continue
+        if s.startswith("error: linking with "):
+            continue
+        if s.startswith("error: could not compile "):
+            continue
+        if s.startswith("error: aborting due to "):
+            continue
+        errors.append(s)
+    return errors
+
+
+def _cargo_errors(stdout):
+    errors = []
+    link_error = False
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if msg.get("reason") != "compiler-message":
+            continue
+        diagnostic = msg.get("message") or {}
+        if diagnostic.get("level") != "error":
+            continue
+        text = str(diagnostic.get("message") or "").strip()
+        if text.startswith("linking with "):
+            link_error = True
+        elif not text.startswith("could not compile "):
+            errors.append(text or "cargo reported an unspecified compiler error")
+    return errors, link_error
+
+
+def _rustc_host():
+    r = subprocess.run(["rustc", "-vV"], capture_output=True, text=True)
+    if r.returncode == 0:
+        for line in r.stdout.splitlines():
+            if line.startswith("host: "):
+                return line[6:].strip()
+    raise AcquireError("cannot determine rustc host target from `rustc -vV`")
 
 
 _NAMED_KINDS = ("bin", "cdylib", "staticlib", "dylib")
@@ -307,7 +337,7 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     if profile == "release":
         cmd.append("--release")
     if build_std:
-        cmd += ["-Zbuild-std", "--target", "x86_64-unknown-linux-gnu"]
+        cmd += ["-Zbuild-std", "--target", _rustc_host()]
     if verbose:
         print(f"  profile={profile}, codegen-units={codegen_units}")
         print("  " + " ".join(cmd))
@@ -315,11 +345,15 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     if verbose and r.stderr.strip():
         print(r.stderr.strip())
 
-    errs = _compile_errors(r.stderr)
+    cargo_errs, link_error = _cargo_errors(r.stdout)
+    errs = cargo_errs + _compile_errors(r.stderr)
     if errs:
         raise AcquireError(
             "cargo failed to compile a crate, so the bitcode set would be "
             "incomplete -- fix the build first:\n  " + "\n  ".join(errs[:20]))
+    if r.returncode != 0 and not link_error and "error: linking with " not in r.stderr:
+        tail = (r.stderr.strip() or r.stdout.strip())[-2000:]
+        raise AcquireError(f"cargo build failed (exit {r.returncode}):\n  {tail}")
 
     if _build_looks_cached(r.stderr):
         print("warning: cargo recompiled nothing -- this build is CACHED, so the "
@@ -327,7 +361,7 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
               "`cargo clean` and re-run for a fresh build.")
 
     bcs = _build_bc_paths(r.stdout)
-    if not bcs:
+    if not bcs and r.returncode == 0:
         patterns = [os.path.join(project_dir, "target", profile, "deps", "*.bc")]
         if build_std:
             patterns.append(os.path.join(project_dir, "target", "*", profile, "deps", "*.bc"))

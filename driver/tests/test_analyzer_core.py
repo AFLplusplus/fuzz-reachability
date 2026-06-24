@@ -5,6 +5,7 @@ The analyzer parses .ll directly, so these exercise the full pipeline
 toolchain.
 """
 
+import fnmatch
 import json
 
 from conftest import ll
@@ -65,6 +66,16 @@ def test_indirect_any_includes_other(run_analyzer):
     j = json.loads(r.stdout)
     names = {f["mangled"] for f in j["reachable"]}
     assert {"opt_a", "opt_b"} <= names
+
+
+def test_external_callback_loaded_from_local(run_analyzer):
+    r = run_analyzer([ll("callback_load.ll"), "--entry", "entry"])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {
+        "entry", "wrapper", "target", "global_target", "struct_target",
+        "select_target",
+    } <= names
 
 
 def test_backend_flag_deprecated_and_ignored(run_analyzer):
@@ -152,3 +163,25 @@ def test_dot_export(run_analyzer, tmp_path):
     txt = out.read_text()
     assert "digraph" in txt
     assert "dashed" in txt  # indirect edges styled
+
+
+def _fun_patterns(text):
+    return [ln[len("fun:"):] for ln in text.splitlines() if ln.startswith("fun:")]
+
+
+def test_ignorelist_glob_never_excludes_reachable(run_analyzer, tmp_path):
+    reached = tmp_path / "reached.txt"
+    notr = tmp_path / "not_reached.txt"
+    r = run_analyzer([ll("rust_nested.ll"), "--entry", "LLVMFuzzerTestOneInput",
+                      "--reached-out", str(reached), "--not-reached-out", str(notr)])
+    assert r.returncode == 0, r.stderr
+    reachable = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert "_ZN3foo3bar4quux17h0123456789abcdefE" in reachable
+    ignore = _fun_patterns(notr.read_text())
+    offenders = [(p, n) for p in ignore for n in reachable
+                 if fnmatch.fnmatchcase(n, p)]
+    assert not offenders, (
+        f"ignorelist pattern(s) match a REACHABLE function -- using "
+        f"not_reached.txt as a sancov/AFL++ ignorelist would exclude reachable "
+        f"code from instrumentation: {offenders}"
+    )

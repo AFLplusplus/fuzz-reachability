@@ -59,18 +59,24 @@ def _parse_llvm_major(text: str) -> int:
 
 def rustc_llvm_major() -> int:
     """Pinned LLVM major == the LLVM that rustc bundles."""
-    out = subprocess.run(
-        ["rustc", "-vV"], capture_output=True, text=True, check=True
-    ).stdout
+    try:
+        out = subprocess.run(
+            ["rustc", "-vV"], capture_output=True, text=True, check=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise ToolchainError(f"cannot run rustc: {e}") from e
     return _parse_llvm_major_from_rustc(out)
 
 
 def rustc_llvm_version() -> tuple:
     """Full (major, minor, patch) of the LLVM that rustc bundles -- the version
     of the bitcode rustc emits."""
-    out = subprocess.run(
-        ["rustc", "-vV"], capture_output=True, text=True, check=True
-    ).stdout
+    try:
+        out = subprocess.run(
+            ["rustc", "-vV"], capture_output=True, text=True, check=True
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as e:
+        raise ToolchainError(f"cannot run rustc: {e}") from e
     m = _RUSTC_FULL_RE.search(out)
     if not m:
         raise ToolchainError(f"cannot parse LLVM version from rustc output:\n{out}")
@@ -125,16 +131,17 @@ class Toolchain:
     opt: str
     analyzer: str
     llvm_major: int  # the chosen toolchain major M (>= MIN_LLVM_MAJOR)
-    rustc_major: int
+    rustc_major: int | None
 
 
-def check_coherence(analyzer_path: str) -> Toolchain:
+def check_coherence(analyzer_path: str, require_rust: bool = False) -> Toolchain:
     """Resolve the toolchain around the analyzer's LLVM major and validate the
     version policy (see module docstring).
 
     The analyzer's own LLVM major M is authoritative; clang/clang++/llvm-link/opt
-    are resolved for M (versioned names preferred) and must all match it. rustc's
-    LLVM major must not exceed M. Raises ToolchainError on any violation.
+    are resolved for M (versioned names preferred) and must all match it. When
+    require_rust is true, rustc's LLVM major must not exceed M. Raises
+    ToolchainError on any violation.
     """
     M = analyzer_llvm_major(analyzer_path)
     if M < MIN_LLVM_MAJOR:
@@ -164,13 +171,15 @@ def check_coherence(analyzer_path: str) -> Toolchain:
             % (M, "\n".join(mismatches), M)
         )
 
-    rustc_major = rustc_llvm_major()
-    if rustc_major > M:
-        raise ToolchainError(
-            f"rustc's bundled LLVM is {rustc_major}, newer than the analyzer "
-            f"toolchain LLVM {M}. Newer bitcode cannot be read by older tools; "
-            f"rebuild the analyzer/toolchain against LLVM >= {rustc_major}."
-        )
+    rustc_major = None
+    if require_rust:
+        rustc_major = rustc_llvm_major()
+        if rustc_major > M:
+            raise ToolchainError(
+                f"rustc's bundled LLVM is {rustc_major}, newer than the analyzer "
+                f"toolchain LLVM {M}. Newer bitcode cannot be read by older tools; "
+                f"rebuild the analyzer/toolchain against LLVM >= {rustc_major}."
+            )
 
     return Toolchain(clang, clangxx, llvm_link, opt, analyzer_path, M, rustc_major)
 

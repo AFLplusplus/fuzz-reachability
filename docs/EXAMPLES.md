@@ -196,14 +196,12 @@ clang -fsanitize-coverage=trace-pc-guard -fsanitize-coverage-ignorelist=not_reac
 
 - **`gclang: not found` during the build.** Put gllvm on `PATH`
   (`export PATH="$(go env GOPATH)/bin:$PATH"`).
-- **`--static-libs all` and overlapping archives.** When two archives in the
-  tree share a member object — e.g. a portability helper archived into several
-  libraries, as with libtiff's `libport` ending up inside both `libtiff.a` and
-  `libtiffxx.a` — the planner drops any archive whose members are already covered
-  by a larger one, and the merge passes the remaining modules through
-  `llvm-link --override` so a residual duplicate symbol resolves to the last
-  definition instead of aborting with "symbol multiply defined". `all` therefore
-  links even when archives overlap; you no longer need to fall back to `auto`.
+- **`--static-libs all` and overlapping archives.** Archive manifests identify
+  the exact bitcode objects each archive contains, so an archive wholly covered
+  by an already selected archive is skipped without relying on object basenames.
+  If selected archives still contain conflicting definitions, the merge fails
+  rather than silently replacing one function body. Use `auto` or narrow the
+  archive set when those definitions are genuinely duplicated.
 - **`configure` fails on a very new system.** libxml2-2.9.2 predates current
   toolchains; the analyzer never treats warnings as errors, but if configure
   itself errors, add the flags the project needs (e.g. `--without-lzma`) to the
