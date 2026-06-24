@@ -147,6 +147,19 @@ def test_dedup_newest_per_crate(tmp_path):
     assert str(old) not in kept
 
 
+def test_dedup_newest_per_crate_keeps_all_cgus(tmp_path):
+    new = [tmp_path / f"rust_dyn-2222222222222222.cgu{i}.rcgu.bc" for i in range(3)]
+    old = tmp_path / "rust_dyn-1111111111111111.cgu0.rcgu.bc"
+    for p in (*new, old):
+        p.write_text("x")
+    for p in new:
+        os.utime(p, (10, 10))
+    os.utime(old, (1, 1))
+    kept = acquire_rust._dedup_newest_per_crate(
+        [str(old)] + [str(p) for p in new])
+    assert kept == sorted(str(p) for p in new)
+
+
 def test_build_bc_paths_from_artifact_stream(tmp_path):
     deps = tmp_path / "target" / "debug" / "deps"
     deps.mkdir(parents=True)

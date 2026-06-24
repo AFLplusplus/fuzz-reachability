@@ -66,7 +66,8 @@ def test_c_cpp_reachable(analyzer, tmp_path, fixture):
 
 def _rust_reachable(analyzer, tmp_path, fixture, entries):
     work = tmp_path / fixture
-    shutil.copytree(os.path.join(FIXTURES, fixture), work)
+    shutil.copytree(os.path.join(FIXTURES, fixture), work,
+                    ignore=shutil.ignore_patterns("target"))
     tc = _tc(analyzer)
     _require_rust_readable(tc)
     bcs = acquire_rust.acquire_rust_bitcode(str(work))
@@ -101,7 +102,8 @@ def test_rust_dyn_reachable(analyzer, tmp_path):
 def test_mixed_c_rust_reachable(analyzer, tmp_path):
     # Cross-language: C++ glue (gllvm) + Rust entry (rustc emit), merged.
     work = tmp_path / "mixed_c_rust"
-    shutil.copytree(os.path.join(FIXTURES, "mixed_c_rust"), work)
+    shutil.copytree(os.path.join(FIXTURES, "mixed_c_rust"), work,
+                    ignore=shutil.ignore_patterns("target"))
     tc = _tc(analyzer)
     _require_rust_readable(tc)
     glue_bcs = acquire_c.acquire_c_bitcode(str(work), tc, "glue.o")

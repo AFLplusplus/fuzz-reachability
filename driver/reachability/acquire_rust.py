@@ -259,18 +259,30 @@ def _build_bc_paths(stdout):
 
 
 def _dedup_newest_per_crate(paths):
-    """One .bc per crate (filename with the trailing -<hash> stripped), keeping
-    the most recently modified. Fallback when no artifact stream is available."""
-    best = {}
+    """The newest build's .bc for each crate, keeping every codegen unit of that
+    build. Fallback when no artifact stream is available: a glob of deps/*.bc can
+    mix several builds (cargo never deletes old artifacts) and, at codegen-units >
+    1, several .bc per build. Group by crate (filename with the trailing -<hash>...
+    stripped), take the most recently modified file in each group as this build,
+    and keep all of that group's files sharing its build hash."""
+    groups = {}
     for p in paths:
         base = _BASE_RE.sub("", os.path.basename(p))
         try:
             mtime = os.path.getmtime(p)
         except OSError:
             continue
-        if base not in best or mtime > best[base][0]:
-            best[base] = (mtime, p)
-    return sorted(p for _, p in best.values())
+        groups.setdefault(base, []).append((mtime, p))
+    kept = []
+    for items in groups.values():
+        _, newest = max(items)
+        m = _HASH_RE.search(os.path.basename(newest))
+        if not m:
+            kept.append(newest)
+            continue
+        tag = f"-{m.group(1)}."
+        kept.extend(p for _, p in items if tag in os.path.basename(p))
+    return sorted(kept)
 
 
 def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
