@@ -29,6 +29,13 @@ def test_build_env_sets_wrappers(monkeypatch):
     assert env["LLVM_COMPILER_PATH"] == "/usr/lib/llvm-21/bin"
 
 
+def test_build_looks_cached():
+    assert acquire_c._build_looks_cached("make: Nothing to be done for 'all'.")
+    assert acquire_c._build_looks_cached("ninja: no work to do.")
+    assert acquire_c._build_looks_cached("make[1]: 'thumbnail' is up to date.")
+    assert not acquire_c._build_looks_cached("cc -c foo.c -o foo.o")
+
+
 def test_detect_build_cmd_none(tmp_path):
     assert acquire_c.detect_build_cmd(str(tmp_path)) is None
 

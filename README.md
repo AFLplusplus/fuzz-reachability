@@ -10,23 +10,64 @@ can be reached*, not which ones ran. No function that is actually reachable is
 ever reported unreachable. Over-reporting is expected and safe; under-reporting
 is a bug.
 
-Feed the output to AFL++ or clang's SanitizerCoverage allow/ignore lists to instrument
-only reachable code — cheaper, more focused fuzzing:
-- **AFL++**: `export AFL_LLVM_ALLOWLIST=$(pwd)/reached.txt` -or- `export AFL_LLVM_DENYLIST=$(pwd)/not_reached.txt`
-- **sancov based fuzzers** (libfuzzer, honggfuzz, libafl, AFL++): `-fsanitize-coverage-allowlist=$(pwd)/reached.txt` -or- `-fsanitize-coverage-ignorelist=$(pwd)/not_reached.txt`
-
-**Recommendation:** use the allow feature with `reached.txt` rather than the deny/ignore feature.
-
-Additionally you can feed the output files into [cov-analysis](github.com/AFLplusplus/cov-analysis) - the state-of-the-art coverage analysis tooling.
-
 **Deep dives:**
 - Worked examples, step by step — a generic `LLVMFuzzerTestOneInput` harness for AFL++/libfuzzer (libxml2), a ziggy harness (the `url` crate), and cargo-afl harnesses (cpp_demangle and rustyknife) — [`docs/EXAMPLES.md`](docs/EXAMPLES.md)
 - LLVM version support — [`docs/llvm-support.md`](docs/llvm-support.md)
 
-
 Author: Marc "vanHauser" Heuse
 
 License: GNU AGPL v3 or newer
+
+
+## How to use in a fuzzing campaign
+
+```mermaid
+flowchart TD
+    A[create fuzzing harness] --> B[instrument target]
+    B --> C[run fuzz campaign]
+    C --> D[coverage analysis]
+    D --> A
+
+    E[fuzz-reachability] --> B
+    E --> D
+
+    classDef blue fill:#cce5ff,stroke:#0056b3,color:#003366
+    classDef green fill:#d4edda,stroke:#1e7e34,color:#0f4019
+
+    class A,B,C,D blue
+    class E green
+
+    linkStyle 0,1,2,3 stroke:#0056b3,stroke-width:2px
+    linkStyle 4,5 stroke:#1e7e34,stroke-width:2px
+```
+### Instrument fuzzing target
+
+Use the reachability information to only instrument what is reachable.
+**Note that this is pointless in full link time optimization targets** (C/C++: afl-clang-lto, Rust: default) because this is already done by the compiler.
+
+For AFL++ (AFL++ native LLVM plugins):
+```
+export AFL_LLVM_ALLOWLIST=$(pwd)/reached.txt
+make/meson/ninja/cmake/...
+```
+
+For sancov (AFL++ sancov, libfuzzer, honggfuzz, etc.):
+```
+export CFLAGS="-fsanitize-coverage-allowlist=$(pwd)/reached.txt"
+export CXXFLAGS="-fsanitize-coverage-allowlist=$(pwd)/reached.txt"
+make/meson/ninja/cmake/...
+```
+
+### Coverage analysis
+
+Use with [cov-analysis](https://github.com/AFLplusplus/cov-analysis) to see:
+- what is reachable but not reached yet by the fuzzing corpus
+- what is unreachable by the harness but should be fuzzed
+
+```
+cov-analysis report -d ../target-afl/out -e ./harness-cov -T 4 --reachability reachability.json
+```
+
 
 ## How it works
 
@@ -202,11 +243,18 @@ bitcode archive in the tree.
 
 A [ziggy](https://github.com/srlabs/ziggy) harness is a Rust binary whose fuzz
 loop lives in `main` rather than in `LLVMFuzzerTestOneInput`. `--lang ziggy`
-acquires the bitcode and roots at `main` automatically:
+builds it with its own driver (`cargo ziggy build --no-honggfuzz`) and roots at
+`main` automatically:
 
 ```bash
 reachability run --lang ziggy --project <harness> --out z.json
 ```
+
+Building through the fuzzer's own command (likewise `cargo afl build` for
+`--lang afl`, `cargo fuzz build` for `--lang libfuzzer`) is deliberate: it sets
+the same `cfg(fuzzing)`, optimization level, and instrumentation as the binary
+you actually fuzz, so the reachable set matches it. Override the command with
+`--build-cmd` (e.g. to pick a profile, sanitizer, or single target).
 
 > For complete, start-to-finish walkthroughs on real targets — ziggy (the `url`
 > crate), cargo-afl (cpp_demangle and rustyknife), and libFuzzer (libxml2)
@@ -236,10 +284,10 @@ entry point(s).
 | `--entry NAME` | per `--lang` | Entry to root reachability at. **Repeatable**; overrides the target default. See [Entry resolution](#entry-resolution). |
 | `--backend NAME` | *(none)* | Deprecated and ignored; the type-based backend is always used. Accepted for backward compatibility — passing it prints a warning. |
 | `--artifact PATH` | auto-detect | C/C++ only: the built binary/object/archive to extract bitcode from (relative to `--project`). Auto-detected otherwise, preferring an executable over a shared library, archive, then object. |
-| `--build-cmd CMD` | auto-detect | C/C++ only: shell build command, run with `gllvm` injected. E.g. `"cmake -S . -B build && cmake --build build"`. Auto-detected from the project files otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`). |
+| `--build-cmd CMD` | auto-detect | Shell build command. C/C++: run with `gllvm` injected, auto-detected otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`); e.g. `"cmake -S . -B build && cmake --build build"`. `libfuzzer`/`ziggy`/`afl`: overrides the native build command (default `cargo fuzz build` / `cargo ziggy build --no-honggfuzz` / `cargo afl build`). |
 | `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree, skipping any whose members another archive already covers and resolving residual overlaps at link time (`llvm-link --override`). |
-| `--profile {debug,release}` | `debug` | Rust only: cargo profile for the bitcode build. Match the fuzz binary's profile. See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
-| `--codegen-units N` | `1` | Rust only: rustc `-Ccodegen-units` for the bitcode build (positive integer). Match the fuzz binary's value. See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
+| `--profile {debug,release}` | tool default | Build profile. `libfuzzer`/`ziggy`/`afl`: `release` adds `--release` to the native command (else the tool's default). Plain `--lang rust`: the cargo profile (default `debug`). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
+| `--codegen-units N` | auto | Plain `--lang rust` only (positive integer): rustc `-Ccodegen-units`, auto-detected from `Cargo.toml` else cargo's per-profile default. Ignored for `libfuzzer`/`ziggy`/`afl` (their build sets it). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--build-std` | off | Rust only: build the standard library from source (`-Zbuild-std`) so std functions appear in the graph instead of as external declarations. |
 | `--dot FILE` | *(none)* | Also write the reachable subgraph as Graphviz DOT (indirect edges dashed/red). |
 | `--reached FILE` | beside `--out` | Path for the sancov **allowlist** of reachable functions. |
@@ -252,11 +300,16 @@ entry point(s).
 |----------|--------------|---------------|
 | `c` | gllvm (`gclang`) | `main` + `LLVMFuzzerTestOneInput` |
 | `cpp` | gllvm (`gclang++`) | `main` + `LLVMFuzzerTestOneInput` |
-| `rust` | `cargo` + `--emit=llvm-bc` | `main` |
+| `rust` | `cargo build` + `--emit=llvm-bc` | `main` |
 | `mixed` | gllvm **and** cargo (merged) | `LLVMFuzzerTestOneInput` |
-| `libfuzzer` | cargo (Rust) | `fuzz_target!` |
-| `ziggy` | cargo (Rust) | `main` |
-| `afl` | cargo (Rust) | `main` |
+| `libfuzzer` | `cargo fuzz build` | `fuzz_target!` |
+| `ziggy` | `cargo ziggy build --no-honggfuzz` | `main` |
+| `afl` | `cargo afl build` | `main` |
+
+`libfuzzer`/`ziggy`/`afl` build through the fuzzer's own driver (a `RUSTC_WRAPPER`
+adds `--emit=llvm-bc`), so the bitcode carries the real `cfg(fuzzing)`, opt level,
+and instrumentation; `--build-cmd` overrides the command. `rust`/`mixed` use a
+plain `cargo build`, tunable with `--profile` / `--codegen-units`.
 
 The C/C++ targets root at both `main` and `LLVMFuzzerTestOneInput`, so one
 `--lang c`/`cpp` covers a normal program and an LLVMFUzzerTestOneInput harness alike. A default
@@ -278,11 +331,33 @@ need to type a mangled symbol.
 
 #### Matching the fuzz binary's build
 
-For Rust targets the driver builds its own bitcode (`cargo build --emit=llvm-bc`)
-and computes reachability from that. For the resulting `reached.txt` /
-`not_reached.txt` to line up with the binary you actually instrument, that
-bitcode build should match the fuzz binary's build. Two Rust-only options control
-this; both default to the most common fuzzer setup and are ignored for C/C++.
+The reachable set must be computed from a build that matches the binary you
+instrument: the optimization level, `cfg(fuzzing)`, feature flags, and
+`debug_assertions`/`overflow_checks` all change *which* functions are compiled,
+which wildcard `fun:` patterns cannot recover.
+
+**`libfuzzer`/`ziggy`/`afl` handle this automatically** by building through the
+fuzzer's own driver (`cargo fuzz build` / `cargo ziggy build --no-honggfuzz` /
+`cargo afl build`) with a `RUSTC_WRAPPER` that adds `--emit=llvm-bc`. So the
+bitcode already carries the harness's real cfgs and flags. `--profile release`
+adds `--release`; `--build-cmd` overrides the command for anything finer (a
+specific target, sanitizer, or profile). `--codegen-units` does not apply (the
+tool sets it).
+
+`cargo-afl` and `ziggy` builds run with `AFLRS_REQUIRE_PLUGINS=1`, so they fail
+loudly when the AFL++ LLVM plugins are missing rather than silently building with
+weaker instrumentation that would not match your real fuzzer; install them with
+`cargo afl config --build --plugins --force`.
+
+A build only emits bitcode for the crates it actually (re)compiles, so a **cached
+build yields nothing**. The driver detects this — a fully cached run aborts with a
+clear "build was CACHED" error — so `cargo clean` (or remove `fuzz/target` for
+cargo-fuzz) before the run. (Setting `RUSTC_WRAPPER` forces a rebuild the first
+time; a second consecutive run is the cache hit that trips the check.)
+
+For **plain `--lang rust`** the driver runs `cargo build --emit=llvm-bc`, and two
+options match it to the fuzz binary (both ignored for C/C++); their defaults aim
+at a stock cargo build.
 
 - **`--profile {debug,release}`** (default `debug`) — the cargo profile. The
   optimization level drives generic *sharing* (rustc's `-Zshare-generics` is on
@@ -290,27 +365,35 @@ this; both default to the most common fuzzer setup and are ignored for C/C++.
   generic, and so which monomorphizations exist and how they are mangled. A
   debug snapshot against a release fuzz binary (or vice versa) therefore produces
   a different function set. Pass `--profile release` for an optimized fuzz build.
+  There is no manifest "default profile" in cargo (the profile is picked by the
+  build command), so when omitted this defaults to `debug` — cargo's own default
+  for a bare `cargo build`.
 
-- **`--codegen-units N`** (default `1`) — passed through verbatim as rustc
-  `-Ccodegen-units`. The unit count sets inlining boundaries, hence which
-  monomorphizations survive as standalone functions rather than being inlined
-  away. `N` is any **positive integer** (rustc rejects `0`/negative). Useful
-  values:
-  - **`1`** — a single unit per crate: maximum inlining and exactly one `.bc` per
-    crate. Many fuzzing profiles pin `codegen-units = 1` for better optimization,
-    so the default already matches them.
-  - **`16`** — the rustc default for a cargo **release** build (incremental off).
-  - **`256`** — the rustc default for a cargo **dev/debug** build (incremental on).
+- **`--codegen-units N`** — passed through verbatim as rustc `-Ccodegen-units`.
+  The unit count sets inlining boundaries, hence which monomorphizations survive
+  as standalone functions rather than being inlined away. `N` is any **positive
+  integer** (rustc rejects `0`/negative). When **omitted it is auto-detected** to
+  match how cargo would build the chosen profile:
+  1. the project's `Cargo.toml` `[profile.<name>] codegen-units` — searched from
+     `--project` up to the workspace root, since cargo honours the root
+     manifest's profiles (`<name>` is `dev` for `--profile debug`, else
+     `release`); otherwise
+  2. cargo's per-profile default — **256** for `debug` (dev), **16** for
+     `release`.
 
+  Common explicit value: **`1`** — a single unit per crate (maximum inlining, one
+  `.bc` per crate). Many fuzzing setups pin `codegen-units = 1`; if your
+  `Cargo.toml` does, auto-detect already picks it up, so you rarely need the flag.
   With `N` > 1 rustc splits each crate into several
   `target/<profile>/deps/<crate>-<hash>.<cgu>.rcgu.bc` files; the driver collects
   all of them.
 
-**How to choose.** Use whatever your fuzz build uses. That is the cargo/rustc
-default for its profile (release → 16, dev → 256) unless a `[profile.*]
-codegen-units` in `Cargo.toml` or a `-Ccodegen-units` in `RUSTFLAGS` overrides
-it. If unsure, build the fuzz target with `codegen-units = 1` and keep the
-defaults here — the two then agree.
+**How to choose.** Usually you do not have to: set `--profile` to your fuzz
+build's profile and codegen-units auto-detects the rest from `Cargo.toml`.
+Override `--codegen-units` only when the fuzz binary is built with a value that
+is neither in the manifest nor the cargo default for that profile (e.g. one
+forced via `-Ccodegen-units` in `RUSTFLAGS`). `-v` prints the resolved
+`profile=… codegen-units=…` so you can confirm the match.
 
 The `fun:` patterns in the lists already tolerate the Rust mangling
 *disambiguator* (`17h<hash>`) drifting between builds (see [Output](#output)), but
@@ -362,9 +445,11 @@ clang -fsanitize-coverage=trace-pc-guard -fsanitize-coverage-ignorelist=not_reac
 > which both clang sancov and AFL++ honour, so an entry matches the instance in
 > any build. An ignorelist pattern that would also match a *reachable* instance
 > is dropped, so excluding unreachable code never excludes reachable code.
-> For best fidelity still build the snapshot with the same `--profile` and
-> `--codegen-units` as the fuzz binary, so the *set* of emitted monomorphizations
-> matches; the `*` only tolerates the disambiguator, not a different function set.
+> The `*` only tolerates the disambiguator, not a different function *set*, so
+> still build the snapshot like the fuzz binary — automatic for
+> `libfuzzer`/`ziggy`/`afl`, or matched via `--profile`/`--codegen-units` for
+> plain `--lang rust` (see
+> [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)).
 
 ## Indirect-call resolution
 

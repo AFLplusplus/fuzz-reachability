@@ -27,6 +27,50 @@ def test_base_re_strips_codegen_unit_split():
         "", "bintest-210615be512f3a47.0hz4fx5p6ud5e1erzexk3zjx4.0e3d7bm.rcgu.bc") == "bintest"
 
 
+def test_resolve_codegen_units_explicit_wins(tmp_path):
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "x"\n[profile.release]\ncodegen-units = 1\n')
+    assert acquire_rust._resolve_codegen_units(str(tmp_path), "release", 4) == 4
+
+
+def test_resolve_codegen_units_from_manifest(tmp_path):
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "x"\n[profile.release]\ncodegen-units = 1\n')
+    assert acquire_rust._resolve_codegen_units(str(tmp_path), "release", None) == 1
+
+
+def test_resolve_codegen_units_debug_reads_dev_section(tmp_path):
+    (tmp_path / "Cargo.toml").write_text(
+        '[package]\nname = "x"\n[profile.dev]\ncodegen-units = 7\n')
+    assert acquire_rust._resolve_codegen_units(str(tmp_path), "debug", None) == 7
+
+
+def test_resolve_codegen_units_cargo_defaults(tmp_path):
+    (tmp_path / "Cargo.toml").write_text('[package]\nname = "x"\n')
+    assert acquire_rust._resolve_codegen_units(str(tmp_path), "debug", None) == 256
+    assert acquire_rust._resolve_codegen_units(str(tmp_path), "release", None) == 16
+
+
+def test_build_looks_cached_cargo():
+    assert acquire_rust._build_looks_cached("    Finished `dev` profile in 0.04s")
+    assert not acquire_rust._build_looks_cached(
+        "   Compiling foo v0.1.0\n    Finished `dev` profile in 3.0s")
+    assert not acquire_rust._build_looks_cached("")
+
+
+def test_build_looks_cached_make():
+    assert acquire_rust._build_looks_cached("make: Nothing to be done for 'all'.")
+
+
+def test_manifest_codegen_units_walks_up_to_workspace_root(tmp_path):
+    (tmp_path / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["m"]\n[profile.release]\ncodegen-units = 1\n')
+    member = tmp_path / "m"
+    member.mkdir()
+    (member / "Cargo.toml").write_text('[package]\nname = "m"\n')
+    assert acquire_rust._manifest_codegen_units(str(member), "release") == 1
+
+
 def test_config_rustflags_read_array(tmp_path):
     cfg = tmp_path / ".cargo" / "config.toml"
     cfg.parent.mkdir(parents=True)
@@ -143,6 +187,30 @@ def test_build_bc_paths_includes_bin_crate(tmp_path):
     })
     bcs = acquire_rust._build_bc_paths(lib + "\n" + binmsg)
     assert bcs == sorted([str(lib_bc), str(bin_bc)])
+
+
+def test_build_bc_paths_includes_staticlib_crate(tmp_path):
+    # A staticlib (like cdylib/dylib) reports only the un-hashed uplifted output
+    # path, so its bitcode must be resolved by crate name -- including every
+    # codegen unit when codegen-units > 1.
+    debug = tmp_path / "target" / "debug"
+    deps = debug / "deps"
+    deps.mkdir(parents=True)
+    cgus = [deps / f"rust_dyn-abcdef0123456789.cgu{i}.rcgu.bc" for i in range(3)]
+    stale = deps / "rust_dyn-0000000000000000.cgu0.rcgu.bc"
+    for p in (*cgus, stale):
+        p.write_text("x")
+    for p in cgus:
+        os.utime(p, (10, 10))
+    os.utime(stale, (1, 1))
+    msg = json.dumps({
+        "reason": "compiler-artifact",
+        "target": {"name": "rust_dyn", "kind": ["staticlib"]},
+        "filenames": [str(debug / "librust_dyn.a")],
+        "executable": None,
+    })
+    bcs = acquire_rust._build_bc_paths(msg)
+    assert bcs == sorted(str(p) for p in cgus)
 
 
 def test_build_bc_paths_bin_picks_newest(tmp_path):

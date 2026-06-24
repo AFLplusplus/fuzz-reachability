@@ -86,7 +86,7 @@ reachability run --lang cpp \
   --artifact harness.o \
   --static-libs all \
   --entry LLVMFuzzerTestOneInput \
-  --out libxml2.json -v
+  -v
 ```
 Note the `--static-libs all` - this is important!
 
@@ -238,7 +238,9 @@ A ziggy harness has **no `LLVMFuzzerTestOneInput`** — the entry is the Rust
 
 A built analyzer and a recent **nightly** rustc/cargo. The analyzer's LLVM must
 be at least as new as rustc's (here: analyzer 22, rustc 21.1.1 — fine).
-`reachability check-toolchain` confirms it.
+`reachability check-toolchain` confirms it. `--lang ziggy` builds via `cargo afl`
+under the hood, so the AFL++ LLVM plugins must be installed
+(`cargo afl config --build --plugins --force`).
 
 ### Step 1 — Get the harness
 
@@ -250,28 +252,23 @@ cd ziggy
 ### Step 2 — Run the analysis
 
 ```bash
-# url-fuzz is a workspace member, so cargo would write its bitcode to the
-# workspace target dir; keep it next to the crate so the driver finds it:
-export CARGO_TARGET_DIR="$PWD/examples/url/target"
-
-reachability run --lang ziggy --project examples/url --out url.json -v
+reachability run --lang ziggy --project examples/url -v
 ```
 
 What happens:
 
-- **`--lang ziggy`** builds with `RUSTFLAGS="--emit=llvm-bc …"`, collects the
-  per-crate `.bc` from `target/<profile>/deps/`, merges them, and roots at `main`.
-- **Match the fuzz binary's build.** Pass `--profile release` and
-  `--codegen-units N` to mirror the `cargo ziggy build` that produces the binary
-  you instrument (opt level decides generic sharing, codegen units decide
-  inlining — both change which monomorphizations exist). The emitted `fun:`
-  patterns already tolerate the Rust `17h<hash>` mangling disambiguator drifting
-  between builds, but only matching profile/codegen-units lines up the function
-  *set*.
-- **`CARGO_TARGET_DIR`** — because `examples/url` is a member of ziggy's
-  workspace, cargo would otherwise emit bitcode into the *workspace* `target/`,
-  not `examples/url/target/`, where the driver looks. Pointing it at the crate's
-  own `target/` keeps the two in sync. (A standalone crate needs no such step.)
+- **`--lang ziggy`** builds through ziggy's own driver
+  (`cargo ziggy build --no-honggfuzz`) under a `RUSTC_WRAPPER` that adds
+  `--emit=llvm-bc`, collects each crate's `.bc`, merges them, and roots at `main`.
+  Collection reads the bitcode straight from each rustc `--out-dir`, so it does
+  not matter that `examples/url` is a workspace member whose target dir lives at
+  the workspace root — no `CARGO_TARGET_DIR` juggling needed.
+- **The build matches the fuzz binary automatically.** Because it is ziggy's real
+  build, the bitcode already carries the same `cfg(fuzzing)`, optimization level,
+  and instrumentation as the binary you instrument — so the reachable set lines
+  up. `--profile release` adds `--release`; `--build-cmd` overrides the command
+  for a specific target/sanitizer/profile. Clean first (`cargo clean`) if the
+  build is already cached, or no bitcode is emitted.
 
 ### Step 3 — Read the report
 
@@ -335,15 +332,15 @@ fn main() {
 ```
 
 Like ziggy, a cargo-afl harness keeps its fuzz loop in `main`, so reachability
-roots at the Rust `main` (the `--lang afl` shape). But `afl_runner` is
-**feature-gated** (`required-features = ["afl"]`), and `reachability run` issues a
-plain `cargo build` with no `--features afl`, so the one-liner never builds the
-harness. This target therefore takes the **manual route** — emit bitcode with the
-feature enabled, `llvm-link`, then run the analyzer directly.
-
-Unlike rustyknife's ancient `afl` 0.8, cpp_demangle pins a current `afl` 0.17 that
-compiles cleanly on a modern toolchain — only the final link fails (the AFL
-runtime is absent), which is exactly what `--emit=llvm-bc` expects.
+roots at the Rust `main` (the `--lang afl` shape). `reachability run --lang afl`
+builds with `cargo afl build`, but `afl_runner` is **feature-gated**
+(`required-features = ["afl"]`), so the bin is skipped unless you pass the
+feature: `--build-cmd 'cargo afl build --features afl --bin afl_runner'` (which
+needs the AFL++ LLVM plugins installed). The **manual route** shown here needs
+neither the plugins nor a working AFL runtime — emit bitcode with the feature
+enabled, `llvm-link`, then run the analyzer directly. cpp_demangle pins a current
+`afl` 0.17 that compiles cleanly on a modern toolchain; only the final link fails
+(the AFL runtime is absent), which is exactly what `--emit=llvm-bc` expects.
 
 ### Step 1 — Get it
 
@@ -373,12 +370,17 @@ reachability-analyzer merged.bc --entry main \
 ```
 
 (`reachability-analyzer` is the built binary or `$REACHABILITY_ANALYZER`;
-`llvm-link-22` is the LLVM tool matching the analyzer's major.)
+`llvm-link-22` is the LLVM tool matching the analyzer's major. Run directly it
+writes the JSON report and the two lists; `reachability run` wraps these steps
+and additionally prints a one-line summary.)
 
 ### Step 4 — Read the report
 
-```
-reachable 1134 / defined 2446  (26 indirect-only, 1312 unreachable)  [backend=type-based]
+The report's `summary` (in `cpp_demangle.json`) holds the counts:
+
+```json
+"backend": "type-based",
+"summary": { "defined": 2446, "reachable": 1134, "indirect_only": 26, "unreachable": 1312 }
 ```
 
 As with ziggy, `--entry main` resolves to both the C-ABI shim and the real Rust
@@ -451,14 +453,15 @@ fn main() {
 }
 ```
 
-Two things differ from the `url` walkthrough, so this one uses the **manual
+Two things differ from the `url` walkthrough, so the native `--lang afl` path
+(which would run `cargo afl build`) does not fit, and this one uses the **manual
 route** — emit bitcode, `llvm-link`, then run the analyzer directly:
 
 - The `fuzz_mailbox` bin is **feature-gated** (`required-features = ["fuzz"]`),
-  so it builds only with `cargo build --features fuzz`.
+  so it builds only with `--features fuzz`.
 - rustyknife pins the **old `afl` 0.8** crate, whose bundled AFL does not compile
-  on current toolchains. We need only the bitcode, not AFL's runtime, so we nudge
-  its build past two checks.
+  on current toolchains — so `cargo afl build` cannot complete. We need only the
+  bitcode, not AFL's runtime, so we nudge its build past two checks.
 
 ### Step 1 — Get it
 
@@ -501,16 +504,21 @@ fuzz build); they decide which monomorphizations are emitted. With
 ```bash
 llvm-link-22 target/debug/deps/*.bc -o merged.bc     # one .bc per crate; clean deps/ first if you rebuilt
 reachability-analyzer merged.bc --entry main \
-  --out afl.json --reached-out reached.txt --not-reached-out not_reached.txt
+  --out rustyknife.json --reached-out reached.txt --not-reached-out not_reached.txt
 ```
 
 (`reachability-analyzer` is the built binary or `$REACHABILITY_ANALYZER`;
-`llvm-link-22` is the LLVM tool matching the analyzer's major.)
+`llvm-link-22` is the LLVM tool matching the analyzer's major. Run directly it
+writes the JSON report and the two lists; `reachability run` wraps these steps
+and additionally prints a one-line summary.)
 
 ### Step 4 — Read the report
 
-```
-reachable 2217 / defined 17000  (79 indirect-only, 14783 unreachable)  [backend=type-based]
+The report's `summary` (in `rustyknife.json`) holds the counts:
+
+```json
+"backend": "type-based",
+"summary": { "defined": 17000, "reachable": 2217, "indirect_only": 79, "unreachable": 14783 }
 ```
 
 As with ziggy, `--entry main` resolves to both the C-ABI shim and the real Rust

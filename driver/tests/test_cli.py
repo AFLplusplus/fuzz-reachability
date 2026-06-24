@@ -29,6 +29,19 @@ def test_default_analyzer_missing_binary_errors(monkeypatch):
         cli.default_analyzer()
 
 
+def test_native_build_cmd_defaults():
+    assert cli._native_build_cmd("afl", None) == ["cargo", "afl", "build"]
+    assert cli._native_build_cmd("ziggy", None) == [
+        "cargo", "ziggy", "build", "--no-honggfuzz"]
+    assert cli._native_build_cmd("libfuzzer", None) == ["cargo", "fuzz", "build"]
+
+
+def test_native_build_cmd_release():
+    assert cli._native_build_cmd("afl", "release")[-1] == "--release"
+    assert cli._native_build_cmd("ziggy", "release")[-1] == "--release"
+    assert cli._native_build_cmd("libfuzzer", "release")[-1] == "--release"
+
+
 def test_target_entry_defaults():
     # source languages and harness target types each imply their default entry.
     assert cli.TARGETS["c"] == ("c", ["main", "LLVMFuzzerTestOneInput"])

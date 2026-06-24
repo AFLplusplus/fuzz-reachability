@@ -40,6 +40,14 @@ _KIND_RANK = {"exec": 3, "shared": 2, "archive": 1, "object": 0}
 _MACHO_MAGIC = (0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE, 0xCAFEBABE)
 
 
+def _build_looks_cached(output):
+    """True when the build tool reported it (re)compiled nothing, so the
+    artifact bitcode reflects an earlier compile rather than this run."""
+    t = output or ""
+    return any(m in t for m in ("Nothing to be done", " is up to date",
+                                "ninja: no work to do", "Nothing to do"))
+
+
 def _build_env(clang_bindir: str) -> dict:
     env = dict(os.environ)
     env["CC"] = "gclang"
@@ -324,6 +332,12 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
         detail = "" if verbose else f":\n{r.stdout}\n{r.stderr}"
         raise AcquireError(f"build failed (exit {r.returncode}){detail}")
 
+    cached = not verbose and _build_looks_cached((r.stdout or "") + "\n" + (r.stderr or ""))
+    if cached:
+        print("warning: the build is CACHED (nothing was recompiled); the "
+              "extracted bitcode reflects the existing artifact, not this run. "
+              "Rebuild from clean if the target or its flags changed.")
+
     explicit = os.path.join(project_dir, artifact) if artifact else None
     if explicit and os.path.exists(explicit):
         candidates = [explicit]
@@ -331,7 +345,7 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
         if explicit:
             print(f"warning: --artifact {artifact!r} not found after build; "
                   "auto-detecting the build product")
-        candidates = find_artifacts(project_dir, newer_than=before)
+        candidates = find_artifacts(project_dir, newer_than=None if cached else before)
     if not candidates:
         raise AcquireError(
             f"no build artifact with embedded bitcode found under {project_dir}; "

@@ -6,7 +6,9 @@ splits a crate across codegen units. Collection handles both. profile and
 codegen_units should mirror the fuzz binary's build: opt level governs generic
 sharing and codegen-units governs inlining, both of which decide which
 monomorphizations are emitted -- a mismatch yields a reachable set that does not
-line up with the instrumented binary.
+line up with the instrumented binary. codegen_units defaults to the project's
+Cargo.toml [profile.<name>] value, else cargo's per-profile default (dev 256,
+release 16); cargo has no manifest default profile, so profile defaults to debug.
 The final link step is expected to fail under --emit=llvm-bc; that is fine -- we
 only consume the .bc files, so collection proceeds past a link error. A genuine
 *compile* error (a crate or build script that fails to build) is fatal instead,
@@ -27,12 +29,15 @@ RUSTFLAGS naively would override (not merge with) cargo's config, dropping proje
 flags such as `--cfg tokio_unstable` and breaking the build.
 """
 
+import atexit
 import glob
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import tomllib
 
 
@@ -50,6 +55,16 @@ _COMPILE_ERROR_MARKERS = (
     "error: cannot determine",
     "error: could not find",
 )
+
+
+def _build_looks_cached(output):
+    """True when the build tool reported it (re)compiled nothing, so its
+    artifacts/bitcode reflect an earlier compile rather than this run."""
+    t = output or ""
+    if any(m in t for m in ("Nothing to be done", " is up to date",
+                            "ninja: no work to do", "Nothing to do")):
+        return True
+    return "Finished" in t and "Compiling " not in t
 
 
 def _emit_flags(build_std: bool, codegen_units: int = 1):
@@ -105,6 +120,48 @@ def _config_rustflags(project_dir):
     return []
 
 
+_PROFILE_SECTION = {"debug": "dev", "release": "release"}
+_CARGO_DEFAULT_CGU = {"debug": 256, "release": 16}
+
+
+def _manifest_codegen_units(project_dir, profile):
+    """codegen-units for `profile` from the nearest Cargo.toml up from
+    project_dir that sets [profile.<name>] codegen-units (cargo honours the
+    workspace-root manifest's profiles, which is found on the way up), or None
+    when no manifest in the chain sets it."""
+    name = _PROFILE_SECTION.get(profile, profile)
+    d = os.path.abspath(project_dir)
+    while True:
+        try:
+            with open(os.path.join(d, "Cargo.toml"), "rb") as fh:
+                cfg = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError):
+            cfg = None
+        if cfg:
+            section = cfg.get("profile", {}).get(name) if isinstance(
+                cfg.get("profile"), dict) else None
+            if isinstance(section, dict) and "codegen-units" in section:
+                try:
+                    return int(section["codegen-units"])
+                except (TypeError, ValueError):
+                    return None
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def _resolve_codegen_units(project_dir, profile, codegen_units):
+    """An explicit codegen_units wins; otherwise the project's Cargo.toml profile
+    value, else cargo's documented per-profile default (dev 256, release 16)."""
+    if codegen_units is not None:
+        return codegen_units
+    found = _manifest_codegen_units(project_dir, profile)
+    if found is not None:
+        return found
+    return _CARGO_DEFAULT_CGU.get(profile, 16)
+
+
 def _compose_rustflags(project_dir, build_std, codegen_units=1):
     """The full rustc flag list: our emit flags plus whatever flags cargo would
     otherwise apply -- the caller's CARGO_ENCODED_RUSTFLAGS / RUSTFLAGS, or the
@@ -137,16 +194,20 @@ def _compile_errors(text):
             if any(s.startswith(m) for m in _COMPILE_ERROR_MARKERS)]
 
 
-def _bin_bc_paths(msg, files):
-    """The .bc files for a bin artifact, whose cargo message carries only the bare
-    executable path (target/<profile>/<name>, no build hash) -- so the hash-based
-    collection below cannot match it and the harness body would be dropped. rustc
-    emits the unit's bitcode as deps/<name with '-' -> '_'>-<hash>.bc (or several
+_NAMED_KINDS = ("bin", "cdylib", "staticlib", "dylib")
+
+
+def _named_bc_paths(msg, files):
+    """The .bc files for a link-product artifact (bin/cdylib/staticlib/dylib),
+    whose cargo message carries only the bare or uplifted output path
+    (target/<profile>/<name>, no build hash) -- so the hash-based collection
+    below cannot match it and the crate body would be dropped. rustc emits the
+    unit's bitcode as deps/<name with '-' -> '_'>-<hash>.bc (or several
     .<cgu>.rcgu.bc under codegen-units > 1); take every .bc of the newest build's
     hash (a rebuild rewrites them, so newest is this build's). Returns [] for
-    non-bin targets or when no matching .bc exists."""
+    other targets or when no matching .bc exists."""
     kind = msg.get("target", {}).get("kind") or []
-    if "bin" not in kind:
+    if not any(k in _NAMED_KINDS for k in kind):
         return []
     name = msg.get("target", {}).get("name")
     if not name or not files:
@@ -166,11 +227,12 @@ def _bin_bc_paths(msg, files):
 
 def _build_bc_paths(stdout):
     """The .bc files this build produced, from cargo's json compiler-artifact
-    messages: a library unit carries the build hash in its output filenames, and
-    the matching deps/*-<hash>.bc lives beside them. A bin unit carries only the
-    bare executable path (no hash), so its bitcode is resolved by name via
-    _bin_bc_paths. One or more .bc per built crate; stale .bc from other builds (different
-    or absent hash) are not included."""
+    messages: a library (rlib) unit carries the build hash in its output
+    filenames, and the matching deps/*-<hash>.bc lives beside them. A
+    bin/staticlib/cdylib/dylib unit carries only the bare or uplifted output path
+    (no hash), so its bitcode is resolved by name via _named_bc_paths. One or more
+    .bc per built crate; stale .bc from other builds (different or absent hash)
+    are not included."""
     bcs = set()
     for line in stdout.splitlines():
         line = line.strip()
@@ -192,7 +254,7 @@ def _build_bc_paths(stdout):
                 bcs.update(glob.glob(os.path.join(os.path.dirname(f), f"*-{m.group(1)}*.bc")))
                 matched = True
         if not matched:
-            bcs.update(_bin_bc_paths(msg, files))
+            bcs.update(_named_bc_paths(msg, files))
     return sorted(bcs)
 
 
@@ -212,11 +274,13 @@ def _dedup_newest_per_crate(paths):
 
 
 def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
-                         codegen_units=1, verbose=False):
+                         codegen_units=None, verbose=False):
     """Build the Rust project and collect every .bc this build emitted.
 
     profile / codegen_units should match the fuzz binary's build so the emitted
-    monomorphizations line up with the instrumented binary.
+    monomorphizations line up with the instrumented binary. codegen_units=None
+    (the default) resolves to the project's Cargo.toml [profile.<name>]
+    codegen-units, or cargo's per-profile default when the manifest is silent.
 
     verbose: echo the cargo command and pass its diagnostics through (the
     artifact stream on stdout must be captured to be parsed, so the build cannot
@@ -225,6 +289,7 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     Returns a list of .bc paths. Raises AcquireError on a compile failure or when
     no .bc were produced.
     """
+    codegen_units = _resolve_codegen_units(project_dir, profile, codegen_units)
     env = _build_env(project_dir, build_std, codegen_units)
     cmd = ["cargo", "build", "--message-format=json-render-diagnostics"]
     if profile == "release":
@@ -232,6 +297,7 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     if build_std:
         cmd += ["-Zbuild-std", "--target", "x86_64-unknown-linux-gnu"]
     if verbose:
+        print(f"  profile={profile}, codegen-units={codegen_units}")
         print("  " + " ".join(cmd))
     r = subprocess.run(cmd, cwd=project_dir, env=env, capture_output=True, text=True)
     if verbose and r.stderr.strip():
@@ -242,6 +308,11 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
         raise AcquireError(
             "cargo failed to compile a crate, so the bitcode set would be "
             "incomplete -- fix the build first:\n  " + "\n  ".join(errs[:20]))
+
+    if _build_looks_cached(r.stderr):
+        print("warning: cargo recompiled nothing -- this build is CACHED, so the "
+              "bitcode is from an earlier compile and may be stale. Run "
+              "`cargo clean` and re-run for a fresh build.")
 
     bcs = _build_bc_paths(r.stdout)
     if not bcs:
@@ -258,4 +329,90 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     if not bcs:
         raise AcquireError(f"no .bc produced under {project_dir}/target/{profile}/deps/")
     print(f"rust bitcode: {len(bcs)} crate modules")
+    return bcs
+
+
+_BC_WRAPPER = """#!/bin/sh
+real="$1"
+shift
+"$real" "$@" --emit=llvm-bc
+status=$?
+[ -n "$REACH_BC_DIR" ] || exit $status
+outdir=""
+cname=""
+ctype=""
+prev=""
+for a in "$@"; do
+  case "$a" in
+    --out-dir=*) outdir="${a#--out-dir=}" ;;
+    --crate-name=*) cname="${a#--crate-name=}" ;;
+    --crate-type=*) ctype="${a#--crate-type=}" ;;
+  esac
+  case "$prev" in
+    --out-dir) outdir="$a" ;;
+    --crate-name) cname="$a" ;;
+    --crate-type) ctype="$a" ;;
+  esac
+  prev="$a"
+done
+[ -n "$outdir" ] && [ -n "$cname" ] || exit $status
+case "$cname" in build_script_*) exit $status ;; esac
+case "$ctype" in *proc-macro*) exit $status ;; esac
+for f in "$outdir/$cname"-*.bc; do
+  [ -e "$f" ] && cp -f "$f" "$REACH_BC_DIR/" 2>/dev/null
+done
+exit $status
+"""
+
+
+def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=False):
+    """Build via the fuzzer's own command (cargo afl/ziggy/fuzz, or a custom
+    build_cmd) and collect the bitcode it emits. A RUSTC_WRAPPER adds
+    --emit=llvm-bc to every crate rustc compiles and copies that crate's .bc into
+    a private directory, so the harness keeps the cfgs and flags its real build
+    sets (cfg(fuzzing), opt level, instrumentation) -- which a plain `cargo build`
+    would miss -- and collection is independent of where the tool writes output.
+
+    AFLRS_REQUIRE_PLUGINS=1 is set so cargo-afl / ziggy fail loudly when the AFL++
+    LLVM plugins are absent instead of silently building with weaker
+    instrumentation that would not match the real fuzzer.
+
+    build_cmd is an argv list, or a shell string when shell=True. Returns the
+    collected .bc paths. Raises AcquireError on a build failure, or when nothing
+    was captured (a fully cached build never re-runs rustc)."""
+    collect = tempfile.mkdtemp(prefix="reach-bc-")
+    atexit.register(shutil.rmtree, collect, ignore_errors=True)
+    wrapper = os.path.join(collect, ".rustc-bc-wrapper.sh")
+    with open(wrapper, "w") as fh:
+        fh.write(_BC_WRAPPER)
+    os.chmod(wrapper, 0o755)
+
+    env = dict(os.environ)
+    env["RUSTC_WRAPPER"] = wrapper
+    env["REACH_BC_DIR"] = collect
+    env.setdefault("AFLRS_REQUIRE_PLUGINS", "1")
+
+    argv = ["sh", "-c", build_cmd] if shell else list(build_cmd)
+    if verbose:
+        print("  native build: " + (build_cmd if shell else " ".join(argv)))
+    r = subprocess.run(argv, cwd=project_dir, env=env, capture_output=True, text=True)
+    if verbose and r.stderr.strip():
+        print(r.stderr.strip())
+    if r.returncode != 0:
+        tail = (r.stderr.strip() or r.stdout.strip())[-2000:]
+        hint = ""
+        if "plugin" in tail.lower():
+            hint = ("\n  AFL++ LLVM plugins are required (AFLRS_REQUIRE_PLUGINS=1); "
+                    "build them with `cargo afl config --build --plugins --force`.")
+        raise AcquireError("the fuzzer build failed; fix it first:\n  " + tail + hint)
+
+    bcs = sorted(glob.glob(os.path.join(collect, "*.bc")))
+    if not bcs:
+        why = ("the build was CACHED (the tool recompiled nothing), so rustc "
+               "never ran" if _build_looks_cached(r.stderr + "\n" + r.stdout)
+               else "no bitcode was captured")
+        raise AcquireError(
+            why + ". Clean it first (e.g. `cargo clean`, or for cargo-fuzz remove "
+            "fuzz/target) and re-run so every crate compiles under the wrapper.")
+    print(f"rust bitcode (native build): {len(bcs)} crate modules")
     return bcs

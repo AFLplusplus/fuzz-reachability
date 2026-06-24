@@ -30,6 +30,19 @@ TARGETS = {
     "afl":       ("rust",  ["main"]),
 }
 
+_RUST_NATIVE = {
+    "afl":       ["cargo", "afl", "build"],
+    "ziggy":     ["cargo", "ziggy", "build", "--no-honggfuzz"],
+    "libfuzzer": ["cargo", "fuzz", "build"],
+}
+
+
+def _native_build_cmd(lang, profile):
+    cmd = list(_RUST_NATIVE[lang])
+    if profile == "release":
+        cmd.append("--release")
+    return cmd
+
 
 def default_analyzer():
     repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -64,12 +77,26 @@ def _acquire(args, tc, verbose=False):
             )
         )
     if mode in ("rust", "mixed"):
-        bcs.extend(
-            acquire_rust.acquire_rust_bitcode(
-                args.project, profile=args.profile, build_std=args.build_std,
-                codegen_units=args.codegen_units, verbose=verbose
+        if args.lang in _RUST_NATIVE:
+            cmd = args.build_cmd or _native_build_cmd(args.lang, args.profile)
+            shell = args.build_cmd is not None
+            if verbose and not shell:
+                print(f"build command: {' '.join(cmd)} (native {args.lang} build)")
+            elif args.build_cmd:
+                print(f"build command: {args.build_cmd} (from --build-cmd)")
+            bcs.extend(
+                acquire_rust.acquire_rust_bitcode_native(
+                    args.project, cmd, shell=shell, verbose=verbose
+                )
             )
-        )
+        else:
+            bcs.extend(
+                acquire_rust.acquire_rust_bitcode(
+                    args.project, profile=(args.profile or "debug"),
+                    build_std=args.build_std, codegen_units=args.codegen_units,
+                    verbose=verbose
+                )
+            )
     return bcs
 
 
@@ -153,10 +180,12 @@ def build_parser():
                         "from, relative to --project (default: auto-detect the "
                         "build product)")
     r.add_argument("--build-cmd", default=None, dest="build_cmd",
-                   help="shell build command for C/C++ (default: auto-detected "
-                        "from configure/Makefile/CMakeLists.txt/build.ninja/"
-                        "meson.build, else make); "
-                        "e.g. 'cmake -S . -B build && cmake --build build'")
+                   help="shell build command. C/C++ (default: auto-detected from "
+                        "configure/Makefile/CMakeLists.txt/build.ninja/meson.build, "
+                        "else make; e.g. 'cmake -S . -B build && cmake --build "
+                        "build'). For libfuzzer/ziggy/afl it overrides the native "
+                        "build command (default `cargo fuzz build` / `cargo ziggy "
+                        "build --no-honggfuzz` / `cargo afl build`)")
     r.add_argument("--static-libs", default="auto",
                    choices=["auto", "none", "all"],
                    help="C/C++: how to treat static archives (.a) the target "
@@ -172,13 +201,18 @@ def build_parser():
     r.add_argument("--backend", default=None,
                    help="deprecated and ignored; the type-based backend is "
                         "always used")
-    r.add_argument("--profile", default="debug", choices=["debug", "release"],
-                   help="cargo profile for the Rust bitcode build; match the "
-                        "fuzz binary's profile so generic sharing (opt level) "
-                        "lines up (default: debug)")
-    r.add_argument("--codegen-units", type=int, default=1, dest="codegen_units",
-                   help="-Ccodegen-units for the Rust bitcode build; match the "
-                        "fuzz binary's value so inlining lines up (default: 1)")
+    r.add_argument("--profile", default=None, choices=["debug", "release"],
+                   help="build profile. For libfuzzer/ziggy/afl, 'release' adds "
+                        "--release to the native command (else the tool's default). "
+                        "For plain --lang rust it is the cargo profile (default "
+                        "debug); match the fuzz binary's profile so generic sharing "
+                        "(opt level) lines up")
+    r.add_argument("--codegen-units", type=int, default=None, dest="codegen_units",
+                   help="-Ccodegen-units for plain --lang rust builds; match the "
+                        "fuzz binary's value so inlining lines up. Default: the "
+                        "project's Cargo.toml [profile.<name>] codegen-units, else "
+                        "cargo's per-profile default (debug 256, release 16). "
+                        "Ignored for libfuzzer/ziggy/afl (their build sets it)")
     r.add_argument("--build-std", action="store_true", dest="build_std")
     r.add_argument("--dot", default=None)
     r.add_argument("--reached", default=None,
