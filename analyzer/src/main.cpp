@@ -140,6 +140,16 @@ void resolveEntries(Module &m, const std::vector<std::string> &requested,
   }
 }
 
+void disableDebugInfoAutoUpgrade() {
+  auto &opts = cl::getRegisteredOptions();
+  auto it = opts.find("disable-auto-upgrade-debug-info");
+  if (it == opts.end())
+    return;
+  auto *o = static_cast<cl::opt<bool> *>(it->second);
+  if (o->getNumOccurrences() == 0)
+    *o = true;
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -147,6 +157,7 @@ int main(int argc, char **argv) {
     os << "reachability-analyzer (LLVM " << reach::linkedLLVMMajor() << ")\n";
   });
   cl::ParseCommandLineOptions(argc, argv, "static fuzz-reachability analyzer\n");
+  disableDebugInfoAutoUpgrade();
 
   if (!SelfTestDemangle.empty()) {
     outs() << reach::demangle(SelfTestDemangle) << "\n";
