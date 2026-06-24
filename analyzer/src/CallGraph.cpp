@@ -1,11 +1,14 @@
 #include "CallGraph.h"
 #include "IndirectResolver.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
+#include <utility>
+#include <vector>
 
 using namespace llvm;
 
@@ -68,64 +71,75 @@ void buildIndirectEdges(Module &m, CallGraph &g, IndirectResolver &r) {
   }
 }
 
-static void collectEscapedFunctions(Value *v, Module &m,
-                                    SmallPtrSetImpl<Function *> &out,
-                                    SmallPtrSetImpl<Value *> &seen) {
-  if (!v)
-    return;
-  v = v->stripPointerCasts();
-  if (!seen.insert(v).second)
-    return;
-  if (auto *f = dyn_cast<Function>(v)) {
-    out.insert(f);
-    return;
+struct EscapeIndex {
+  DenseMap<Function *, SmallVector<CallBase *, 4>> callSites;
+  DenseMap<Value *, SmallVector<Value *, 4>> storedTo;
+};
+
+static void buildEscapeIndex(Module &m, EscapeIndex &idx) {
+  for (Function &f : m) {
+    if (f.isDeclaration())
+      continue;
+    for (Instruction &i : instructions(f)) {
+      if (auto *cb = dyn_cast<CallBase>(&i)) {
+        if (Function *callee = directCallee(*cb))
+          idx.callSites[callee].push_back(cb);
+      } else if (auto *store = dyn_cast<StoreInst>(&i)) {
+        Value *base = getUnderlyingObject(store->getPointerOperand());
+        idx.storedTo[base].push_back(store->getValueOperand());
+      }
+    }
   }
+}
+
+static Value *stripEscape(Value *v) {
+  return v ? v->stripPointerCasts() : nullptr;
+}
+
+static void escapeSuccessors(Value *v, const EscapeIndex &idx,
+                             SmallVectorImpl<Value *> &out) {
   if (auto *ga = dyn_cast<GlobalAlias>(v)) {
-    collectEscapedFunctions(ga->getAliasee(), m, out, seen);
+    out.push_back(ga->getAliasee());
     return;
   }
   if (auto *gv = dyn_cast<GlobalVariable>(v)) {
     if (gv->hasInitializer())
-      collectEscapedFunctions(gv->getInitializer(), m, out, seen);
+      out.push_back(gv->getInitializer());
+    return;
   }
   if (auto *arg = dyn_cast<Argument>(v)) {
-    Function *parent = arg->getParent();
-    for (Function &caller : m)
-      if (!caller.isDeclaration())
-        for (Instruction &i : instructions(caller))
-          if (auto *cb = dyn_cast<CallBase>(&i))
-            if (directCallee(*cb) == parent && arg->getArgNo() < cb->arg_size())
-              collectEscapedFunctions(cb->getArgOperand(arg->getArgNo()), m, out,
-                                      seen);
+    auto it = idx.callSites.find(arg->getParent());
+    if (it != idx.callSites.end())
+      for (CallBase *cb : it->second)
+        if (arg->getArgNo() < cb->arg_size())
+          out.push_back(cb->getArgOperand(arg->getArgNo()));
     return;
   }
   if (auto *load = dyn_cast<LoadInst>(v)) {
     Value *base = getUnderlyingObject(load->getPointerOperand());
-    collectEscapedFunctions(base, m, out, seen);
-    for (Function &f : m)
-      if (!f.isDeclaration())
-        for (Instruction &i : instructions(f))
-          if (auto *store = dyn_cast<StoreInst>(&i))
-            if (getUnderlyingObject(store->getPointerOperand()) == base)
-              collectEscapedFunctions(store->getValueOperand(), m, out, seen);
+    out.push_back(base);
+    auto it = idx.storedTo.find(base);
+    if (it != idx.storedTo.end())
+      out.append(it->second.begin(), it->second.end());
     return;
   }
   if (auto *call = dyn_cast<CallBase>(v)) {
     if (Function *callee = directCallee(*call))
       if (!callee->isDeclaration())
-        for (Instruction &i : instructions(callee))
+        for (Instruction &i : instructions(*callee))
           if (auto *ret = dyn_cast<ReturnInst>(&i))
-            collectEscapedFunctions(ret->getReturnValue(), m, out, seen);
+            if (Value *rv = ret->getReturnValue())
+              out.push_back(rv);
     return;
   }
   if (auto *ce = dyn_cast<ConstantExpr>(v)) {
     for (Use &u : ce->operands())
-      collectEscapedFunctions(u.get(), m, out, seen);
+      out.push_back(u.get());
     return;
   }
   if (auto *ca = dyn_cast<ConstantAggregate>(v)) {
     for (Use &u : ca->operands())
-      collectEscapedFunctions(u.get(), m, out, seen);
+      out.push_back(u.get());
     return;
   }
   if (isa<PHINode>(v) || isa<SelectInst>(v) || isa<FreezeInst>(v) ||
@@ -134,15 +148,103 @@ static void collectEscapedFunctions(Value *v, Module &m,
       isa<AllocaInst>(v)) {
     if (auto *user = dyn_cast<User>(v))
       for (Use &u : user->operands())
-        collectEscapedFunctions(u.get(), m, out, seen);
+        out.push_back(u.get());
     Value *base = getUnderlyingObject(v);
-    for (Function &f : m)
-      if (!f.isDeclaration())
-        for (Instruction &i : instructions(f))
-          if (auto *store = dyn_cast<StoreInst>(&i))
-            if (getUnderlyingObject(store->getPointerOperand()) == base)
-              collectEscapedFunctions(store->getValueOperand(), m, out, seen);
+    auto it = idx.storedTo.find(base);
+    if (it != idx.storedTo.end())
+      out.append(it->second.begin(), it->second.end());
     return;
+  }
+}
+
+static void computeEscapeSets(const std::vector<Value *> &roots,
+                              const EscapeIndex &idx,
+                              DenseMap<Value *, unsigned> &sccOf,
+                              std::vector<SmallVector<Function *, 4>> &sccSinks) {
+  struct Frame {
+    Value *v;
+    SmallVector<Value *, 8> succ;
+    unsigned next;
+  };
+  DenseMap<Value *, unsigned> index;
+  DenseMap<Value *, unsigned> low;
+  DenseSet<Value *> onStack;
+  std::vector<Value *> comp;
+  std::vector<Frame> stack;
+  unsigned counter = 0;
+
+  for (Value *root : roots) {
+    Value *r = stripEscape(root);
+    if (!r || index.count(r))
+      continue;
+    stack.push_back({r, {}, 0});
+    while (!stack.empty()) {
+      Frame &fr = stack.back();
+      Value *v = fr.v;
+      if (fr.next == 0) {
+        ++counter;
+        index[v] = counter;
+        low[v] = counter;
+        comp.push_back(v);
+        onStack.insert(v);
+        escapeSuccessors(v, idx, fr.succ);
+      }
+      bool descended = false;
+      while (fr.next < fr.succ.size()) {
+        Value *w = stripEscape(fr.succ[fr.next++]);
+        if (!w)
+          continue;
+        auto wi = index.find(w);
+        if (wi == index.end()) {
+          stack.push_back({w, {}, 0});
+          descended = true;
+          break;
+        }
+        if (onStack.count(w) && wi->second < low[v])
+          low[v] = wi->second;
+      }
+      if (descended)
+        continue;
+      if (low[v] == index[v]) {
+        unsigned id = sccSinks.size();
+        SmallVector<Value *, 8> members;
+        for (;;) {
+          Value *w = comp.back();
+          comp.pop_back();
+          onStack.erase(w);
+          members.push_back(w);
+          if (w == v)
+            break;
+        }
+        for (Value *w : members)
+          sccOf[w] = id;
+        DenseSet<Function *> funcs;
+        SmallVector<Value *, 8> succ;
+        for (Value *w : members) {
+          if (auto *f = dyn_cast<Function>(w))
+            funcs.insert(f);
+          succ.clear();
+          escapeSuccessors(w, idx, succ);
+          for (Value *s : succ) {
+            s = stripEscape(s);
+            if (!s)
+              continue;
+            auto si = sccOf.find(s);
+            if (si != sccOf.end() && si->second != id)
+              for (Function *f : sccSinks[si->second])
+                funcs.insert(f);
+          }
+        }
+        sccSinks.emplace_back(funcs.begin(), funcs.end());
+      }
+      unsigned vlow = low[v];
+      stack.pop_back();
+      if (!stack.empty()) {
+        Value *p = stack.back().v;
+        if (vlow < low[p])
+          low[p] = vlow;
+      }
+    }
   }
 }
 
@@ -161,12 +263,11 @@ static bool callsAnalyzableCallee(CallBase &cb) {
 }
 
 void buildEscapeEdges(Module &m, CallGraph &g) {
-  SmallPtrSet<Function *, 4> fns;
-  SmallPtrSet<Value *, 16> seen;
-  auto addAll = [&](Function *from) {
-    for (Function *callee : fns)
-      g.addEdge(from, callee, EdgeKind::Indirect);
-  };
+  EscapeIndex idx;
+  buildEscapeIndex(m, idx);
+
+  std::vector<std::pair<Function *, Value *>> sites;
+  std::vector<Value *> roots;
   for (Function &f : m) {
     if (f.isDeclaration())
       continue;
@@ -175,18 +276,31 @@ void buildEscapeEdges(Module &m, CallGraph &g) {
         if (callsAnalyzableCallee(*cb))
           continue;
         for (const Use &argU : cb->args()) {
-          fns.clear();
-          seen.clear();
-          collectEscapedFunctions(argU.get(), m, fns, seen);
-          addAll(&f);
+          sites.push_back({&f, argU.get()});
+          roots.push_back(argU.get());
         }
       } else if (auto *ret = dyn_cast<ReturnInst>(&i)) {
-        fns.clear();
-        seen.clear();
-        collectEscapedFunctions(ret->getReturnValue(), m, fns, seen);
-        addAll(&f);
+        if (Value *rv = ret->getReturnValue()) {
+          sites.push_back({&f, rv});
+          roots.push_back(rv);
+        }
       }
     }
+  }
+
+  DenseMap<Value *, unsigned> sccOf;
+  std::vector<SmallVector<Function *, 4>> sccSinks;
+  computeEscapeSets(roots, idx, sccOf, sccSinks);
+
+  for (const auto &site : sites) {
+    Value *r = stripEscape(site.second);
+    if (!r)
+      continue;
+    auto it = sccOf.find(r);
+    if (it == sccOf.end())
+      continue;
+    for (Function *callee : sccSinks[it->second])
+      g.addEdge(site.first, callee, EdgeKind::Indirect);
   }
 }
 
