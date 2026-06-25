@@ -14,6 +14,8 @@ is a bug.
 - Worked examples, step by step — a generic `LLVMFuzzerTestOneInput` harness for AFL++/libfuzzer (libxml2), a ziggy harness (the `url` crate), and cargo-afl harnesses (cpp_demangle and rustyknife) — [`docs/EXAMPLES.md`](docs/EXAMPLES.md)
 - LLVM version support — [`docs/llvm-support.md`](docs/llvm-support.md)
 
+Version: 1.0
+
 Author: Marc "vanHauser" Heuse
 
 License: GNU AGPL v3 or newer
@@ -161,7 +163,7 @@ Read about real-world target examples in [docs/EXAMPLES.md](docs/EXAMPLES.md)
 auto-detected:
 
 ```bash
-reachability run --lang c --project fixtures/c_direct --out c.json -v
+reachability run --lang c --project fixtures/c_direct -v
 ```
 
 ```
@@ -177,7 +179,7 @@ reachable 3 / defined 4  (0 indirect-only, 0 low-confidence, 1 unreachable)  [ba
 wraps it with `gllvm`, and analyzes the resulting executable:
 
 ```bash
-reachability run --lang cpp --project examples/cpp_cmake --out cpp.json -v
+reachability run --lang cpp --project examples/cpp_cmake -v
 ```
 
 The virtual call `Codec::decode` over-approximates to **both** overrides, reached
@@ -195,7 +197,7 @@ dispatches through a `dyn Trait`. The driver builds it with
 `RUSTFLAGS="--emit=llvm-bc …"` and collects the per-crate bitcode:
 
 ```bash
-reachability run --lang rust --project fixtures/rust_dyn --out rust.json -v
+reachability run --lang rust --project fixtures/rust_dyn -v
 ```
 
 The trait-object call resolves to both implementations, via indirect edges:
@@ -213,7 +215,7 @@ glue, cargo for Rust), and the cross-language edge resolves by C-ABI symbol name
 
 ```bash
 reachability run --lang mixed --project fixtures/mixed_c_rust \
-  --artifact glue.o --out mixed.json -v
+  --artifact glue.o -v
 ```
 
 Point `--artifact` at the C/C++ object so it is picked out from the Rust build
@@ -227,8 +229,7 @@ analyze the **whole library** — not just the slice the linker kept — point
 `--artifact` at the linked binary and keep the default `--static-libs auto`:
 
 ```bash
-reachability run --lang c --project tiff-4.0.4 --artifact tools/thumbnail \
-  --out tiff.json -v
+reachability run --lang c --project tiff-4.0.4/ --artifact tools/thumbnail -v
 ```
 
 The driver merges `thumbnail`'s own objects with the full contents of
@@ -247,7 +248,7 @@ builds it with its own driver (`cargo ziggy build --no-honggfuzz`) and roots at
 `main` automatically:
 
 ```bash
-reachability run --lang ziggy --project <harness> --out z.json
+reachability run --lang ziggy --project project/ziggy-harness/
 ```
 
 Building through the fuzzer's own command (likewise `cargo afl build` for

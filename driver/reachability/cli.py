@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 
-from . import acquire_c, acquire_rust, analyze, link, report, toolchain
+from . import __version__, acquire_c, acquire_rust, analyze, link, report, toolchain
 
 # --lang selects a target type: a source language (how to acquire bitcode) or a
 # fuzz-harness shape (which also implies the default entry point). Each maps to
@@ -292,7 +292,12 @@ def cmd_check_toolchain(args):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="reachability")
+    p = argparse.ArgumentParser(
+        prog="reachability",
+        description=f"reachability v{__version__} — static fuzz-reachability analyzer",
+    )
+    p.add_argument("--version", action="version",
+                   version=f"reachability v{__version__}")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("check-toolchain").set_defaults(func=cmd_check_toolchain)
