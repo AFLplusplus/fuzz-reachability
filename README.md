@@ -43,7 +43,7 @@ flowchart TD
 ### Instrument fuzzing target
 
 Use the reachability information to only instrument what is reachable.
-**Note that this is pointless in full link time optimization targets** (C/C++: afl-clang-lto, Rust: default) because this is already done by the compiler.
+**Note that this is pointless in full link time optimization targets** (C/C++: `afl-clang-lto` or `-flto=full`, Rust: default) because this is already done by the compiler.
 
 For AFL++ (AFL++ native LLVM plugins):
 ```
