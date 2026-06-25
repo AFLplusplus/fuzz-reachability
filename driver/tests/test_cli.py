@@ -133,6 +133,82 @@ def test_check_toolchain_ok(analyzer, monkeypatch):
     assert cli.main(["check-toolchain"]) == 0
 
 
+def _clean_args(project, lang, out):
+    p = cli.build_parser()
+    return p.parse_args(
+        ["run", "--project", str(project), "--lang", lang, "--out", str(out),
+         "--clean"]
+    )
+
+
+def test_clean_c_removes_build_artifacts_and_outputs(tmp_path, capsys):
+    proj = tmp_path / "cproj"
+    (proj / "src").mkdir(parents=True)
+    (proj / "build").mkdir()
+    (proj / "build" / "nested.o").write_text("x")
+    (proj / "merged.bc").write_text("x")
+    (proj / "reachability.json").write_text("{}")
+    (proj / "reached.txt").write_text("x")
+    (proj / "not_reached.txt").write_text("x")
+    (proj / "src" / "a.o").write_text("x")
+    (proj / "src" / "a.bc").write_text("x")
+    (proj / "src" / "a.o.bc").write_text("x")
+    (proj / "src" / "a.o.bc.llvm.manifest").write_text("x")
+    keep = proj / "src" / "main.c"; keep.write_text("int main(){}")
+    git = proj / ".git"; git.mkdir()
+    (git / "obj.o").write_text("x")
+
+    out = proj / "reachability.json"
+    cli._clean_project(_clean_args(proj, "c", out), verbose=False)
+
+    assert not (proj / "merged.bc").exists()
+    assert not (proj / "build").exists()
+    assert not (proj / "reachability.json").exists()
+    assert not (proj / "reached.txt").exists()
+    assert not (proj / "not_reached.txt").exists()
+    assert not (proj / "src" / "a.o").exists()
+    assert not (proj / "src" / "a.bc").exists()
+    assert not (proj / "src" / "a.o.bc").exists()
+    assert not (proj / "src" / "a.o.bc.llvm.manifest").exists()
+    assert keep.exists()
+    assert (git / "obj.o").exists()
+    assert "clean: removed" in capsys.readouterr().out
+
+
+def test_clean_rust_removes_target_dir(tmp_path, monkeypatch):
+    """With no Cargo.toml, _cargo_clean falls back to removing target/ directly,
+    so the test is deterministic without invoking cargo."""
+    proj = tmp_path / "rproj"
+    (proj / "target" / "debug" / "deps").mkdir(parents=True)
+    (proj / "target" / "debug" / "deps" / "crate-0123456789abcdef.bc").write_text("x")
+    (proj / "merged.bc").write_text("x")
+    monkeypatch.setattr(cli.shutil, "which", lambda _name: None)
+
+    out = proj / "reachability.json"
+    cli._clean_project(_clean_args(proj, "rust", out), verbose=False)
+
+    assert not (proj / "target").exists()
+    assert not (proj / "merged.bc").exists()
+
+
+def test_run_clean_is_invoked(tmp_path, monkeypatch):
+    proj = tmp_path / "p"; proj.mkdir()
+    out = proj / "r.json"
+    args = _clean_args(proj, "c", out)
+    monkeypatch.setattr(cli.toolchain, "check_coherence", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "default_analyzer", lambda *a, **k: "analyzer")
+    seen = {}
+    monkeypatch.setattr(cli, "_clean_project",
+                        lambda a, verbose=False: seen.setdefault("clean", True))
+    monkeypatch.setattr(
+        cli, "_acquire",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("stop")),
+    )
+    with pytest.raises(RuntimeError):
+        cli.cmd_run(args)
+    assert seen.get("clean") is True
+
+
 @pytest.mark.skipif(not HAVE_GLLVM, reason="gllvm not installed")
 def test_run_c_direct(analyzer, tmp_path, monkeypatch):
     monkeypatch.setenv("REACHABILITY_ANALYZER", analyzer)

@@ -7,6 +7,8 @@
 import argparse
 import json
 import os
+import shutil
+import subprocess
 import sys
 
 from . import acquire_c, acquire_rust, analyze, link, report, toolchain
@@ -100,6 +102,95 @@ def _acquire(args, tc, verbose=False):
     return bcs
 
 
+_C_CLEAN_SUFFIXES = (".bc", ".o", ".llvm.manifest")
+_C_CLEAN_DIRS = {"build"}
+
+
+def _cargo_clean(directory, verbose=False):
+    """Drop a Cargo target dir so the next build recompiles every crate and
+    re-emits bitcode: run `cargo clean` when a manifest is present, else (or on
+    failure) remove `target/` directly."""
+    target = os.path.join(directory, "target")
+    ran = False
+    if shutil.which("cargo") and os.path.exists(os.path.join(directory, "Cargo.toml")):
+        if verbose:
+            print(f"  cargo clean ({directory})")
+        r = subprocess.run(["cargo", "clean"], cwd=directory,
+                           capture_output=not verbose, text=True)
+        ran = r.returncode == 0
+    if not ran and os.path.isdir(target):
+        shutil.rmtree(target, ignore_errors=True)
+        if verbose:
+            print(f"  removed {target}")
+
+
+def _clean_c_artifacts(project, drop):
+    """Remove a C/C++ build's caches under `project`: any `build/` directory
+    (cmake/meson/ninja) and every object / extracted-bitcode file (`*.o`,
+    `*.bc`, `*.llvm.manifest`), so the next gllvm build recompiles from clean.
+    All of these are build artifacts (see .gitignore)."""
+    for root, dirs, files in os.walk(project):
+        keep = []
+        for d in dirs:
+            if d in acquire_c._SKIP_DIRS:
+                continue
+            if d in _C_CLEAN_DIRS:
+                drop(os.path.join(root, d))
+                continue
+            keep.append(d)
+        dirs[:] = keep
+        for f in files:
+            if f.endswith(_C_CLEAN_SUFFIXES):
+                drop(os.path.join(root, f))
+
+
+def _clean_project(args, verbose=False):
+    """Remove cached build artifacts and prior outputs under --project so the
+    run rebuilds from clean (a cached build otherwise yields stale or empty
+    bitcode). Rust targets get `cargo clean` (and the same for fuzz/ so
+    cargo-fuzz's fuzz/target is dropped); C/C++ targets have their build/
+    directories and object/bitcode files removed. The merged module and any
+    prior reachability.json / reached.txt / not_reached.txt (and --dot) are
+    removed for every target."""
+    project = args.project
+    removed = 0
+
+    def drop(path):
+        nonlocal removed
+        try:
+            if os.path.islink(path) or os.path.isfile(path):
+                os.remove(path)
+            elif os.path.isdir(path):
+                shutil.rmtree(path)
+            else:
+                return
+        except OSError as e:
+            print(f"warning: could not remove {path}: {e}", file=sys.stderr)
+            return
+        removed += 1
+        if verbose:
+            print(f"  removed {path}")
+
+    drop(os.path.join(project, "merged.bc"))
+    outdir = os.path.dirname(os.path.abspath(args.out))
+    drop(args.out)
+    drop(args.reached or os.path.join(outdir, "reached.txt"))
+    drop(args.not_reached or os.path.join(outdir, "not_reached.txt"))
+    if args.dot:
+        drop(args.dot)
+
+    mode = TARGETS[args.lang][0]
+    if mode in ("rust", "mixed"):
+        _cargo_clean(project, verbose)
+        fuzz = os.path.join(project, "fuzz")
+        if os.path.isdir(fuzz):
+            _cargo_clean(fuzz, verbose)
+    if mode in ("c", "cpp", "mixed"):
+        _clean_c_artifacts(project, drop)
+
+    print(f"clean: removed {removed} cached path(s) under {project}")
+
+
 def cmd_run(args):
     v = args.verbose
     if args.backend is not None:
@@ -121,6 +212,11 @@ def cmd_run(args):
         print(f"  analyzer  {tc.analyzer}")
     if rust_target:
         toolchain.assert_rust_bitcode_readable(tc)
+
+    if args.clean:
+        if v:
+            print("==> cleaning cached build artifacts and prior outputs")
+        _clean_project(args, verbose=v)
 
     if v:
         print(f"==> [2/4] acquiring bitcode (lang={args.lang})")
@@ -216,6 +312,14 @@ def build_parser():
                         "cargo's per-profile default (debug 256, release 16). "
                         "Ignored for libfuzzer/ziggy/afl (their build sets it)")
     r.add_argument("--build-std", action="store_true", dest="build_std")
+    r.add_argument("--clean", action="store_true",
+                   help="remove cached build artifacts and prior outputs under "
+                        "--project before building, so the run rebuilds from "
+                        "clean (a cached build otherwise yields stale or empty "
+                        "bitcode). Rust: `cargo clean` (also in fuzz/ for "
+                        "cargo-fuzz). C/C++: removes build/ dirs and *.o/*.bc. "
+                        "Always removes merged.bc and any prior "
+                        "reachability.json/reached.txt/not_reached.txt/--dot.")
     r.add_argument("--dot", default=None)
     r.add_argument("--reached", default=None,
                    help="sancov allowlist path (default: reached.txt next to --out)")

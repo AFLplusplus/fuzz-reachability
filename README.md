@@ -289,6 +289,7 @@ entry point(s).
 | `--profile {debug,release}` | tool default | Build profile. `libfuzzer`/`ziggy`/`afl`: `release` adds `--release` to the native command (else the tool's default). Plain `--lang rust`: the cargo profile (default `debug`). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--codegen-units N` | auto | Plain `--lang rust` only (positive integer): rustc `-Ccodegen-units`, auto-detected from `Cargo.toml` else cargo's per-profile default. Ignored for `libfuzzer`/`ziggy`/`afl` (their build sets it). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--build-std` | off | Rust only: build the standard library from source with Cargo's `-Zbuild-std` option and rustc's detected host target, so std functions appear in the graph instead of as external declarations. |
+| `--clean` | off | Remove cached build artifacts and prior outputs under `--project` before building, so the run rebuilds from clean (a cached build otherwise yields stale or empty bitcode — see [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)). Rust runs `cargo clean` (also in `fuzz/` for cargo-fuzz); C/C++ removes `build/` directories and `*.o`/`*.bc` files; every target also drops `merged.bc` and any prior `reachability.json` / `reached.txt` / `not_reached.txt` / `--dot`. |
 | `--dot FILE` | *(none)* | Also write the reachable subgraph as Graphviz DOT (indirect edges dashed/red). |
 | `--reached FILE` | beside `--out` | Path for the sancov **allowlist** of reachable functions. |
 | `--not-reached FILE` | beside `--out` | Path for the sancov **ignorelist** of unreachable functions. |
@@ -352,8 +353,10 @@ weaker instrumentation that would not match your real fuzzer; install them with
 A build only emits bitcode for the crates it actually (re)compiles, so a **cached
 build yields nothing**. The driver detects this — a fully cached run aborts with a
 clear "build was CACHED" error — so `cargo clean` (or remove `fuzz/target` for
-cargo-fuzz) before the run. (Setting `RUSTC_WRAPPER` forces a rebuild the first
-time; a second consecutive run is the cache hit that trips the check.)
+cargo-fuzz) before the run, or pass **`--clean`** to have the driver do it for you
+(it runs `cargo clean`, also in `fuzz/`, before building). (Setting `RUSTC_WRAPPER`
+forces a rebuild the first time; a second consecutive run is the cache hit that
+trips the check.)
 
 For **plain `--lang rust`** the driver runs `cargo build --emit=llvm-bc`, and two
 options match it to the fuzz binary (both ignored for C/C++); their defaults aim

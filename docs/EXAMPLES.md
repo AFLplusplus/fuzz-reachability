@@ -265,8 +265,8 @@ What happens:
   build, the bitcode already carries the same `cfg(fuzzing)`, optimization level,
   and instrumentation as the binary you instrument — so the reachable set lines
   up. `--profile release` adds `--release`; `--build-cmd` overrides the command
-  for a specific target/sanitizer/profile. Clean first (`cargo clean`) if the
-  build is already cached, or no bitcode is emitted.
+  for a specific target/sanitizer/profile. Clean first (`cargo clean`, or pass
+  `--clean`) if the build is already cached, or no bitcode is emitted.
 
 ### Step 3 — Read the report
 
