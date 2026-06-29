@@ -22,13 +22,16 @@ SRC  := $(wildcard src/*.cpp)
 OBJ  := $(patsubst src/%.cpp,$(BUILD)/%.o,$(SRC))
 DEP  := $(OBJ:.o=.d)
 
+DANGEROUS := ../dangerous_functions.txt
+GEN_INC   := $(BUILD)/DangerousFunctions.inc
+
 # Rebuild objects when LLVM_CONFIG changes, not only when sources change --
 # otherwise switching LLVM_MAJOR silently relinks stale objects from the old LLVM.
 STAMP := $(BUILD)/.llvm-config-stamp
 
 # -Wno-error: never treat warnings as errors, even if a flag source adds -Werror
 # (keeps builds resilient across LLVM versions).
-CXXFLAGS := -std=c++17 -O2 -fPIC -Wno-error -MMD -MP $(shell $(LLVM_CONFIG) --cppflags)
+CXXFLAGS := -std=c++17 -O2 -fPIC -Wno-error -MMD -MP -I$(BUILD) $(shell $(LLVM_CONFIG) --cppflags)
 LDFLAGS  := $(shell $(LLVM_CONFIG) --ldflags)
 LDLIBS   := $(shell $(LLVM_CONFIG) --link-shared --libs)
 
@@ -40,6 +43,11 @@ $(BIN): $(OBJ) | $(BUILD)
 
 $(BUILD)/%.o: src/%.cpp $(STAMP) | $(BUILD)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+$(BUILD)/Metrics.o: $(GEN_INC)
+
+$(GEN_INC): $(DANGEROUS) ../scripts/gen_dangerous_list.sh | $(BUILD)
+	bash ../scripts/gen_dangerous_list.sh $(DANGEROUS) $@
 
 $(STAMP): force | $(BUILD)
 	@printf '%s\n' '$(LLVM_CONFIG)' | cmp -s - $@ 2>/dev/null || printf '%s\n' '$(LLVM_CONFIG)' > $@

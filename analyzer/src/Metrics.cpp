@@ -18,17 +18,17 @@ namespace reach {
 
 namespace {
 
+struct DangerousEntry {
+  const char *name;
+  bool prefix;
+};
+
 bool isDangerousName(StringRef n) {
-  if (n.starts_with("llvm.memcpy") || n.starts_with("llvm.memmove") ||
-      n.starts_with("llvm.memset"))
-    return true;
-  static const char *names[] = {
-      "memcpy",  "memmove", "memset",  "strcpy",   "strncpy", "strcat",
-      "strncat", "stpcpy",  "sprintf", "vsprintf", "snprintf", "vsnprintf",
-      "gets",    "scanf",   "sscanf",  "fscanf",   "strcat",  "alloca",
-      "malloc",  "calloc",  "realloc", "strdup",   "memccpy"};
-  for (const char *d : names)
-    if (n == d)
+  static const DangerousEntry entries[] = {
+#include "DangerousFunctions.inc"
+  };
+  for (const DangerousEntry &e : entries)
+    if (e.prefix ? n.starts_with(e.name) : n == e.name)
       return true;
   return false;
 }

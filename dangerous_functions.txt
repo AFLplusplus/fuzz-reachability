@@ -1,0 +1,35 @@
+# Functions treated as "dangerous" for the per-function `dangerous_calls`
+# metric in the JSON report. Edit this list freely; it is read at build time
+# (a rebuild of the analyzer picks up changes).
+#
+# Format: one function name per line. Blank lines and text after '#' are
+# ignored. A trailing '*' makes the entry a prefix match (used to catch the
+# LLVM mem-intrinsics, whose names carry type suffixes such as
+# llvm.memcpy.p0.p0.i64); every other entry is matched exactly against the
+# callee's (unmangled) name.
+
+llvm.memcpy*
+llvm.memmove*
+llvm.memset*
+memcpy
+memmove
+memset
+memccpy
+strcpy
+strncpy
+strcat
+strncat
+stpcpy
+strdup
+sprintf
+vsprintf
+snprintf
+vsnprintf
+gets
+scanf
+sscanf
+fscanf
+alloca
+malloc
+calloc
+realloc

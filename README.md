@@ -557,7 +557,10 @@ from, so the counts reflect post-inlining/optimization code, not source.
 - **`dangerous_calls`** — number of call sites to known memory-unsafe functions
   (`memcpy`/`memmove`/`memset` and the `llvm.mem*` intrinsics, `strcpy`/`strcat`
   and friends, `sprintf` family, `gets`, `scanf` family, `alloca`, the
-  `malloc`/`calloc`/`realloc` allocators, …).
+  `malloc`/`calloc`/`realloc` allocators, …). The list is the editable text file
+  [`dangerous_functions.txt`](dangerous_functions.txt) at the project root: one
+  name per line, `#` comments, a trailing `*` for a prefix match. It is compiled
+  into the analyzer, so edit it and rebuild (`make build`) to change the set.
 - **`C11`** — number of local variables. From debug info (`DILocalVariable`
   entries, excluding parameters) when the bitcode carries it; otherwise it falls
   back to the count of `alloca` instructions. Build with `-g` for the accurate
