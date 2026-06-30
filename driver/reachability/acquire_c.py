@@ -57,6 +57,8 @@ def _build_env(clang_bindir: str) -> dict:
     env["CC"] = "gclang"
     env["CXX"] = "gclang++"
     env["LLVM_COMPILER_PATH"] = clang_bindir
+    old_path = env.get("PATH", "")
+    env["PATH"] = (clang_bindir + os.pathsep + old_path) if old_path else clang_bindir
     return env
 
 
@@ -159,6 +161,11 @@ def _kind_by_ext(path):
     return "exec"
 
 
+def _ignore_artifact(path):
+    """True for build-system probes that are not real analysis targets."""
+    return os.path.basename(path).startswith(".conftest")
+
+
 def _classify(path):
     """Return the artifact kind (exec/shared/archive/object) for a built file, or
     None if it is not something get-bc could read."""
@@ -191,8 +198,10 @@ def _classify(path):
 
 def find_artifacts(project_dir, newer_than=None):
     """Walk `project_dir` for built files get-bc can read, ranked best-first:
-    files carrying gllvm's bitcode section come first, then ones built by this
-    run, then by kind (executable > shared lib > archive > object), then newest.
+    files carrying gllvm's bitcode section come first, then by kind
+    (executable > shared lib > archive > object), then ones built by this run,
+    then newest. Configure/autoconf probe outputs such as `.conftest*.o` are
+    ignored outright: they are build-system scratch files, not program targets.
     """
     cands = []
     for root, dirs, files in os.walk(project_dir):
@@ -200,6 +209,8 @@ def find_artifacts(project_dir, newer_than=None):
         for f in files:
             p = os.path.join(root, f)
             if os.path.islink(p) or not os.path.isfile(p):
+                continue
+            if _ignore_artifact(p):
                 continue
             kind = _classify(p)
             if kind is None:
@@ -209,12 +220,12 @@ def find_artifacts(project_dir, newer_than=None):
             except OSError:
                 continue
             fresh = newer_than is not None and mtime >= newer_than - 2
-            cands.append((_has_bitcode_marker(p), fresh, _KIND_RANK[kind], mtime, p))
+            cands.append((_has_bitcode_marker(p), _KIND_RANK[kind], fresh, mtime, p))
     cands.sort(reverse=True)
     return [c[-1] for c in cands]
 
 
-def _extract_bc(art, out, archive=False, manifest=False):
+def _extract_bc(art, out, archive=False, manifest=False, llvm_link=None, env=None):
     """Run get-bc on `art` into `out`. `archive` uses -b to build one whole-archive
     module (instead of a lazy bitcode archive); `manifest` also writes the linked
     object list to `<out>.llvm.manifest`. Returns (ok, stderr)."""
@@ -223,8 +234,10 @@ def _extract_bc(art, out, archive=False, manifest=False):
         cmd.append("-b")
     if manifest:
         cmd.append("-m")
+    if llvm_link:
+        cmd += ["-l", llvm_link]
     cmd += ["-o", out, art]
-    r = subprocess.run(cmd, capture_output=True, text=True)
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
     ok = r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0
     return ok, r.stderr.strip()
 
@@ -306,7 +319,8 @@ def _plan_static_libs(manifest, archive_members, mode):
     return chosen, roots
 
 
-def _include_static_libs(project_dir, art, kind, primary_bc, mode):
+def _include_static_libs(project_dir, art, kind, primary_bc, mode, llvm_link=None,
+                         env=None):
     """Replace `primary_bc` with the target's own objects plus the full contents
     of the static archives it links. Returns the replacement bc list, or None to
     keep just `primary_bc` (no relevant archive, or the target's objects could not
@@ -329,7 +343,8 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode):
     failed = False
     for a in chosen:
         out = a + ".full.bc"
-        ok, err = _extract_bc(a, out, archive=True, manifest=True)
+        ok, err = _extract_bc(a, out, archive=True, manifest=True,
+                              llvm_link=llvm_link, env=env)
         if ok:
             objects = _manifest_objects(out + ".llvm.manifest")
             if objects:
@@ -400,7 +415,10 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     Returns a list of absolute .bc paths to be linked together.
     """
     if not shutil.which("gclang"):
-        raise AcquireError("gclang not found on PATH; run scripts/setup.sh")
+        raise AcquireError(
+            "gclang not found on PATH; run `bash scripts/setup.sh` and export "
+            "`PATH=\"$(go env GOPATH)/bin:$PATH\"`"
+        )
     clang_bindir = os.path.dirname(os.path.abspath(tc.clang))
     env = _build_env(clang_bindir)
     cmd = build_cmd or ["make"]
@@ -438,7 +456,8 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
         ck = _classify(cand)
         out = cand + ".bc"
         ok, err = _extract_bc(cand, out, archive=(ck == "archive"),
-                              manifest=(ck in ("exec", "shared")))
+                              manifest=(ck in ("exec", "shared")),
+                              llvm_link=tc.llvm_link, env=env)
         if ok:
             art, kind, primary = cand, ck, out
             if not (explicit and cand == explicit):
@@ -451,7 +470,8 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
             + "\n  ".join(errors))
 
     if static_libs != "none":
-        expanded = _include_static_libs(project_dir, art, kind, primary, static_libs)
+        expanded = _include_static_libs(project_dir, art, kind, primary, static_libs,
+                                        llvm_link=tc.llvm_link, env=env)
         if expanded is not None:
             return expanded
     return [primary]
