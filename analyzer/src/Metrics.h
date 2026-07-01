@@ -19,6 +19,7 @@ struct FuncMetrics {
   bool ptrArg = false;
   bool interesting = false;
   bool bottleneck = false;
+  bool deadEnd = false;
 };
 
 llvm::DenseMap<llvm::Function *, FuncMetrics>

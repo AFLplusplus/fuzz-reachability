@@ -576,9 +576,14 @@ from, so the counts reflect post-inlining/optimization code, not source.
   every path from an entry to that other function passes through it. A bottleneck
   gates a region of the reachable graph, so leaving it uncovered leaves the whole
   region uncovered — a high-value target for seeds or harness fixes.
+- **`dead_end`** (boolean) — the function calls no `interesting` function: either
+  it makes no calls at all (a call-graph leaf), or every function it calls is
+  `interesting = false`. It marks where the pointer-carrying `interesting` chain
+  terminates — input flow goes no deeper past a dead end.
 
 (See `driver/tests/test_analyzer_core.py::test_function_metrics_counts`,
-`::test_interesting_pointer_path`, and `::test_bottleneck_dominators`.)
+`::test_interesting_pointer_path`, `::test_bottleneck_dominators`, and
+`::test_dead_end`.)
 
 ## Historical note: the removed SVF backend
 

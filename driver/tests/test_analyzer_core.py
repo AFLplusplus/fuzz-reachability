@@ -118,6 +118,17 @@ def test_bottleneck_dominators(run_analyzer):
     assert m["d"]["bottleneck"] is False
 
 
+def test_dead_end(run_analyzer):
+    r = run_analyzer([METRICS(), "--entry", "harness"])
+    assert r.returncode == 0, r.stderr
+    m = {f["mangled"]: f for f in json.loads(r.stdout)["reachable"]}
+    assert m["harness"]["dead_end"] is False
+    assert m["a"]["dead_end"] is False
+    assert m["b"]["dead_end"] is True
+    assert m["c"]["dead_end"] is True
+    assert m["d"]["dead_end"] is True
+
+
 def test_json_edges_reference_listed_nodes(run_analyzer):
     r = run_analyzer([ll("callback_load.ll"), "--entry", "entry"])
     assert r.returncode == 0, r.stderr

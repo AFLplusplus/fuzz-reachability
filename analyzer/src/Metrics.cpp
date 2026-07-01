@@ -129,6 +129,24 @@ void computeInteresting(Module &m, const CallGraph &g,
   }
 }
 
+void computeDeadEnd(const CallGraph &g,
+                    DenseMap<Function *, FuncMetrics> &out) {
+  const auto &E = g.edges();
+  for (auto &kv : out) {
+    bool leadsToInteresting = false;
+    auto it = E.find(kv.first);
+    if (it != E.end())
+      for (const auto &[to, kind] : it->second) {
+        auto mi = out.find(to);
+        if (mi != out.end() && mi->second.interesting) {
+          leadsToInteresting = true;
+          break;
+        }
+      }
+    kv.second.deadEnd = !leadsToInteresting;
+  }
+}
+
 void computeBottleneck(Module &m, const CallGraph &g,
                        const std::vector<std::string> &roots,
                        DenseMap<Function *, FuncMetrics> &out) {
@@ -243,6 +261,7 @@ computeMetrics(Module &m, const CallGraph &g, const ReachResult &res,
     out[&f] = fm;
   }
   computeInteresting(m, g, roots, out);
+  computeDeadEnd(g, out);
   computeBottleneck(m, g, roots, out);
   return out;
 }

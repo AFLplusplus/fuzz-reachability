@@ -4,8 +4,9 @@
   gives the reachable call graph as `{from, to, kind}`.
 - JSON report: each reachable function now carries per-function triage metrics —
   `basic_blocks`, `cyclomatic`, `loops`, `dangerous_calls`, `C11` (local variable
-  count), `interesting` (pointer-argument path from an entry), and `bottleneck`
-  (call-graph dominator). See the "Function metrics" section of the README.
+  count), `interesting` (pointer-argument path from an entry), `bottleneck`
+  (call-graph dominator), and `dead_end` (calls no `interesting` function). See
+  the "Function metrics" section of the README.
 - The `dangerous_calls` function list is now the editable `dangerous_functions.txt`
   at the project root, compiled into the analyzer at build time.
 

@@ -66,6 +66,7 @@ void emitFn(json::OStream &J, Function *f, const Via *via,
       J.attribute("loops", (int64_t)fm.loops);
       J.attribute("interesting", fm.interesting);
       J.attribute("bottleneck", fm.bottleneck);
+      J.attribute("dead_end", fm.deadEnd);
     }
   });
 }

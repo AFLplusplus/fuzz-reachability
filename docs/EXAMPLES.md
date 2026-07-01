@@ -173,7 +173,8 @@ A directly-reached function carries its source location:
   "cyclomatic": 2,
   "loops": 0,
   "interesting": true,
-  "bottleneck": true
+  "bottleneck": true,
+  "dead_end": false
 }
 ```
 
