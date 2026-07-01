@@ -1,6 +1,8 @@
 import os
 import struct
 
+import pytest
+
 from reachability import acquire_c
 
 
@@ -29,6 +31,28 @@ def test_build_env_sets_wrappers(monkeypatch):
     assert env["LLVM_COMPILER_PATH"] == "/usr/lib/llvm-21/bin"
 
 
+def test_build_env_injects_no_inline_by_default(monkeypatch):
+    monkeypatch.delenv("LLVM_BITCODE_GENERATION_FLAGS", raising=False)
+    env = acquire_c._build_env("/usr/lib/llvm-21/bin")
+    flags = env["LLVM_BITCODE_GENERATION_FLAGS"]
+    assert "-fno-inline" in flags
+    assert "-fno-inline-functions" in flags
+
+
+def test_build_env_optimize_omits_injection(monkeypatch):
+    monkeypatch.delenv("LLVM_BITCODE_GENERATION_FLAGS", raising=False)
+    env = acquire_c._build_env("/usr/lib/llvm-21/bin", optimize=True)
+    assert "LLVM_BITCODE_GENERATION_FLAGS" not in env
+
+
+def test_build_env_preserves_inherited_bcgen_flags(monkeypatch):
+    monkeypatch.setenv("LLVM_BITCODE_GENERATION_FLAGS", "-mllvm -x")
+    env = acquire_c._build_env("/usr/lib/llvm-21/bin")
+    flags = env["LLVM_BITCODE_GENERATION_FLAGS"]
+    assert "-mllvm -x" in flags
+    assert "-fno-inline" in flags
+
+
 def test_build_looks_cached():
     assert acquire_c._build_looks_cached("make: Nothing to be done for 'all'.")
     assert acquire_c._build_looks_cached("ninja: no work to do.")
@@ -48,14 +72,15 @@ def test_detect_build_cmd_make(tmp_path):
 def test_detect_build_cmd_cmake(tmp_path):
     (tmp_path / "CMakeLists.txt").write_text("project(x)\n")
     assert acquire_c.detect_build_cmd(str(tmp_path)) == (
-        "cmake -S . -B build -DBUILD_SHARED_LIBS=OFF && cmake --build build"
+        "cmake -S . -B build -DBUILD_SHARED_LIBS=OFF "
+        "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF && cmake --build build"
     )
 
 
 def test_detect_build_cmd_meson(tmp_path):
     (tmp_path / "meson.build").write_text("project('x', 'c')\n")
     assert acquire_c.detect_build_cmd(str(tmp_path)) == (
-        "meson setup build --default-library=static && ninja -C build"
+        "meson setup build --default-library=static -Db_lto=false && ninja -C build"
     )
 
 
@@ -93,29 +118,41 @@ def test_detect_build_cmd_configure_only_static(tmp_path):
     )
 
 
-def test_configure_static_flags_non_executable_falls_back_to_sh(tmp_path):
+def test_configure_flags_non_executable_falls_back_to_sh(tmp_path):
     # Not marked executable: exec fails, the `sh configure` fallback runs it.
     (tmp_path / "configure").write_text(
         "#!/bin/sh\necho '  --enable-shared  build shared libraries'\n"
     )
-    assert acquire_c._configure_static_flags(str(tmp_path)) == ["--disable-shared"]
+    assert acquire_c._configure_flags(str(tmp_path)) == ["--disable-shared"]
 
 
-def test_configure_static_flags_none_when_no_configure(tmp_path):
-    assert acquire_c._configure_static_flags(str(tmp_path)) == []
+def test_configure_flags_none_when_no_configure(tmp_path):
+    assert acquire_c._configure_flags(str(tmp_path)) == []
+
+
+def test_configure_flags_adds_disable_lto_when_advertised(tmp_path):
+    _write_configure(tmp_path,
+                     "  --enable-shared[=PKGS]  build shared libraries\n"
+                     "  --enable-static[=PKGS]  build static libraries\n"
+                     "  --enable-lto            enable link-time optimization\n")
+    assert acquire_c.detect_build_cmd(str(tmp_path)) == (
+        "./configure --disable-shared --enable-static --disable-lto && make"
+    )
 
 
 def test_detect_build_cmd_autogen_forces_static(tmp_path):
     (tmp_path / "autogen.sh").write_text("#!/bin/sh\n")
     assert acquire_c.detect_build_cmd(str(tmp_path)) == (
-        "./autogen.sh && ./configure --disable-shared --enable-static && make"
+        "./autogen.sh && ./configure --disable-shared --enable-static "
+        "--disable-lto && make"
     )
 
 
 def test_detect_build_cmd_configure_ac_forces_static(tmp_path):
     (tmp_path / "configure.ac").write_text("AC_INIT([x],[1])\n")
     assert acquire_c.detect_build_cmd(str(tmp_path)) == (
-        "autoreconf -i && ./configure --disable-shared --enable-static && make"
+        "autoreconf -i && ./configure --disable-shared --enable-static "
+        "--disable-lto && make"
     )
 
 
@@ -244,3 +281,60 @@ def test_include_static_libs_partial_failure_is_atomic(monkeypatch):
     assert acquire_c._include_static_libs(
         "/p", "/p/app", "exec", "/p/app.bc", "auto",
     ) is None
+
+
+def test_run_build_captures_when_not_verbose():
+    rc, out = acquire_c._run_build(
+        ["sh", "-c", "echo hello; echo oops >&2"], ".", dict(os.environ), False)
+    assert rc == 0
+    assert "hello" in out and "oops" in out
+
+
+def test_run_build_no_blank_line_when_one_stream_empty():
+    rc, out = acquire_c._run_build(
+        ["sh", "-c", "echo only-stdout"], ".", dict(os.environ), False)
+    assert rc == 0
+    assert out == "only-stdout\n"
+
+
+def test_run_build_tees_when_verbose(capsys):
+    rc, out = acquire_c._run_build(
+        ["sh", "-c", "echo streamed"], ".", dict(os.environ), True)
+    assert rc == 0
+    assert "streamed" in out
+    assert "streamed" in capsys.readouterr().out
+
+
+class _TC:
+    clang = "/usr/bin/clang"
+
+
+def test_acquire_reports_lto_when_no_artifact(monkeypatch, tmp_path):
+    monkeypatch.setattr(acquire_c.shutil, "which", lambda n: "/usr/bin/" + n)
+    lto_log = ("WARNING: We are skipping bitcode generation because we are doing "
+               "link time optimization, and so the compiler is doing the job for us.")
+    monkeypatch.setattr(acquire_c, "_run_build", lambda *a, **k: (0, lto_log))
+    monkeypatch.setattr(acquire_c, "find_artifacts", lambda *a, **k: [])
+    with pytest.raises(acquire_c.AcquireError) as exc:
+        acquire_c.acquire_c_bitcode(str(tmp_path), _TC(), build_cmd=["sh", "-c", "true"])
+    msg = str(exc.value)
+    assert "Likely cause" in msg
+    assert "link-time optimization" in msg
+
+
+def test_acquire_forwards_optimize_to_build_env(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_build_env(clang_bindir, optimize=False):
+        seen["optimize"] = optimize
+        return dict(os.environ)
+
+    monkeypatch.setattr(acquire_c.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(acquire_c, "_build_env", fake_build_env)
+    monkeypatch.setattr(acquire_c, "_run_build", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(acquire_c, "find_artifacts", lambda *a, **k: [])
+
+    with pytest.raises(acquire_c.AcquireError):
+        acquire_c.acquire_c_bitcode(
+            str(tmp_path), _TC(), build_cmd=["sh", "-c", "true"], optimize=True)
+    assert seen["optimize"] is True

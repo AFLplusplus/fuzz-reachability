@@ -285,10 +285,11 @@ entry point(s).
 | `--entry NAME` | per `--lang` | Entry to root reachability at. **Repeatable**; overrides the target default. See [Entry resolution](#entry-resolution). |
 | `--backend NAME` | *(none)* | Deprecated and ignored; the type-based backend is always used. Accepted for backward compatibility — passing it prints a warning. |
 | `--artifact PATH` | auto-detect | C/C++ only: the built binary/object/archive to extract bitcode from (relative to `--project`). Auto-detected otherwise, preferring an executable over a shared library, archive, then object. |
-| `--build-cmd CMD` | auto-detect | Shell build command. C/C++: run with `gllvm` injected, auto-detected otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`); e.g. `"cmake -S . -B build && cmake --build build"`. An auto-detected build is forced static where the build system allows it (shared libraries are linked separately, so their bitcode never reaches the target): `--disable-shared`/`--enable-static` for `configure` when `configure --help` lists them, `-DBUILD_SHARED_LIBS=OFF` for CMake, `--default-library=static` for Meson. Pass `--build-cmd` to override this entirely. `libfuzzer`/`ziggy`/`afl`: overrides the native build command (default `cargo fuzz build` / `cargo ziggy build --no-honggfuzz` / `cargo afl build`). |
+| `--build-cmd CMD` | auto-detect | Shell build command. C/C++: run with `gllvm` injected, auto-detected otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`); e.g. `"cmake -S . -B build && cmake --build build"`. An auto-detected build is forced static where the build system allows it (shared libraries are linked separately, so their bitcode never reaches the target): `--disable-shared`/`--enable-static` for `configure` when `configure --help` lists them, `-DBUILD_SHARED_LIBS=OFF` for CMake, `--default-library=static` for Meson. An auto-detected build also disables link-time optimization, since gllvm cannot embed bitcode under `-flto`: `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF` for CMake, `-Db_lto=false` for Meson, and `--disable-lto` for `configure` when its `--help` lists an LTO toggle. If bitcode extraction still fails, the error names the likely cause (LTO, an afl-clang-fast/clang-LTO binary, a ccache/sccache layer, or assembly-only units) and its fix. Pass `--build-cmd` to override this entirely. `libfuzzer`/`ziggy`/`afl`: overrides the native build command (default `cargo fuzz build` / `cargo ziggy build --no-honggfuzz` / `cargo afl build`). |
 | `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree. Exact archive manifests prevent linked objects from being dropped; unresolved duplicate definitions fail the merge instead of silently replacing one body. |
 | `--profile {debug,release}` | tool default | Build profile. `libfuzzer`/`ziggy`/`afl`: `release` adds `--release` to the native command (else the tool's default). Plain `--lang rust`: the cargo profile (default `debug`). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--codegen-units N` | auto | Plain `--lang rust` only (positive integer): rustc `-Ccodegen-units`, auto-detected from `Cargo.toml` else cargo's per-profile default. Ignored for `libfuzzer`/`ziggy`/`afl` (their build sets it). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
+| `--optimize` | off | Build the analysis at the target's real optimization (post-inline). By default the analysis build is **source-faithful** (`LLVM_BITCODE_GENERATION_FLAGS=-fno-inline -fno-inline-functions`): functions are not inlined away, so the reachable set matches what `llvm-cov` reports and is a safe allowlist superset. Controls inlining only — LTO is still stripped. Pass `--optimize` when you want the set and per-function metrics to mirror a specific `-O3` instrumented binary. |
 | `--build-std` | off | Rust only: build the standard library from source with Cargo's `-Zbuild-std` option and rustc's detected host target, so std functions appear in the graph instead of as external declarations. |
 | `--clean` | off | Remove cached build artifacts and prior outputs under `--project` before building, so the run rebuilds from clean (a cached build otherwise yields stale or empty bitcode — see [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)). Rust runs `cargo clean` (also in `fuzz/` for cargo-fuzz); C/C++ runs the build system's own clean (`make`/`ninja`/`cmake`/`meson`) in each configured build tree and removes `*.o`/`*.bc` files (build directories are kept, since some projects build in-source); every target also drops `merged.bc` and any prior `reachability.json` / `reached.txt` / `not_reached.txt` / `--dot`. |
 | `--dot FILE` | *(none)* | Also write the reachable subgraph as Graphviz DOT (indirect edges dashed/red). |
@@ -338,19 +339,20 @@ instrument: the optimization level, `cfg(fuzzing)`, feature flags, and
 `debug_assertions`/`overflow_checks` all change *which* functions are compiled,
 which wildcard `fun:` patterns cannot recover.
 
-**For `c`/`cpp` targets**, gllvm wraps the project's own build, so the bitcode
-inherits whatever optimization level that build sets — a `configure`/CMake
-default (often `-O2`), or none. The level governs **inlining**, which determines
-both the reachable set and the per-function metrics: when a callee is inlined its
-basic blocks, loops, locals (`C11`) and `dangerous_calls` fold into the caller,
-so an `-O3` `main` can report several times the counts of its source (see
+**For `c`/`cpp` targets**, reachability is **optimization-independent by
+default**: gllvm emits the analyzed bitcode with heuristic inlining suppressed
+(`-fno-inline -fno-inline-functions`), so the reachable set does not depend on
+the project's `-Ox` level and inlined-away functions are still reported —
+matching what `llvm-cov` sees, and a safe allowlist superset. Pass
+**`--optimize`** to instead analyze at the build's real optimization, so the
+reachable set and per-function metrics mirror a specific instrumented binary;
+inlining then governs both, and when a callee is inlined its basic blocks,
+loops, locals (`C11`) and `dangerous_calls` fold into the caller (see
 [Function metrics](#function-metrics)). **AFL++'s `afl-cc`/`afl-clang-fast`
-default to `-O3`** when the build passes no `-Ox`; sancov-based harnesses
-(libFuzzer, honggfuzz) use whatever `-Ox` you give their compiler. So when the
-fuzz binary is a default AFL++ build, analyze at `-O3` too — e.g.
-`CFLAGS=-O3 CXXFLAGS=-O3 reachability run …`, or set it at `configure` time.
-Analyzing `-O2` while fuzzing `-O3` (or vice versa) describes a slightly
-different binary than the one instrumented.
+default to `-O3`**; sancov-based harnesses (libFuzzer, honggfuzz) use whatever
+`-Ox` you give their compiler. So under `--optimize`, when the fuzz binary is a
+default AFL++ build, analyze at `-O3` too — e.g.
+`CFLAGS=-O3 CXXFLAGS=-O3 reachability run --optimize …`.
 
 **`libfuzzer`/`ziggy`/`afl` handle this automatically** by building through the
 fuzzer's own driver (`cargo fuzz build` / `cargo ziggy build --no-honggfuzz` /
@@ -548,8 +550,12 @@ sink can rate `medium`. Treat `low` as "worth auditing", not "safe to remove".
 Each reachable function in the JSON carries a set of static triage signals to
 help decide where a fuzzing campaign should focus. Like `confidence`, these are
 hints, never verdicts — they do not change the reachable set or the coverage
-lists. They are computed on the same (optimized) bitcode the fuzz binary is built
-from, so the counts reflect post-inlining/optimization code, not source.
+lists. By default they are computed on a source-faithful build (heuristic inlining
+suppressed), so the counts reflect functions as written. Pass `--optimize` to
+compute them on the optimized/post-inline bitcode that mirrors the instrumented
+binary — there an inlined callee's basic blocks, loops, locals (`C11`) and
+`dangerous_calls` fold into the caller, so an `-O3` `main` can report several
+times the counts of its source.
 
 - **`basic_blocks`** — number of basic blocks in the function.
 - **`cyclomatic`** — cyclomatic complexity, `edges - blocks + 2` (minimum `1`).

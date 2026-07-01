@@ -134,6 +134,19 @@ def test_check_toolchain_ok(analyzer, monkeypatch):
     assert cli.main(["check-toolchain"]) == 0
 
 
+def test_run_parser_optimize_defaults_false():
+    parser = cli.build_parser()
+    args = parser.parse_args(["run", "--lang", "c", "--project", "."])
+    assert args.optimize is False
+
+
+def test_run_parser_optimize_true():
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        ["run", "--lang", "c", "--project", ".", "--optimize"])
+    assert args.optimize is True
+
+
 def _clean_args(project, lang, out):
     p = cli.build_parser()
     return p.parse_args(

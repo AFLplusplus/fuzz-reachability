@@ -76,6 +76,7 @@ def _acquire(args, tc, verbose=False):
             acquire_c.acquire_c_bitcode(
                 args.project, tc, args.artifact, build_cmd,
                 static_libs=args.static_libs, verbose=verbose,
+                optimize=args.optimize,
             )
         )
     if mode in ("rust", "mixed"):
@@ -347,6 +348,12 @@ def build_parser():
                         "cargo's per-profile default (debug 256, release 16). "
                         "Ignored for libfuzzer/ziggy/afl (their build sets it)")
     r.add_argument("--build-std", action="store_true", dest="build_std")
+    r.add_argument(
+        "--optimize", action="store_true", dest="optimize",
+        help="build at the target's real optimization (post-inline). By default "
+             "the analysis build is source-faithful: functions are not inlined "
+             "away, so reachability matches llvm-cov and is a safe allowlist "
+             "superset. Controls inlining only; LTO is still stripped.")
     r.add_argument("--clean", action="store_true",
                    help="remove cached build artifacts and prior outputs under "
                         "--project before building, so the run rebuilds from "

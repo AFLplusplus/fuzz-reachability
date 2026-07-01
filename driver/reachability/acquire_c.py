@@ -32,6 +32,8 @@ import subprocess
 import sys
 import time
 
+from reachability import diagnostics
+
 
 class AcquireError(RuntimeError):
     pass
@@ -52,11 +54,24 @@ def _build_looks_cached(output):
                                 "ninja: no work to do", "Nothing to do"))
 
 
-def _build_env(clang_bindir: str) -> dict:
+_BITCODE_NO_INLINE_FLAGS = "-fno-inline -fno-inline-functions"
+
+
+def _build_env(clang_bindir: str, optimize: bool = False) -> dict:
+    """Environment for the gllvm build. By default (optimize=False) it asks gllvm
+    to emit source-faithful bitcode via LLVM_BITCODE_GENERATION_FLAGS, which gllvm
+    applies only to the bitcode compile (never the native object), so functions
+    are not inlined away in what the analyzer reads. optimize=True leaves inlining
+    to the build's own flags."""
     env = dict(os.environ)
     env["CC"] = "gclang"
     env["CXX"] = "gclang++"
     env["LLVM_COMPILER_PATH"] = clang_bindir
+    if not optimize:
+        inherited = env.get("LLVM_BITCODE_GENERATION_FLAGS", "")
+        env["LLVM_BITCODE_GENERATION_FLAGS"] = (
+            (inherited + " " + _BITCODE_NO_INLINE_FLAGS).strip()
+        )
     return env
 
 
@@ -78,19 +93,21 @@ def _configure_help(project_dir):
     return ""
 
 
-def _configure_static_flags(project_dir):
-    """The static-linking options a project's `configure` understands, found by
-    probing `./configure --help`. libtool prints the `--enable-shared` /
-    `--enable-static` forms (never the `--disable-` ones), so the presence of
-    `--enable-shared` is what tells us `--disable-shared` is accepted. Returns the
-    subset of `--disable-shared` / `--enable-static` to pass, in that order; empty
-    when the script is not libtool-based and has no such knobs."""
+def _configure_flags(project_dir):
+    """Static + LTO options a project's `configure` understands, probed from one
+    `configure --help` call. libtool advertises `--enable-shared`/`--enable-static`
+    (never the `--disable-` forms), so their presence is what tells us
+    `--disable-shared`/`--enable-static` are accepted; likewise an advertised
+    `--enable-lto`/`--disable-lto` means `--disable-lto` is accepted. Returns the
+    subset to pass, in order; empty when the script has no such knobs."""
     help_text = _configure_help(project_dir)
     flags = []
     if "--enable-shared" in help_text:
         flags.append("--disable-shared")
     if "--enable-static" in help_text:
         flags.append("--enable-static")
+    if "--enable-lto" in help_text or "--disable-lto" in help_text:
+        flags.append("--disable-lto")
     return flags
 
 
@@ -115,25 +132,36 @@ def detect_build_cmd(project_dir):
     on options it does not recognize. Plain make/ninja trees have no portable
     static toggle and are left untouched. An explicit `--build-cmd` bypasses all
     of this.
+
+    LTO is likewise disabled wherever the build system allows it, because gllvm
+    cannot extract bitcode from an LTO build (the linker performs codegen itself
+    instead of emitting per-object bitcode): `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF`
+    for CMake and `-Db_lto=false` for Meson, both unconditional built-in toggles;
+    `--disable-lto` for `configure`-based and autotools-bootstrap builds, probed
+    the same way as the static flags.
     """
     def has(*names):
         return any(os.path.exists(os.path.join(project_dir, n)) for n in names)
 
     if has("configure"):
-        flags = "".join(" " + f for f in _configure_static_flags(project_dir))
+        flags = "".join(" " + f for f in _configure_flags(project_dir))
         return f"./configure{flags} && make"
     if has("Makefile", "makefile", "GNUmakefile"):
         return "make"
     if has("CMakeLists.txt"):
-        return "cmake -S . -B build -DBUILD_SHARED_LIBS=OFF && cmake --build build"
+        return ("cmake -S . -B build -DBUILD_SHARED_LIBS=OFF "
+                "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF && cmake --build build")
     if has("build.ninja"):
         return "ninja"
     if has("meson.build"):
-        return "meson setup build --default-library=static && ninja -C build"
+        return ("meson setup build --default-library=static -Db_lto=false "
+                "&& ninja -C build")
     if has("autogen.sh"):
-        return "./autogen.sh && ./configure --disable-shared --enable-static && make"
+        return ("./autogen.sh && ./configure --disable-shared --enable-static "
+                "--disable-lto && make")
     if has("configure.ac", "configure.in"):
-        return "autoreconf -i && ./configure --disable-shared --enable-static && make"
+        return ("autoreconf -i && ./configure --disable-shared --enable-static "
+                "--disable-lto && make")
     return None
 
 
@@ -385,8 +413,27 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode):
     return parts + lib_bcs
 
 
+def _run_build(cmd, project_dir, env, verbose):
+    """Run the build, returning (returncode, combined_output). In verbose mode the
+    output is streamed live and also captured, so cache detection and diagnostics
+    still see it."""
+    if not verbose:
+        r = subprocess.run(cmd, cwd=project_dir, env=env,
+                           capture_output=True, text=True)
+        return r.returncode, "\n".join(p for p in (r.stdout, r.stderr) if p)
+    proc = subprocess.Popen(cmd, cwd=project_dir, env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True)
+    chunks = []
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        chunks.append(line)
+    proc.wait()
+    return proc.returncode, "".join(chunks)
+
+
 def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
-                      static_libs="auto", verbose=False):
+                      static_libs="auto", verbose=False, optimize=False):
     """Build `project_dir` with gllvm wrappers and extract its bitcode.
 
     artifact: path (relative to project_dir) of the built binary/object/archive.
@@ -396,28 +443,39 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     the target links; "none" keeps only the linker's view; "all" pulls in every
     bitcode archive in the tree (see the module docstring).
     verbose: stream the build's output live instead of capturing it silently.
+    optimize: when False (default) emit source-faithful bitcode (functions not
+    inlined away, via LLVM_BITCODE_GENERATION_FLAGS); when True leave inlining to
+    the build's flags.
 
     Returns a list of absolute .bc paths to be linked together.
     """
     if not shutil.which("gclang"):
         raise AcquireError("gclang not found on PATH; run scripts/setup.sh")
     clang_bindir = os.path.dirname(os.path.abspath(tc.clang))
-    env = _build_env(clang_bindir)
+    env = _build_env(clang_bindir, optimize=optimize)
     cmd = build_cmd or ["make"]
     before = time.time()
     if verbose:
         sys.stdout.flush()
-    r = subprocess.run(cmd, cwd=project_dir, env=env,
-                       capture_output=not verbose, text=True)
-    if r.returncode != 0:
-        detail = "" if verbose else f":\n{r.stdout}\n{r.stderr}"
-        raise AcquireError(f"build failed (exit {r.returncode}){detail}")
+    rc, build_output = _run_build(cmd, project_dir, env, verbose)
+    if rc != 0:
+        detail = "" if verbose else f":\n{build_output}"
+        raise AcquireError(f"build failed (exit {rc}){detail}")
 
-    cached = not verbose and _build_looks_cached((r.stdout or "") + "\n" + (r.stderr or ""))
+    cached = _build_looks_cached(build_output)
     if cached:
         print("warning: the build is CACHED (nothing was recompiled); the "
               "extracted bitcode reflects the existing artifact, not this run. "
               "Rebuild from clean if the target or its flags changed.")
+
+    errors = []
+
+    def _no_bitcode(base):
+        diag = diagnostics.diagnose_build(build_output, errors)
+        if diag:
+            cause, remedy = diag
+            return AcquireError(f"{base}\n\nLikely cause: {cause}\n{remedy}")
+        return AcquireError(base)
 
     explicit = os.path.join(project_dir, artifact) if artifact else None
     if explicit and os.path.exists(explicit):
@@ -428,11 +486,10 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
                   "auto-detecting the build product")
         candidates = find_artifacts(project_dir, newer_than=None if cached else before)
     if not candidates:
-        raise AcquireError(
+        raise _no_bitcode(
             f"no build artifact with embedded bitcode found under {project_dir}; "
             "pass --artifact PATH to the built binary/object/archive")
 
-    errors = []
     art = kind = primary = None
     for cand in candidates[:8]:
         ck = _classify(cand)
@@ -446,7 +503,7 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
             break
         errors.append(f"{os.path.relpath(cand, project_dir)}: {err}")
     if primary is None:
-        raise AcquireError(
+        raise _no_bitcode(
             "get-bc could not extract bitcode from any detected artifact:\n  "
             + "\n  ".join(errors))
 
