@@ -1,7 +1,7 @@
 """Human-readable summary of an analyzer JSON report."""
 
 
-def print_summary(result, file=None):
+def print_summary(result):
     s = result["summary"]
     print(
         "reachable %d / defined %d  (%d indirect-only, %d low-confidence, %d unreachable)"
@@ -14,5 +14,4 @@ def print_summary(result, file=None):
             s["unreachable"],
             result["backend"],
         ),
-        file=file,
     )

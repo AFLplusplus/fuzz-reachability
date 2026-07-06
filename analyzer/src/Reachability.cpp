@@ -18,10 +18,8 @@ ReachResult computeReachability(Module &m, const CallGraph &g,
 
   for (const auto &name : entries) {
     Function *f = m.getFunction(name);
-    if (!f || f->isDeclaration()) {
-      res.missingNames.push_back(name);
+    if (!f || f->isDeclaration())
       continue;
-    }
     if (!res.reached.count(f)) {
       res.reached[f] = Via::Direct; // roots count as directly reached
       res.depth[f] = 0;

@@ -89,18 +89,45 @@ def _acquire(args, tc, verbose=False):
                 print(f"build command: {args.build_cmd} (from --build-cmd)")
             bcs.extend(
                 acquire_rust.acquire_rust_bitcode_native(
-                    args.project, cmd, shell=shell, verbose=verbose
+                    args.project, cmd, shell=shell, verbose=verbose,
+                    optimize=args.optimize,
                 )
             )
+            if not args.optimize:
+                _native_clean(args.project, args.lang, verbose)
         else:
             bcs.extend(
                 acquire_rust.acquire_rust_bitcode(
                     args.project, profile=(args.profile or "debug"),
                     build_std=args.build_std, codegen_units=args.codegen_units,
-                    verbose=verbose
+                    verbose=verbose, optimize=args.optimize
                 )
             )
     return bcs
+
+
+_NATIVE_CLEAN = {
+    "afl": (["cargo", "afl", "clean"], "."),
+    "ziggy": (["cargo", "ziggy", "clean"], "."),
+    "libfuzzer": (["cargo", "clean"], "fuzz"),
+}
+
+
+def _native_clean(project_dir, lang, verbose):
+    """Remove the throwaway opt-0 instrumented build a native analysis run
+    produced, using the harness's own clean (cargo-fuzz has none, so its fuzz/
+    target is cleaned with plain cargo clean). Best-effort: a missing tool or a
+    nonzero exit is ignored -- the build is analysis scratch, not the user's."""
+    spec = _NATIVE_CLEAN.get(lang)
+    if not spec:
+        return
+    argv, subdir = spec
+    cwd = project_dir if subdir == "." else os.path.join(project_dir, subdir)
+    if not os.path.isdir(cwd) or not shutil.which(argv[0]):
+        return
+    if verbose:
+        print(f"  cleaning native build: {' '.join(argv)} ({cwd})")
+    subprocess.run(argv, cwd=cwd, capture_output=not verbose, text=True)
 
 
 _C_CLEAN_SUFFIXES = (".bc", ".o", ".llvm.manifest")
@@ -351,9 +378,9 @@ def build_parser():
     r.add_argument(
         "--optimize", action="store_true", dest="optimize",
         help="build at the target's real optimization (post-inline). By default "
-             "the analysis build is source-faithful: functions are not inlined "
-             "away, so reachability matches llvm-cov and is a safe allowlist "
-             "superset. Controls inlining only; LTO is still stripped.")
+             "the analysis build is source-faithful (C/C++ via -fno-inline; Rust "
+             "via -Copt-level=0), so reachability matches llvm-cov and is a safe "
+             "allowlist superset. Controls inlining only; LTO is still stripped.")
     r.add_argument("--clean", action="store_true",
                    help="remove cached build artifacts and prior outputs under "
                         "--project before building, so the run rebuilds from "

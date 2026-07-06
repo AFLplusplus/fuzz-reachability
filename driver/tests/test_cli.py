@@ -11,6 +11,12 @@ from reachability import cli, toolchain
 HAVE_GLLVM = shutil.which("gclang") is not None
 
 
+class _Ok:
+    returncode = 0
+    stdout = ""
+    stderr = ""
+
+
 def test_default_analyzer_default_path(monkeypatch):
     monkeypatch.delenv("REACHABILITY_ANALYZER", raising=False)
     monkeypatch.setattr(os.path, "isfile", lambda p: True)
@@ -41,6 +47,79 @@ def test_native_build_cmd_release():
     assert cli._native_build_cmd("afl", "release")[-1] == "--release"
     assert cli._native_build_cmd("ziggy", "release")[-1] == "--release"
     assert cli._native_build_cmd("libfuzzer", "release")[-1] == "--release"
+
+
+def test_native_clean_uses_harness_command(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(cli.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda argv, **k: calls.append((argv, k.get("cwd"))) or _Ok())
+    cli._native_clean(str(tmp_path), "ziggy", verbose=False)
+    cli._native_clean(str(tmp_path), "afl", verbose=False)
+    assert (["cargo", "ziggy", "clean"], str(tmp_path)) in calls
+    assert (["cargo", "afl", "clean"], str(tmp_path)) in calls
+
+
+def test_native_clean_libfuzzer_targets_fuzz_dir(monkeypatch, tmp_path):
+    (tmp_path / "fuzz").mkdir()
+    calls = []
+    monkeypatch.setattr(cli.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda argv, **k: calls.append((argv, k.get("cwd"))) or _Ok())
+    cli._native_clean(str(tmp_path), "libfuzzer", verbose=False)
+    assert (["cargo", "clean"], str(tmp_path / "fuzz")) in calls
+
+
+def test_native_clean_skips_when_tool_missing(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(cli.shutil, "which", lambda n: None)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda argv, **k: calls.append(argv) or _Ok())
+    cli._native_clean(str(tmp_path), "ziggy", verbose=False)
+    assert calls == []
+
+
+def test_native_clean_skips_when_fuzz_dir_absent(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(cli.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(cli.subprocess, "run",
+                        lambda argv, **k: calls.append(argv) or _Ok())
+    cli._native_clean(str(tmp_path), "libfuzzer", verbose=False)
+    assert calls == []
+
+
+def test_acquire_native_cleans_when_not_optimize(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.acquire_rust, "acquire_rust_bitcode_native",
+                        lambda *a, **k: ["x.bc"])
+    cleaned = []
+    monkeypatch.setattr(cli, "_native_clean",
+                        lambda project, lang, verbose: cleaned.append((lang, project)))
+
+    class A:
+        lang = "afl"
+        project = str(tmp_path)
+        build_cmd = None
+        profile = None
+        optimize = False
+    cli._acquire(A(), tc=None, verbose=False)
+    assert cleaned == [("afl", str(tmp_path))]
+
+
+def test_acquire_native_skips_clean_when_optimize(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli.acquire_rust, "acquire_rust_bitcode_native",
+                        lambda *a, **k: ["x.bc"])
+    cleaned = []
+    monkeypatch.setattr(cli, "_native_clean",
+                        lambda project, lang, verbose: cleaned.append(lang))
+
+    class A:
+        lang = "afl"
+        project = str(tmp_path)
+        build_cmd = None
+        profile = None
+        optimize = True
+    cli._acquire(A(), tc=None, verbose=False)
+    assert cleaned == []
 
 
 def test_target_entry_defaults():
@@ -247,6 +326,31 @@ def test_run_clean_is_invoked(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         cli.cmd_run(args)
     assert seen.get("clean") is True
+
+
+def test_acquire_forwards_optimize_to_rust(monkeypatch, tmp_path):
+    seen = {}
+
+    def fake_rust(project_dir, profile="debug", build_std=False,
+                 codegen_units=None, verbose=False, optimize=False):
+        seen["optimize"] = optimize
+        return ["x.bc"]
+
+    monkeypatch.setattr(cli.acquire_rust, "acquire_rust_bitcode", fake_rust)
+
+    class A:
+        lang = "rust"
+        project = str(tmp_path)
+        build_cmd = None
+        profile = "debug"
+        build_std = False
+        codegen_units = None
+        static_libs = "auto"
+        artifact = None
+        optimize = True
+
+    cli._acquire(A(), tc=None, verbose=False)
+    assert seen["optimize"] is True
 
 
 @pytest.mark.skipif(not HAVE_GLLVM, reason="gllvm not installed")

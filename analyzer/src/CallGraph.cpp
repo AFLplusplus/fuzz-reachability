@@ -20,9 +20,7 @@ void CallGraph::addEdge(Function *from, Function *to, EdgeKind kind) {
     Edges[from].push_back({to, kind});
 }
 
-// Resolve a CallBase to a concrete callee, seeing through bitcasts and aliases.
-// Returns nullptr for genuinely indirect calls and inline asm.
-static Function *directCallee(CallBase &cb) {
+Function *directCallee(CallBase &cb) {
   if (Function *f = cb.getCalledFunction())
     return f;
   if (cb.isInlineAsm())

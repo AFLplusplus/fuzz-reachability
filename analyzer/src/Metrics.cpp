@@ -6,7 +6,6 @@
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DebugProgramInstruction.h"
 #include "llvm/IR/Dominators.h"
-#include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -31,20 +30,6 @@ bool isDangerousName(StringRef n) {
     if (e.prefix ? n.starts_with(e.name) : n == e.name)
       return true;
   return false;
-}
-
-Function *directCallee(CallBase &cb) {
-  if (Function *f = cb.getCalledFunction())
-    return f;
-  if (cb.isInlineAsm())
-    return nullptr;
-  Value *v = cb.getCalledOperand()->stripPointerCasts();
-  if (auto *f = dyn_cast<Function>(v))
-    return f;
-  if (auto *ga = dyn_cast<GlobalAlias>(v))
-    if (auto *f = dyn_cast<Function>(ga->getAliasee()->stripPointerCasts()))
-      return f;
-  return nullptr;
 }
 
 unsigned countLocals(Function &f) {

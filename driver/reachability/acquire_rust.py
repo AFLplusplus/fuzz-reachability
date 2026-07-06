@@ -57,13 +57,9 @@ def _build_looks_cached(output):
     return "Finished" in t and "Compiling " not in t
 
 
-def _emit_flags(build_std: bool, codegen_units: int = 1):
+def _emit_flags(codegen_units: int = 1):
     return ["--emit=llvm-bc", "-Cembed-bitcode=yes",
             f"-Ccodegen-units={codegen_units}"]
-
-
-def _rustflags(build_std: bool, codegen_units: int = 1) -> str:
-    return " ".join(_emit_flags(build_std, codegen_units))
 
 
 def _read_config_rustflags(path):
@@ -149,10 +145,55 @@ def _resolve_codegen_units(project_dir, profile, codegen_units):
     return _CARGO_DEFAULT_CGU.get(profile, 16)
 
 
-def _compose_rustflags(project_dir, build_std, codegen_units=1):
+def _manifest_profile_bool(project_dir, profile, key):
+    """The bool at [profile.<name>].<key> from the nearest Cargo.toml up from
+    project_dir that sets it, or None when none in the chain does."""
+    name = _PROFILE_SECTION.get(profile, profile)
+    d = os.path.abspath(project_dir)
+    while True:
+        try:
+            with open(os.path.join(d, "Cargo.toml"), "rb") as fh:
+                cfg = tomllib.load(fh)
+        except (OSError, tomllib.TOMLDecodeError):
+            cfg = None
+        if cfg:
+            section = cfg.get("profile", {}).get(name) if isinstance(
+                cfg.get("profile"), dict) else None
+            if isinstance(section, dict) and key in section:
+                v = section[key]
+                return v if isinstance(v, bool) else None
+        parent = os.path.dirname(d)
+        if parent == d:
+            return None
+        d = parent
+
+
+def _resolve_assertions(project_dir, profile):
+    """(debug_assertions, overflow_checks) matching cargo for `profile`: the
+    manifest [profile.<name>] values when set, else cargo's defaults (release
+    off, dev/other on); overflow-checks defaults to debug-assertions. Pinning
+    these keeps the source-faithful -Copt-level=0 build -- which would otherwise
+    derive debug-assertions=on from opt0 -- consistent with the real profile."""
+    name = _PROFILE_SECTION.get(profile, profile)
+    da = _manifest_profile_bool(project_dir, profile, "debug-assertions")
+    if da is None:
+        da = name != "release"
+    oc = _manifest_profile_bool(project_dir, profile, "overflow-checks")
+    if oc is None:
+        oc = da
+    return da, oc
+
+
+def _compose_rustflags(project_dir, codegen_units=1, optimize=False,
+                       profile="debug"):
     """The full rustc flag list: our emit flags plus whatever flags cargo would
     otherwise apply -- the caller's CARGO_ENCODED_RUSTFLAGS / RUSTFLAGS, or the
-    project's config build.rustflags when the environment sets neither."""
+    project's config build.rustflags when the environment sets neither. When not
+    optimize, -Copt-level=0 is appended (after the inherited flags, so it wins
+    over the profile) together with -Cdebug-assertions/-Coverflow-checks pinned
+    to the profile's values, so forcing opt0 does not silently flip those cfgs
+    (which would change which functions compile), giving source-faithful
+    (un-inlined) bitcode that still matches the real profile."""
     enc = os.environ.get("CARGO_ENCODED_RUSTFLAGS")
     env_rf = os.environ.get("RUSTFLAGS")
     if enc:
@@ -161,15 +202,23 @@ def _compose_rustflags(project_dir, build_std, codegen_units=1):
         existing = shlex.split(env_rf)
     else:
         existing = _config_rustflags(project_dir)
-    return _emit_flags(build_std, codegen_units) + existing
+    flags = _emit_flags(codegen_units) + existing
+    if not optimize:
+        da, oc = _resolve_assertions(project_dir, profile)
+        flags = flags + [
+            "-Copt-level=0",
+            f"-Cdebug-assertions={'on' if da else 'off'}",
+            f"-Coverflow-checks={'on' if oc else 'off'}",
+        ]
+    return flags
 
 
-def _build_env(project_dir, build_std, codegen_units=1):
+def _build_env(project_dir, codegen_units=1, optimize=False, profile="debug"):
     """Build environment with the composed flags in CARGO_ENCODED_RUSTFLAGS, which
     cargo honours verbatim and in preference to both RUSTFLAGS and config."""
     env = dict(os.environ)
     env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
-        _compose_rustflags(project_dir, build_std, codegen_units))
+        _compose_rustflags(project_dir, codegen_units, optimize, profile))
     env.pop("RUSTFLAGS", None)
     return env
 
@@ -316,7 +365,7 @@ def _dedup_newest_per_crate(paths):
 
 
 def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
-                         codegen_units=None, verbose=False):
+                         codegen_units=None, verbose=False, optimize=False):
     """Build the Rust project and collect every .bc this build emitted.
 
     profile / codegen_units should match the fuzz binary's build so the emitted
@@ -328,11 +377,16 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     artifact stream on stdout must be captured to be parsed, so the build cannot
     stream live; its rendered diagnostics on stderr are reprinted afterwards).
 
+    optimize: when False (default) force -Copt-level=0 so functions are not
+    inlined away (source-faithful, matches llvm-cov, safe allowlist superset);
+    when True analyze at the profile's real optimization to mirror the binary.
+
     Returns a list of .bc paths. Raises AcquireError on a compile failure or when
     no .bc were produced.
     """
     codegen_units = _resolve_codegen_units(project_dir, profile, codegen_units)
-    env = _build_env(project_dir, build_std, codegen_units)
+    env = _build_env(project_dir, codegen_units, optimize=optimize,
+                     profile=profile)
     cmd = ["cargo", "build", "--message-format=json-render-diagnostics"]
     if profile == "release":
         cmd.append("--release")
@@ -381,7 +435,7 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
 _BC_WRAPPER = """#!/bin/sh
 real="$1"
 shift
-"$real" "$@" --emit=llvm-bc
+"$real" "$@" --emit=llvm-bc $REACH_EXTRA_RUSTFLAGS
 status=$?
 [ -n "$REACH_BC_DIR" ] || exit $status
 outdir=""
@@ -411,7 +465,7 @@ exit $status
 """
 
 
-def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=False):
+def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=False, optimize=False):
     """Build via the fuzzer's own command (cargo afl/ziggy/fuzz, or a custom
     build_cmd) and collect the bitcode it emits. A RUSTC_WRAPPER adds
     --emit=llvm-bc to every crate rustc compiles and copies that crate's .bc into
@@ -425,7 +479,12 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
 
     build_cmd is an argv list, or a shell string when shell=True. Returns the
     collected .bc paths. Raises AcquireError on a build failure, or when nothing
-    was captured (a fully cached build never re-runs rustc)."""
+    was captured (a fully cached build never re-runs rustc).
+
+    optimize: when False (default) the wrapper also forces -Copt-level=0 so the
+    emitted bitcode is source-faithful (functions not inlined away); the caller is
+    responsible for cleaning the resulting throwaway opt-0 build. When True the
+    build mirrors the real instrumented binary."""
     collect = tempfile.mkdtemp(prefix="reach-bc-")
     atexit.register(shutil.rmtree, collect, ignore_errors=True)
     wrapper = os.path.join(collect, ".rustc-bc-wrapper.sh")
@@ -436,6 +495,7 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
     env = dict(os.environ)
     env["RUSTC_WRAPPER"] = wrapper
     env["REACH_BC_DIR"] = collect
+    env["REACH_EXTRA_RUSTFLAGS"] = "" if optimize else "-Copt-level=0"
     env.setdefault("AFLRS_REQUIRE_PLUGINS", "1")
 
     argv = ["sh", "-c", build_cmd] if shell else list(build_cmd)

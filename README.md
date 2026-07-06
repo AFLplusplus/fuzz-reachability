@@ -289,7 +289,7 @@ entry point(s).
 | `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree. Exact archive manifests prevent linked objects from being dropped; unresolved duplicate definitions fail the merge instead of silently replacing one body. |
 | `--profile {debug,release}` | tool default | Build profile. `libfuzzer`/`ziggy`/`afl`: `release` adds `--release` to the native command (else the tool's default). Plain `--lang rust`: the cargo profile (default `debug`). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--codegen-units N` | auto | Plain `--lang rust` only (positive integer): rustc `-Ccodegen-units`, auto-detected from `Cargo.toml` else cargo's per-profile default. Ignored for `libfuzzer`/`ziggy`/`afl` (their build sets it). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
-| `--optimize` | off | Build the analysis at the target's real optimization (post-inline). By default the analysis build is **source-faithful** (`LLVM_BITCODE_GENERATION_FLAGS=-fno-inline -fno-inline-functions`): functions are not inlined away, so the reachable set matches what `llvm-cov` reports and is a safe allowlist superset. Controls inlining only — LTO is still stripped. Pass `--optimize` when you want the set and per-function metrics to mirror a specific `-O3` instrumented binary. |
+| `--optimize` | off | Build the analysis at the target's real optimization (post-inline). By default the analysis build is **source-faithful**: C/C++ analysis bitcode is built with `-fno-inline -fno-inline-functions` (via `LLVM_BITCODE_GENERATION_FLAGS`); Rust with `-Copt-level=0` (via composed `RUSTFLAGS` for plain `--lang rust`/`mixed`, or via `RUSTC_WRAPPER` for native harnesses). Functions are not inlined away, so the reachable set matches what `llvm-cov` reports and is a safe allowlist superset. For native Rust harnesses (`libfuzzer`/`ziggy`/`afl`), `--optimize` also skips the post-analysis clean (otherwise their throwaway opt-0 build is discarded). Pass `--optimize` when you want the set and per-function metrics to mirror a specific `-O3` instrumented binary. Controls inlining only — LTO is still stripped. |
 | `--build-std` | off | Rust only: build the standard library from source with Cargo's `-Zbuild-std` option and rustc's detected host target, so std functions appear in the graph instead of as external declarations. |
 | `--clean` | off | Remove cached build artifacts and prior outputs under `--project` before building, so the run rebuilds from clean (a cached build otherwise yields stale or empty bitcode — see [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)). Rust runs `cargo clean` (also in `fuzz/` for cargo-fuzz); C/C++ runs the build system's own clean (`make`/`ninja`/`cmake`/`meson`) in each configured build tree and removes `*.o`/`*.bc` files (build directories are kept, since some projects build in-source); every target also drops `merged.bc` and any prior `reachability.json` / `reached.txt` / `not_reached.txt` / `--dot`. |
 | `--dot FILE` | *(none)* | Also write the reachable subgraph as Graphviz DOT (indirect edges dashed/red). |
@@ -354,13 +354,27 @@ default to `-O3`**; sancov-based harnesses (libFuzzer, honggfuzz) use whatever
 default AFL++ build, analyze at `-O3` too — e.g.
 `CFLAGS=-O3 CXXFLAGS=-O3 reachability run --optimize …`.
 
-**`libfuzzer`/`ziggy`/`afl` handle this automatically** by building through the
-fuzzer's own driver (`cargo fuzz build` / `cargo ziggy build --no-honggfuzz` /
-`cargo afl build`) with a `RUSTC_WRAPPER` that adds `--emit=llvm-bc`. So the
-bitcode already carries the harness's real cfgs and flags. `--profile release`
-adds `--release`; `--build-cmd` overrides the command for anything finer (a
-specific target, sanitizer, or profile). `--codegen-units` does not apply (the
-tool sets it).
+**For `libfuzzer`/`ziggy`/`afl`, Rust reachability is now source-faithful by
+default**: the native harness build is forced to `-Copt-level=0` (the
+`RUSTC_WRAPPER` appends it as an extra argument to every `rustc` invocation), so functions the optimizer
+would inline still appear in `reachability.json`/`reached.txt` and match what
+`llvm-cov` reports. Native runs then clean their throwaway opt-0 build afterward
+(`cargo ziggy clean` / `cargo afl clean` / `cargo clean` in `fuzz/` for
+cargo-fuzz) so no mis-optimized instance is left to be fuzzed by mistake — which
+means your next real fuzzing build recompiles. `--profile release` adds `--release` for the non-optimization
+aspects (feature flags, profile settings); `--build-cmd` overrides the command
+for anything finer (a specific target, sanitizer, or profile). `--codegen-units`
+does not apply (the tool sets it). `--optimize` restores the optimized, post-inline
+build and skips the post-analysis clean.
+
+**For plain `--lang rust`/`mixed`, Rust reachability is now source-faithful by
+default**: the analysis build forces `-Copt-level=0` via composed `RUSTFLAGS`,
+so functions the optimizer would inline still appear in `reachability.json` and
+match what `llvm-cov` reports. `--profile release` no longer changes the reachable
+set (since opt-level is always zero) unless `--optimize` is also passed, which
+restores the optimized/post-inline view. Matching the fuzz binary's features,
+`cfg(fuzzing)`, `debug_assertions`, and `overflow_checks` still requires setting
+the profile/features/env correctly.
 
 `cargo-afl` and `ziggy` builds run with `AFLRS_REQUIRE_PLUGINS=1`, so they fail
 loudly when the AFL++ LLVM plugins are missing rather than silently building with

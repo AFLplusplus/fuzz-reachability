@@ -4,6 +4,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
 #include <utility>
 
@@ -28,6 +29,10 @@ private:
 };
 
 struct IndirectResolver; // defined in IndirectResolver.h
+
+// Resolve a CallBase to a concrete callee, seeing through bitcasts and aliases.
+// Returns nullptr for genuinely indirect calls and inline asm.
+llvm::Function *directCallee(llvm::CallBase &cb);
 
 // Add a Direct edge for every CallBase resolving to a concrete function.
 void buildDirectEdges(llvm::Module &m, CallGraph &g);

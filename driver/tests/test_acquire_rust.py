@@ -6,20 +6,9 @@ import pytest
 from reachability import acquire_rust
 
 
-def test_rustflags_contains_emit_bc():
-    flags = acquire_rust._rustflags(build_std=False)
-    assert "--emit=llvm-bc" in flags
-    assert "-Cembed-bitcode=yes" in flags
-    assert "-Ccodegen-units=1" in flags
-
-
-def test_rustflags_build_std():
-    assert "-Zbuild-std" not in acquire_rust._rustflags(build_std=True)
-
-
 def test_emit_flags_codegen_units():
-    assert "-Ccodegen-units=1" in acquire_rust._emit_flags(False)
-    assert "-Ccodegen-units=8" in acquire_rust._emit_flags(False, 8)
+    assert "-Ccodegen-units=1" in acquire_rust._emit_flags()
+    assert "-Ccodegen-units=8" in acquire_rust._emit_flags(8)
 
 
 def test_base_re_strips_codegen_unit_split():
@@ -102,15 +91,17 @@ def test_compose_rustflags_merges_project_config(tmp_path, monkeypatch):
     (tmp_path / ".cargo").mkdir()
     (tmp_path / ".cargo" / "config.toml").write_text(
         '[build]\nrustflags = ["--cfg", "tokio_unstable"]\n')
-    flags = acquire_rust._compose_rustflags(str(tmp_path), build_std=False)
+    flags = acquire_rust._compose_rustflags(str(tmp_path))
     assert "--emit=llvm-bc" in flags
-    assert flags[-2:] == ["--cfg", "tokio_unstable"]
+    assert "--cfg" in flags and "tokio_unstable" in flags
+    assert flags.index("tokio_unstable") < flags.index("-Copt-level=0")
+    assert "-Copt-level=0" in flags
 
 
 def test_compose_rustflags_keeps_caller_env(tmp_path, monkeypatch):
     monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
     monkeypatch.setenv("RUSTFLAGS", "-Cdebuginfo=2")
-    flags = acquire_rust._compose_rustflags(str(tmp_path), build_std=False)
+    flags = acquire_rust._compose_rustflags(str(tmp_path))
     assert "--emit=llvm-bc" in flags
     assert "-Cdebuginfo=2" in flags
 
@@ -118,7 +109,7 @@ def test_compose_rustflags_keeps_caller_env(tmp_path, monkeypatch):
 def test_build_env_uses_encoded_and_drops_rustflags(tmp_path, monkeypatch):
     monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
     monkeypatch.setenv("RUSTFLAGS", "-Cdebuginfo=2")
-    env = acquire_rust._build_env(str(tmp_path), build_std=False)
+    env = acquire_rust._build_env(str(tmp_path))
     assert "RUSTFLAGS" not in env
     parts = env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
     assert "--emit=llvm-bc" in parts and "-Cdebuginfo=2" in parts
@@ -311,3 +302,116 @@ def test_build_bc_paths_bin_picks_newest(tmp_path):
     })
     bcs = acquire_rust._build_bc_paths(binmsg)
     assert bcs == [str(new)]
+
+
+def test_compose_rustflags_appends_opt0_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    flags = acquire_rust._compose_rustflags(str(tmp_path))
+    assert "-Copt-level=0" in flags
+
+
+def test_compose_rustflags_optimize_omits_opt0(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    flags = acquire_rust._compose_rustflags(str(tmp_path), optimize=True)
+    assert "-Copt-level=0" not in flags
+
+
+def test_compose_rustflags_opt0_wins_over_inherited(tmp_path, monkeypatch):
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    monkeypatch.setenv("RUSTFLAGS", "-Copt-level=2")
+    flags = acquire_rust._compose_rustflags(str(tmp_path))
+    assert flags.index("-Copt-level=0") > flags.index("-Copt-level=2")
+
+
+def test_build_env_threads_opt0(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    env = acquire_rust._build_env(str(tmp_path))
+    assert "-Copt-level=0" in env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+    env_opt = acquire_rust._build_env(str(tmp_path), optimize=True)
+    assert "-Copt-level=0" not in env_opt["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+
+
+def test_compose_rustflags_pins_release_assertions_off(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    flags = acquire_rust._compose_rustflags(str(tmp_path), profile="release")
+    assert "-Cdebug-assertions=off" in flags
+    assert "-Coverflow-checks=off" in flags
+
+
+def test_compose_rustflags_pins_debug_assertions_on(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    flags = acquire_rust._compose_rustflags(str(tmp_path), profile="debug")
+    assert "-Cdebug-assertions=on" in flags
+    assert "-Coverflow-checks=on" in flags
+
+
+def test_compose_rustflags_optimize_omits_assertion_pins(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    flags = acquire_rust._compose_rustflags(
+        str(tmp_path), optimize=True, profile="release")
+    assert not any(f.startswith("-Cdebug-assertions") for f in flags)
+    assert not any(f.startswith("-Coverflow-checks") for f in flags)
+
+
+def test_resolve_assertions_release_defaults_off(tmp_path):
+    assert acquire_rust._resolve_assertions(str(tmp_path), "release") == (False, False)
+
+
+def test_resolve_assertions_debug_defaults_on(tmp_path):
+    assert acquire_rust._resolve_assertions(str(tmp_path), "debug") == (True, True)
+
+
+def test_resolve_assertions_manifest_override(tmp_path):
+    (tmp_path / "Cargo.toml").write_text(
+        "[package]\nname='x'\nversion='0.0.0'\n"
+        "[profile.release]\ndebug-assertions = true\n")
+    assert acquire_rust._resolve_assertions(str(tmp_path), "release") == (True, True)
+
+
+def test_bc_wrapper_appends_extra_rustflags():
+    assert "$REACH_EXTRA_RUSTFLAGS" in acquire_rust._BC_WRAPPER
+
+
+def test_native_sets_opt0_env_by_default(monkeypatch, tmp_path):
+    seen = {}
+
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, cwd=None, env=None, capture_output=False, text=False):
+        seen["extra"] = env.get("REACH_EXTRA_RUSTFLAGS")
+        return R()
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", fake_run)
+    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: ["a.bc"])
+    monkeypatch.setattr(acquire_rust.tempfile, "mkdtemp", lambda prefix="": str(tmp_path))
+    acquire_rust.acquire_rust_bitcode_native(str(tmp_path), ["cargo", "afl", "build"])
+    assert seen["extra"] == "-Copt-level=0"
+
+
+def test_native_optimize_clears_opt0_env(monkeypatch, tmp_path):
+    seen = {}
+
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, cwd=None, env=None, capture_output=False, text=False):
+        seen["extra"] = env.get("REACH_EXTRA_RUSTFLAGS")
+        return R()
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", fake_run)
+    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: ["a.bc"])
+    monkeypatch.setattr(acquire_rust.tempfile, "mkdtemp", lambda prefix="": str(tmp_path))
+    acquire_rust.acquire_rust_bitcode_native(
+        str(tmp_path), ["cargo", "afl", "build"], optimize=True)
+    assert seen["extra"] == ""

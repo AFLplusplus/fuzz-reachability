@@ -9,8 +9,7 @@ class AnalyzeError(RuntimeError):
 
 
 def analyze(merged_bc, tc, entries, dot=None,
-            indirect_any=False, reached_out=None, not_reached_out=None,
-            verbose=False):
+            reached_out=None, not_reached_out=None, verbose=False):
     """Run the analyzer on `merged_bc`; return the parsed JSON report.
 
     reached_out / not_reached_out: paths for the sancov allowlist / ignorelist.
@@ -19,8 +18,6 @@ def analyze(merged_bc, tc, entries, dot=None,
     cmd = [tc.analyzer, merged_bc]
     for e in entries:
         cmd += ["--entry", e]
-    if indirect_any:
-        cmd.append("--indirect-any")
     if dot:
         cmd += ["--dot", dot]
     if reached_out:
