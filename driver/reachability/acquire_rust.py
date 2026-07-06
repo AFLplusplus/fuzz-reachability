@@ -240,30 +240,6 @@ def _compile_errors(text):
     return errors
 
 
-def _cargo_errors(stdout):
-    errors = []
-    link_error = False
-    for line in stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if msg.get("reason") != "compiler-message":
-            continue
-        diagnostic = msg.get("message") or {}
-        if diagnostic.get("level") != "error":
-            continue
-        text = str(diagnostic.get("message") or "").strip()
-        if text.startswith("linking with "):
-            link_error = True
-        elif not text.startswith("could not compile "):
-            errors.append(text or "cargo reported an unspecified compiler error")
-    return errors, link_error
-
-
 def _rustc_host():
     r = subprocess.run(["rustc", "-vV"], capture_output=True, text=True)
     if r.returncode == 0:
@@ -297,6 +273,12 @@ def _named_bc_paths(msg, files):
              if _BASE_RE.sub("", os.path.basename(p)) == stem]
     if not cands:
         return []
+    hashes = {mm.group(1) for p in cands
+              if (mm := _HASH_RE.search(os.path.basename(p)))}
+    if len(hashes) > 1:
+        print(f"warning: deps/ holds bitcode from {len(hashes)} builds of crate "
+              f"'{stem}'; picking the newest by mtime, which can be stale if this "
+              f"crate was cached. Re-run with --clean for a fresh build.")
     newest = max(cands, key=os.path.getmtime)
     m = _HASH_RE.search(os.path.basename(newest))
     if not m:
@@ -399,13 +381,12 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     if verbose and r.stderr.strip():
         print(r.stderr.strip())
 
-    cargo_errs, link_error = _cargo_errors(r.stdout)
-    errs = cargo_errs + _compile_errors(r.stderr)
+    errs = _compile_errors(r.stderr)
     if errs:
         raise AcquireError(
             "cargo failed to compile a crate, so the bitcode set would be "
             "incomplete -- fix the build first:\n  " + "\n  ".join(errs[:20]))
-    if r.returncode != 0 and not link_error and "error: linking with " not in r.stderr:
+    if r.returncode != 0 and "error: linking with " not in r.stderr:
         tail = (r.stderr.strip() or r.stdout.strip())[-2000:]
         raise AcquireError(f"cargo build failed (exit {r.returncode}):\n  {tail}")
 

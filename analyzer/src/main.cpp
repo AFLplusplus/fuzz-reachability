@@ -265,7 +265,9 @@ int main(int argc, char **argv) {
 
   reach::CallGraph graph;
   reach::buildDirectEdges(*mod, graph);
-  reach::buildEscapeEdges(*mod, graph);
+  reach::EscapeIndex escapeIdx;
+  reach::buildEscapeIndex(*mod, escapeIdx);
+  reach::buildEscapeEdges(*mod, graph, escapeIdx);
 
   std::unique_ptr<reach::IndirectResolver> resolver;
   if (IndirectAny)
@@ -317,7 +319,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  auto flowTargets = reach::computeAddressFlowTargets(*mod);
+  auto flowTargets = reach::computeAddressFlowTargets(*mod, escapeIdx);
   auto metrics = reach::computeMetrics(*mod, graph, res, roots);
 
   auto writeFile = [&](const std::string &path, const char *what,

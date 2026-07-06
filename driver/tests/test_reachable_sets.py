@@ -36,11 +36,7 @@ def _require_rust_readable(tc):
     if not toolchain.rust_bitcode_readable(tc):
         rv = ".".join(str(x) for x in toolchain.rustc_llvm_version())
         cv = ".".join(
-            str(x)
-            for x in min(
-                toolchain.tool_llvm_version(tc.llvm_link),
-                toolchain.tool_llvm_version(tc.opt),
-            )
+            str(x) for x in toolchain.tool_llvm_version(tc.llvm_link)
         )
         pytest.skip(
             f"toolchain LLVM {cv} is older than rustc's LLVM {rv}; "

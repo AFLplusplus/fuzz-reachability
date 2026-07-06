@@ -67,12 +67,7 @@ void buildIndirectEdges(Module &m, CallGraph &g, IndirectResolver &r) {
   }
 }
 
-struct EscapeIndex {
-  DenseMap<Function *, SmallVector<CallBase *, 4>> callSites;
-  DenseMap<Value *, SmallVector<Value *, 4>> storedTo;
-};
-
-static void buildEscapeIndex(Module &m, EscapeIndex &idx) {
+void buildEscapeIndex(Module &m, EscapeIndex &idx) {
   for (Function &f : m) {
     if (f.isDeclaration())
       continue;
@@ -258,10 +253,7 @@ static bool callsAnalyzableCallee(CallBase &cb) {
   return callee && !callee->isDeclaration();
 }
 
-void buildEscapeEdges(Module &m, CallGraph &g) {
-  EscapeIndex idx;
-  buildEscapeIndex(m, idx);
-
+void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
   std::vector<std::pair<Function *, Value *>> sites;
   std::vector<Value *> roots;
   for (Function &f : m) {
@@ -300,10 +292,7 @@ void buildEscapeEdges(Module &m, CallGraph &g) {
   }
 }
 
-DenseSet<Function *> computeAddressFlowTargets(Module &m) {
-  EscapeIndex idx;
-  buildEscapeIndex(m, idx);
-
+DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx) {
   // Root the value-flow at every place an address could be consumed as a
   // callable: an indirect call's callee operand, and the arguments/returns that
   // reach unanalyzable *code* that might call them. Inline asm and intrinsics

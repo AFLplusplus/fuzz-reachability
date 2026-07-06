@@ -40,7 +40,14 @@ void buildDirectEdges(llvm::Module &m, CallGraph &g);
 // Add Indirect edges for every indirect CallBase, using the resolver.
 void buildIndirectEdges(llvm::Module &m, CallGraph &g, IndirectResolver &r);
 
-void buildEscapeEdges(llvm::Module &m, CallGraph &g);
+struct EscapeIndex {
+  llvm::DenseMap<llvm::Function *, llvm::SmallVector<llvm::CallBase *, 4>> callSites;
+  llvm::DenseMap<llvm::Value *, llvm::SmallVector<llvm::Value *, 4>> storedTo;
+};
+
+void buildEscapeIndex(llvm::Module &m, EscapeIndex &idx);
+
+void buildEscapeEdges(llvm::Module &m, CallGraph &g, const EscapeIndex &idx);
 
 // Functions for which there is concrete value-flow evidence that the address is
 // used as a callable -- it reaches the callee operand of an indirect call, or
@@ -48,6 +55,7 @@ void buildEscapeEdges(llvm::Module &m, CallGraph &g);
 // match. Used only to annotate reachability *confidence*; it never prunes the
 // (sound) reachable set. A function reached purely by type matching but absent
 // here is a low-confidence (likely-spurious) indirect target.
-llvm::DenseSet<llvm::Function *> computeAddressFlowTargets(llvm::Module &m);
+llvm::DenseSet<llvm::Function *> computeAddressFlowTargets(llvm::Module &m,
+                                                           const EscapeIndex &idx);
 
 } // namespace reach

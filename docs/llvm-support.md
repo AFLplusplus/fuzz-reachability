@@ -7,7 +7,7 @@ analyzer.** The rules enforced by `reachability check-toolchain`
 (`driver/reachability/toolchain.py`):
 
 1. The analyzer is built against some LLVM major **M**, and **M ≥ 21**.
-2. `clang`, `clang++`, `llvm-link`, and `opt` all share that same major **M**
+2. `clang`, `clang++`, and `llvm-link` all share that same major **M**
    (one coherent toolchain produces and merges the bitcode the analyzer reads).
 3. **rustc's** bundled LLVM must be old enough for the tools to read its bitcode.
    LLVM auto-upgrades *older* bitcode but cannot read *newer* bitcode, so the

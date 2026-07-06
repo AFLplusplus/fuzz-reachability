@@ -32,6 +32,13 @@
   build. When extraction still fails, the error now names the likely cause and
   fix (LTO, an afl-clang-fast/clang-LTO binary with an empty `.llvm_bc`, a
   ccache/sccache layer, or assembly-only units) via a new `diagnostics` module.
+- The toolchain check no longer requires `opt` on `PATH`: it was only
+  version-probed as a redundant proxy, so `clang`/`clang++`/`llvm-link` (the
+  actual bitcode producer/merger) now define coherence.
+- Rust acquisition warns when `deps/` holds bitcode from more than one build of a
+  crate (the newest is chosen by mtime, which can be stale if that crate was
+  cached); re-run with `--clean` for a fresh build.
+- C/C++ artifact detection now recognizes fat/universal Mach-O binaries.
 
 ### v1.0
 - initial release

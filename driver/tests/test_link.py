@@ -5,7 +5,7 @@ from reachability.toolchain import Toolchain
 
 
 def _tc():
-    return Toolchain("clang", "clang++", "llvm-link", "opt", "analyzer", 21, 21)
+    return Toolchain("clang", "clang++", "llvm-link", "analyzer", 21, 21)
 
 
 def test_link_empty_raises():

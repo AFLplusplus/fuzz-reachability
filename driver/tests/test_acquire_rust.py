@@ -127,20 +127,6 @@ def test_compile_errors_flags_real_failure_not_link():
     assert acquire_rust._compile_errors("error: expected item\n")
 
 
-def test_cargo_errors_parse_json():
-    compile_error = json.dumps({
-        "reason": "compiler-message",
-        "message": {"level": "error", "message": "expected item"},
-    })
-    link_error = json.dumps({
-        "reason": "compiler-message",
-        "message": {"level": "error", "message": "linking with `cc` failed"},
-    })
-    errors, linked = acquire_rust._cargo_errors(compile_error + "\n" + link_error)
-    assert errors == ["expected item"]
-    assert linked
-
-
 def test_rustc_host(monkeypatch):
     class R:
         returncode = 0
@@ -302,6 +288,17 @@ def test_build_bc_paths_bin_picks_newest(tmp_path):
     })
     bcs = acquire_rust._build_bc_paths(binmsg)
     assert bcs == [str(new)]
+
+
+def test_named_bc_paths_warns_on_multiple_build_hashes(tmp_path, capsys):
+    deps = tmp_path / "target" / "debug" / "deps"
+    deps.mkdir(parents=True)
+    (deps / "harness-0000000000000000.bc").write_text("x")
+    (deps / "harness-ffffffffffffffff.bc").write_text("x")
+    files = [str(tmp_path / "target" / "debug" / "harness")]
+    msg = {"target": {"name": "harness", "kind": ["bin"]}}
+    acquire_rust._named_bc_paths(msg, files)
+    assert "2 builds of crate 'harness'" in capsys.readouterr().out
 
 
 def test_compose_rustflags_appends_opt0_by_default(tmp_path, monkeypatch):

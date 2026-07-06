@@ -23,7 +23,7 @@ def _patch(monkeypatch, *, analyzer, tools, rustc):
 def test_check_coherence_raises_on_tool_mismatch(monkeypatch):
     monkeypatch.setattr(toolchain, "rustc_llvm_major", lambda: 21)
     monkeypatch.setattr(toolchain, "find_tool", lambda *a, **k: "/usr/bin/" + a[0])
-    monkeypatch.setattr(toolchain, "tool_llvm_major", lambda p: 18 if "opt" in p else 21)
+    monkeypatch.setattr(toolchain, "tool_llvm_major", lambda p: 18 if "llvm-link" in p else 21)
     monkeypatch.setattr(toolchain, "analyzer_llvm_major", lambda p: 21)
     with pytest.raises(toolchain.ToolchainError):
         toolchain.check_coherence("/fake/analyzer")

@@ -97,7 +97,7 @@ Two components, joined by merged bitcode:
 
 ## Prerequisites
 
-- **LLVM ≥ 21.** One coherent toolchain: `clang`, `clang++`, `llvm-link`, `opt`,
+- **LLVM ≥ 21.** One coherent toolchain: `clang`, `clang++`, `llvm-link`,
   and the analyzer all share one major **M ≥ 21**, and rustc's LLVM is no newer
   than M. See [`docs/llvm-support.md`](docs/llvm-support.md).
   **NOTE!** especially as a Rust user, we recommend to install LLVM via
@@ -268,7 +268,7 @@ The `reachability` CLI has two subcommands.
 ### `reachability check-toolchain`
 
 Resolves and validates the LLVM toolchain (analyzer, `clang`/`clang++`,
-`llvm-link`, `opt`, `rustc`) for version coherence and prints what it found. Run it
+`llvm-link`, `rustc`) for version coherence and prints what it found. Run it
 first; it exits non-zero on any incoherence. See
 [`docs/llvm-support.md`](docs/llvm-support.md) for the policy.
 

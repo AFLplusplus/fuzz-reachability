@@ -266,7 +266,6 @@ def cmd_run(args):
         print(f"  clang     {tc.clang}")
         print(f"  clang++   {tc.clangxx}")
         print(f"  llvm-link {tc.llvm_link}")
-        print(f"  opt       {tc.opt}")
         print(f"  analyzer  {tc.analyzer}")
     if rust_target:
         toolchain.assert_rust_bitcode_readable(tc)

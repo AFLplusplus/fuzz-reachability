@@ -43,7 +43,7 @@ _SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv",
               ".cache"}
 _BC_MARKERS = (b".llvm_bc", b"__llvm_bc")
 _KIND_RANK = {"exec": 3, "shared": 2, "archive": 1, "object": 0}
-_MACHO_MAGIC = (0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE, 0xCAFEBABE)
+_MACHO_MAGIC = (0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE, 0xBEBAFECA, 0xBFBAFECA)
 
 
 def _build_looks_cached(output):
@@ -307,21 +307,19 @@ def _bitcode_archives(project_dir):
 
 
 def _plan_static_libs(manifest, archive_members, mode):
-    """Decide which archives to fully include and which manifest objects are the
-    target's own (non-archive) roots.
+    """Decide which static archives to fully include.
 
     manifest: per-object .bc paths the linker pulled into the target.
     archive_members: {archive_path: {member object name, ...}}.
     mode: "auto" includes only archives the target links (members intersect the
     manifest); "all" includes every archive given.
 
-    Returns (chosen_archive_paths, root_bc_paths): the roots are the manifest
-    objects that belong to no chosen archive, so merging them with the full
-    archives produces no duplicate symbols.
+    Returns the chosen archive paths. The caller isolates the target's own
+    (non-archive) objects itself, so merging them with the full archives produces
+    no duplicate symbols.
     """
     manifest_member_names = {_member_name(p) for p in manifest}
     chosen = []
-    union = set()
     ordered = sorted(archive_members.items(),
                      key=lambda kv: len(kv[1]), reverse=True)
     for arch, members in ordered:
@@ -329,9 +327,7 @@ def _plan_static_libs(manifest, archive_members, mode):
             continue
         if mode == "all" or (mode == "auto" and members & manifest_member_names):
             chosen.append(arch)
-            union |= members
-    roots = [p for p in manifest if _member_name(p) not in union]
-    return chosen, roots
+    return chosen
 
 
 def _include_static_libs(project_dir, art, kind, primary_bc, mode):
@@ -349,7 +345,7 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode):
         manifest = _manifest_objects(primary_bc + ".llvm.manifest")
 
     members = {a: _archive_members(a) for a in archives}
-    chosen, _ = _plan_static_libs(manifest, members, mode)
+    chosen = _plan_static_libs(manifest, members, mode)
     if not chosen:
         return None
 

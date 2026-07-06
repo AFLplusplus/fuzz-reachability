@@ -182,6 +182,12 @@ def test_find_artifacts_detects_archive(tmp_path):
     assert [os.path.basename(p) for p in found] == ["lib.a"]
 
 
+def test_classify_recognizes_fat_macho(tmp_path):
+    fat = tmp_path / "fatbin"
+    fat.write_bytes(b"\xca\xfe\xba\xbe" + b"\x00" * 16)
+    assert acquire_c._classify(str(fat)) == "exec"
+
+
 def test_member_name_strips_gllvm_naming():
     # gllvm names the per-object bitcode '.<obj>.bc' next to the object.
     assert acquire_c._member_name("/p/libtiff/.tif_aux.o.bc") == "tif_aux.o"
@@ -203,11 +209,9 @@ def test_plan_static_libs_auto_picks_linked_archive():
         "/p/lt/libtiff.a": {"tif_aux.o", "tif_getimage.o"},
         "/p/x/libother.a": {"other.o"},
     }
-    chosen, roots = acquire_c._plan_static_libs(manifest, members, "auto")
+    chosen = acquire_c._plan_static_libs(manifest, members, "auto")
     # libtiff is linked (tif_aux is in the manifest); libother is not.
     assert chosen == ["/p/lt/libtiff.a"]
-    # only the target's own object is a root; the archive member is not.
-    assert roots == ["/p/tools/.thumbnail.o.bc"]
 
 
 def test_plan_static_libs_all_includes_everything():
@@ -216,16 +220,14 @@ def test_plan_static_libs_all_includes_everything():
         "/p/lt/libtiff.a": {"tif_aux.o", "tif_getimage.o"},
         "/p/x/libother.a": {"other.o"},
     }
-    chosen, roots = acquire_c._plan_static_libs(manifest, members, "all")
+    chosen = acquire_c._plan_static_libs(manifest, members, "all")
     assert set(chosen) == {"/p/lt/libtiff.a", "/p/x/libother.a"}
-    assert roots == ["/p/tools/.thumbnail.o.bc"]
 
 
 def test_plan_static_libs_auto_no_manifest_picks_nothing():
     members = {"/p/lt/libtiff.a": {"tif_aux.o"}}
-    chosen, roots = acquire_c._plan_static_libs([], members, "auto")
+    chosen = acquire_c._plan_static_libs([], members, "auto")
     assert chosen == []
-    assert roots == []
 
 
 def test_plan_static_libs_all_keeps_distinct_archives():
@@ -235,11 +237,10 @@ def test_plan_static_libs_all_keeps_distinct_archives():
         "/p/lt/libtiff.a": {"tif_aux.o", "tif_getimage.o", "dummy.o"},
         "/p/lt/libtiffxx.a": {"tif_stream.o", "dummy.o"},
     }
-    chosen, roots = acquire_c._plan_static_libs(manifest, members, "all")
+    chosen = acquire_c._plan_static_libs(manifest, members, "all")
     assert set(chosen) == {
         "/p/port/libport.a", "/p/lt/libtiff.a", "/p/lt/libtiffxx.a",
     }
-    assert roots == ["/p/tools/.thumbnail.o.bc"]
 
 
 def test_include_static_libs_uses_exact_manifest_paths(monkeypatch):

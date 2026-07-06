@@ -3,7 +3,7 @@
 Version policy (LLVM 21 is the floor; newer is allowed):
 
 - The analyzer is built against some LLVM major M. M must be >= MIN_LLVM_MAJOR.
-- clang, clang++, llvm-link and opt must all share that same major M (a single
+- clang, clang++ and llvm-link must all share that same major M (a single
   coherent toolchain produces and merges the bitcode the analyzer reads).
 - rustc's bundled LLVM major must be <= M. LLVM reads older bitcode (auto-upgrade)
   but not newer, so the analyzer/tools must be at least as new as every producer.
@@ -128,7 +128,6 @@ class Toolchain:
     clang: str
     clangxx: str
     llvm_link: str
-    opt: str
     analyzer: str
     llvm_major: int  # the chosen toolchain major M (>= MIN_LLVM_MAJOR)
     rustc_major: int | None
@@ -138,7 +137,7 @@ def check_coherence(analyzer_path: str, require_rust: bool = False) -> Toolchain
     """Resolve the toolchain around the analyzer's LLVM major and validate the
     version policy (see module docstring).
 
-    The analyzer's own LLVM major M is authoritative; clang/clang++/llvm-link/opt
+    The analyzer's own LLVM major M is authoritative; clang/clang++/llvm-link
     are resolved for M (versioned names preferred) and must all match it. When
     require_rust is true, rustc's LLVM major must not exceed M. Raises
     ToolchainError on any violation.
@@ -153,21 +152,19 @@ def check_coherence(analyzer_path: str, require_rust: bool = False) -> Toolchain
     clang = find_tool("clang", "CLANG", f"clang-{M}")
     clangxx = find_tool("clang++", "CLANGXX", f"clang++-{M}")
     llvm_link = find_tool("llvm-link", "LLVM_LINK", f"llvm-link-{M}")
-    opt = find_tool("opt", "OPT", f"opt-{M}")
 
     mismatches = []
     for label, path, major in [
         ("clang", clang, tool_llvm_major(clang)),
         ("clang++", clangxx, tool_llvm_major(clangxx)),
         ("llvm-link", llvm_link, tool_llvm_major(llvm_link)),
-        ("opt", opt, tool_llvm_major(opt)),
     ]:
         if major != M:
             mismatches.append(f"  {label} ({path}): LLVM {major}, analyzer is LLVM {M}")
     if mismatches:
         raise ToolchainError(
             "toolchain LLVM major mismatch (analyzer = %d):\n%s\n"
-            "Set $CLANG/$CLANGXX/$LLVM_LINK/$OPT or install matching llvm-%d tools."
+            "Set $CLANG/$CLANGXX/$LLVM_LINK or install matching llvm-%d tools."
             % (M, "\n".join(mismatches), M)
         )
 
@@ -181,18 +178,18 @@ def check_coherence(analyzer_path: str, require_rust: bool = False) -> Toolchain
                 f"rebuild the analyzer/toolchain against LLVM >= {rustc_major}."
             )
 
-    return Toolchain(clang, clangxx, llvm_link, opt, analyzer_path, M, rustc_major)
+    return Toolchain(clang, clangxx, llvm_link, analyzer_path, M, rustc_major)
 
 
 def rust_bitcode_readable(tc: Toolchain) -> bool:
     """True if the toolchain's LLVM is new enough to read rustc's bitcode.
 
-    rustc emits bitcode at its bundled LLVM's full version; llvm-link/opt (and the
+    rustc emits bitcode at its bundled LLVM's full version; llvm-link (and the
     analyzer, built against the same LLVM package) must be at least that full
     version. Same major is insufficient: a distro LLVM that is an older patch
     release than rustc's cannot read the newer bitcode.
     """
-    consumer = min(tool_llvm_version(tc.llvm_link), tool_llvm_version(tc.opt))
+    consumer = tool_llvm_version(tc.llvm_link)
     return consumer >= rustc_llvm_version()
 
 
@@ -201,7 +198,7 @@ def assert_rust_bitcode_readable(tc: Toolchain) -> None:
     if rust_bitcode_readable(tc):
         return
     rv = rustc_llvm_version()
-    cv = min(tool_llvm_version(tc.llvm_link), tool_llvm_version(tc.opt))
+    cv = tool_llvm_version(tc.llvm_link)
     fmt = lambda t: ".".join(str(x) for x in t)
     raise ToolchainError(
         f"rustc's bundled LLVM ({fmt(rv)}) is newer than the analyzer toolchain's "
