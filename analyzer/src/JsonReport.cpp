@@ -1,9 +1,11 @@
 #include "JsonReport.h"
 #include "Demangle.h"
+#include "SymbolKey.h"
 #include "Toolchain.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Support/JSON.h"
 #include <algorithm>
+#include <set>
 #include <tuple>
 #include <vector>
 
@@ -46,6 +48,7 @@ void emitFn(json::OStream &J, Function *f, const Via *via,
   J.object([&] {
     J.attribute("mangled", f->getName());
     J.attribute("demangled", demangle(f->getName()));
+    J.attribute("key", canonicalKey(f->getName()));
     if (DISubprogram *sp = f->getSubprogram()) {
       J.attribute("file", sp->getFilename());
       J.attribute("line", (int64_t)sp->getLine());
@@ -103,6 +106,16 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
     }
   }
 
+  std::set<std::string> externalCallees;
+  for (auto &kv : g.edges()) {
+    Function *from = kv.first;
+    if (from->isDeclaration() || !res.reached.count(from))
+      continue;
+    for (auto &[to, kind] : kv.second)
+      if (to->isDeclaration() && !to->isIntrinsic())
+        externalCallees.insert(to->getName().str());
+  }
+
   json::OStream J(os, 2);
   J.object([&] {
     J.attribute("llvm_version", std::to_string(linkedLLVMMajor()));
@@ -117,6 +130,7 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
       J.attribute("indirect_only", indirectOnly);
       J.attribute("low_confidence", lowConfidence);
       J.attribute("unreachable", (int64_t)unreachable.size());
+      J.attribute("external_declarations", (int64_t)externalCallees.size());
     });
     J.attributeArray("reachable", [&] {
       for (auto &[f, via] : reachable)
@@ -125,6 +139,10 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
     J.attributeArray("unreachable_defined", [&] {
       for (Function *f : unreachable)
         emitFn(J, f, nullptr, flowTargets, res.depth, metrics);
+    });
+    J.attributeArray("external_declarations", [&] {
+      for (const std::string &n : externalCallees)
+        J.value(n);
     });
     J.attributeArray("edges", [&] {
       std::vector<std::tuple<StringRef, StringRef, EdgeKind>> edges;

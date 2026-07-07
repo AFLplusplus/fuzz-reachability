@@ -60,6 +60,47 @@ export CXXFLAGS="-fsanitize-coverage-allowlist=$(pwd)/reached.txt"
 make/meson/ninja/cmake/...
 ```
 
+#### Allowlist vs ignorelist — which is safe when bitcode is incomplete
+
+Both lists are derived from the same reachable set (a sound-leaning
+over-approximation). But when the analyzed bitcode is **incomplete** — a
+precompiled library, the Rust standard library without `--build-std`, or an
+assembly-only translation unit — a function can be genuinely reachable and
+still have no body anywhere in the merged bitcode. Such a function shows up as
+an `external_declarations` entry, not as a reachable function with a call
+graph. Both list generators skip bodyless functions identically; it is the
+allowlist-vs-ignorelist *semantics* whose consequence differs:
+
+- **Allowlist (`reached.txt`)** only lists reachable functions that have a
+  body in the bitcode. A reachable function with no body is **absent** from
+  it, so `AFL_LLVM_ALLOWLIST=reached.txt` /
+  `-fsanitize-coverage-allowlist=reached.txt` never instruments it — a
+  coverage **blind spot** for code that genuinely runs.
+- **Ignorelist (`not_reached.txt`)** only lists functions *proven*
+  unreachable. The same bodyless function is not proven unreachable, so it is
+  never added there, and `-fsanitize-coverage-ignorelist=not_reached.txt`
+  still instruments it — *provided the coverage build actually compiles that
+  function from source with the coverage pass*. For a genuinely precompiled
+  library or an assembly-only unit there is no source recompiled through the
+  instrumenting toolchain, so neither list recovers it: it stays
+  uninstrumented under either flag.
+
+**Recommendation:** default to the **ignorelist** as the conservative choice —
+it can never exclude more than the allowlist would include, so it never turns
+a reachable-but-bodyless function into a blind spot on its own. An LTO-free
+build, `--static-libs auto` (the default, which analyzes each linked
+bitcode-carrying archive in full), and, for Rust, `--build-std` all *shrink*
+the external set — but they do not guarantee completeness. `--static-libs
+auto` only recovers members of an archive that was itself compiled to bitcode
+(via gllvm); it cannot manufacture bitcode for a binary blob or an asm-only
+unit that was never compiled that way. Precompiled libraries and
+assembly-only units therefore remain inherent limits (see
+[Limitations](#limitations)). Check `summary.external_declarations` in the
+JSON report (and the top-level `external_declarations` array, which names
+them): a nonzero count means some reachable code sits outside the analyzed
+bitcode regardless of flags, and no list can instrument what no build compiles
+through the coverage pass.
+
 ### Coverage analysis
 
 Use with [cov-analysis](https://github.com/AFLplusplus/cov-analysis) to see:
@@ -447,14 +488,21 @@ cannot recover a function that one build inlined away and the other did not.
 
 `reachability run` writes three files:
 
-- **`<out>.json`** — `summary` counts (including `low_confidence`), a `reachable`
-  array (mangled and demangled name, source file/line when debug info is present,
+- **`<out>.json`** — `summary` counts (including `low_confidence` and
+  `external_declarations`), a `reachable`
+  array (mangled and demangled name, a `key` (the mangled name with the Rust
+  `17h<hash>` disambiguator stripped — the build-independent join key
+  cov-analysis uses), source file/line when debug info is present,
   `via` = `direct`/`indirect`/`both`, an `indirect_only` flag, a `confidence`
   of `high`/`medium`/`low` — see [Confidence](#confidence) — and a `depth`: the
   fewest call-graph hops from the nearest entry, with entries at `0` and the
   shortest path winning when several reach the same function), an
   a set of per-function triage metrics — see [Function metrics](#function-metrics)),
-  an `unreachable_defined` array, and an `edges` array — the reachable call graph as
+  an `unreachable_defined` array, a top-level `external_declarations` array
+  (sorted mangled names of reachable functions with no body in the analyzed
+  bitcode — precompiled libs, Rust std without `--build-std`, asm units;
+  `summary.external_declarations` is its count), and an `edges` array — the
+  reachable call graph as
   `{ "from", "to", "kind" }` objects (`kind` = `direct`/`indirect`), restricted to
   edges whose endpoints are both reachable. With `--dot FILE`, also the reachable
   subgraph in Graphviz form.
@@ -479,10 +527,16 @@ clang -fsanitize-coverage=trace-pc-guard -fsanitize-coverage-ignorelist=not_reac
 > against clang in `driver/tests/test_covlists.py`.)
 
 > **Rust mangling disambiguator.** A Rust generic instance is mangled with a
-> trailing `17h<hash>` disambiguator whose value depends on the build (opt level,
-> codegen units, instantiating crate). The exact value differs between this
-> bitcode snapshot and the instrumented fuzz binary, so an exact-name entry would
-> miss. Each `fun:` entry therefore replaces that disambiguator with a `*` glob,
+> trailing `17h<hash>` disambiguator that is not guaranteed stable across builds
+> (e.g. when a generic is instantiated from a different crate). rustc documents
+> no such guarantee, so the exact value can differ between this bitcode snapshot
+> and the instrumented fuzz binary, and an exact-name entry could miss.
+> `driver/tests/test_rust_hash_stability.py` builds one crate at two opt levels
+> and checks that the JSON `key` (the disambiguator stripped) stays identical,
+> even where the raw disambiguator does not. The build-independent `key` in the JSON report
+> (see above) is therefore the sanctioned join across builds; each `fun:` entry
+> in the text lists gets the same tolerance by replacing the disambiguator with
+> a `*` glob,
 > which both clang sancov and AFL++ honour, so an entry matches the instance in
 > any build. An ignorelist pattern that would also match a *reachable* instance
 > is dropped, so excluding unreachable code never excludes reachable code.
@@ -491,6 +545,29 @@ clang -fsanitize-coverage=trace-pc-guard -fsanitize-coverage-ignorelist=not_reac
 > `libfuzzer`/`ziggy`/`afl`, or matched via `--profile`/`--codegen-units` for
 > plain `--lang rust` (see
 > [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)).
+>
+> **This normalization only covers legacy mangling.** The `17h<hash>`
+> pattern above is specific to Rust's *legacy* mangling scheme. Under the
+> **v0** scheme (symbols starting `_R…` — forced by `-Cinstrument-coverage`,
+> and opt-in via `-Csymbol-mangling-version=v0`), the
+> disambiguator has a different shape that `canonicalKey`/`toPattern` do not
+> recognize, so the normalization is a no-op: `key` is identical to the raw
+> mangled name, and the text-list entry keeps its exact name instead of
+> gaining a `*`. A tool joining this report against a v0-mangled build by
+> name or `key` alone can therefore miss instances whose disambiguator
+> differs between builds. For legacy-mangled sancov builds this is not a
+> correctness gap — the `*` glob tolerates the drifting disambiguator, and
+> the sancov instrument-time build is legacy-mangled in practice (it is not
+> `-Cinstrument-coverage`), so its `fun:` entries match. Under a v0-mangled
+> build there is no glob, so a disambiguator that drifts between the
+> analysis snapshot and the fuzz binary can cause an exact-name miss (a
+> blind spot) — matching the build (profile/codegen-units) minimizes this,
+> and full v0-aware normalization is a future enhancement; it also affects
+> consumers that must match a `-Cinstrument-coverage` build by name across
+> two independently-mangled builds, e.g.
+> [cov-analysis](https://github.com/AFLplusplus/cov-analysis)'s
+> `--reachability` JSON-mode join, which falls back to source `file`/`line`
+> matching in that case (see its docs). See [Limitations](#limitations).
 
 ## Indirect-call resolution
 
@@ -652,3 +729,16 @@ returned (qsort/bsearch comparators, atexit/pthread/`std::call_once` callbacks,
 etc.). The escape analysis follows local loads/stores, globals, aggregates,
 select/PHI values, defined wrapper arguments, and defined functions that return
 callbacks.
+
+**v0 Rust mangling disambiguator is not normalized (future enhancement).**
+The build-independent `key` and the `fun:` pattern-list `*` glob (see
+[Output](#output)) only recognize the *legacy* Rust mangling scheme's
+`17h<hash>` disambiguator; under the **v0** scheme (`_R…`, forced by
+`-Cinstrument-coverage`) they are inert, so a name/key join against a
+v0-mangled build can miss instances whose disambiguator differs between
+builds. Consumers that also have source location can work around this via a
+`file`/`line` fallback (cov-analysis's JSON mode does this). A v0-demangler-aware
+disambiguator stripper — the v0 analogue of the legacy-mangling fix above —
+would close this gap but is not implemented; it is planned as a future
+enhancement and would likely warrant its own plan spanning both
+fuzz-reachability and any downstream consumer's shared normalization code.

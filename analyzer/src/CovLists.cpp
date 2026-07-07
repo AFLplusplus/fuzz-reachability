@@ -1,4 +1,5 @@
 #include "CovLists.h"
+#include "SymbolKey.h"
 #include <algorithm>
 #include <set>
 #include <string>
@@ -7,26 +8,6 @@
 using namespace llvm;
 
 namespace reach {
-
-static std::string toPattern(StringRef name) {
-  const size_t tail = 20;
-  if (name.size() > tail && name.ends_with("E")) {
-    StringRef t = name.substr(name.size() - tail);
-    if (t.starts_with("17h")) {
-      bool hex = true;
-      for (size_t i = 3; i < 19; ++i) {
-        char ch = t[i];
-        if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f'))) {
-          hex = false;
-          break;
-        }
-      }
-      if (hex)
-        return (name.substr(0, name.size() - tail) + "*").str();
-    }
-  }
-  return name.str();
-}
 
 static std::set<std::string> patterns(Module &m, const ReachResult &res,
                                        bool reached) {

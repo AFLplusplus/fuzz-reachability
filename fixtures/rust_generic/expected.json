@@ -1,0 +1,4 @@
+{
+  "must_reach": ["LLVMFuzzerTestOneInput", "work"],
+  "must_not_reach": []
+}

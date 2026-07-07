@@ -323,3 +323,33 @@ def test_ignorelist_glob_never_excludes_reachable(run_analyzer, tmp_path):
         f"not_reached.txt as a sancov/AFL++ ignorelist would exclude reachable "
         f"code from instrumentation: {offenders}"
     )
+
+
+EXTDECL = lambda: ll("external_decl.ll")
+
+
+def test_reachable_external_declarations(run_analyzer):
+    r = run_analyzer([EXTDECL(), "--entry", "entry"])
+    assert r.returncode == 0, r.stderr
+    j = json.loads(r.stdout)
+    assert j["summary"]["external_declarations"] == 1
+    assert j["external_declarations"] == ["ext"]
+
+
+RUSTKEY = lambda: ll("rust_key.ll")
+
+
+def test_json_key_strips_rust_disambiguator(run_analyzer, tmp_path):
+    reached = tmp_path / "reached.txt"
+    notr = tmp_path / "not_reached.txt"
+    r = run_analyzer([RUSTKEY(), "--entry", "entry",
+                      "--reached-out", str(reached),
+                      "--not-reached-out", str(notr)])
+    assert r.returncode == 0, r.stderr
+    j = json.loads(r.stdout)
+    reach = {f["mangled"]: f for f in j["reachable"]}
+    assert reach["_ZN3app4work17h0123456789abcdefE"]["key"] == "_ZN3app4work"
+    unreach = {f["mangled"]: f for f in j["unreachable_defined"]}
+    assert unreach["_ZN3app4dead17hfedcba9876543210E"]["key"] == "_ZN3app4dead"
+    assert "fun:_ZN3app4work*" in reached.read_text()
+    assert "fun:_ZN3app4dead*" in notr.read_text()

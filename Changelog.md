@@ -1,4 +1,23 @@
 ### v1.1-dev
+- JSON report: a new `summary.external_declarations` count and top-level
+  `external_declarations` array (sorted mangled names) list reachable
+  functions with no body in the analyzed bitcode — precompiled libs, Rust std
+  without `--build-std`, asm units — the allowlist blind spot no static
+  analysis can see into.
+- README: new "Allowlist vs ignorelist — which is safe when bitcode is
+  incomplete" section explains that a reachable function with no bitcode body
+  is silently missing from `reached.txt` (allowlist blind spot) but absent
+  from `not_reached.txt`, so the ignorelist still instruments it — as long as
+  the coverage build actually recompiles that function through the coverage
+  pass (precompiled libs and asm-only units are never recompiled, so neither
+  list recovers them). Recommends the ignorelist as the conservative default;
+  notes that `--build-std` / `--static-libs auto` / LTO-free builds shrink but
+  do not eliminate the external set (precompiled libraries and asm remain
+  inherent limits) and points at `summary.external_declarations` to quantify
+  the gap.
+- JSON report: each function now carries a build-independent `key` (mangled
+  name minus the Rust disambiguator) so coverage tools join Rust generic
+  instances across builds.
 - C/C++ reachability is now **source-faithful by default**: the analysis build
   emits bitcode with `-fno-inline -fno-inline-functions` (via gllvm's
   `LLVM_BITCODE_GENERATION_FLAGS`, applied only to the analyzed bitcode, not the
@@ -11,11 +30,16 @@
   forces `-Copt-level=0` (plain `--lang rust`/`mixed` via composed RUSTFLAGS;
   native `libfuzzer`/`ziggy`/`afl` via the RUSTC wrapper), so functions the
   optimizer would inline still appear in `reachability.json`/`reached.txt` and
-  match what `llvm-cov` reports. Mangled-name hashes are opt-level-independent,
-  so the set still matches the optimized fuzz/coverage binary. Native runs clean
-  their throwaway opt-0 build afterward (`cargo ziggy clean` / `cargo afl clean`
-  / `cargo clean` in `fuzz/`). `--optimize` restores the optimized/post-inline
-  build for any language.
+  match what `llvm-cov` reports. rustc does not guarantee the `17h<hash>`
+  mangled-name disambiguator is stable across builds, so it is
+  `reachability.json`'s build-independent `key` (the disambiguator stripped;
+  see [Output](README.md#output)), not the raw mangled name, that guarantees
+  the set lines up with the optimized fuzz/coverage binary;
+  `driver/tests/test_rust_hash_stability.py` checks that `key` stays identical
+  across opt levels.
+  Native runs clean their throwaway opt-0 build afterward (`cargo ziggy clean`
+  / `cargo afl clean` / `cargo clean` in `fuzz/`). `--optimize` restores the
+  optimized/post-inline build for any language.
 - JSON report: each reachable function now carries a `depth` (fewest call-graph
   hops from the nearest entry; entries are `0`), and a top-level `edges` array
   gives the reachable call graph as `{from, to, kind}`.

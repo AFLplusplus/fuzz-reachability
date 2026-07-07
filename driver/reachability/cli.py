@@ -301,6 +301,9 @@ def cmd_run(args):
     with open(args.out, "w") as fh:
         json.dump(result, fh, indent=2)
     report.print_summary(result)
+    advisory = report.external_advisory(result)
+    if advisory:
+        print(advisory)
     print(f"wrote {args.out}")
     print(f"wrote {reached}  (sancov allowlist of reachable functions)")
     print(f"wrote {not_reached}  (sancov ignorelist of unreachable functions)")
