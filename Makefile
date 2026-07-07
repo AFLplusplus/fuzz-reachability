@@ -16,7 +16,7 @@ GOBIN       := $(shell go env GOPATH 2>/dev/null)/bin
 PY          := $(CURDIR)/.venv/bin/python
 ANALYZER     := $(CURDIR)/analyzer/build/reachability-analyzer
 
-.PHONY: help venv build test matrix clean
+.PHONY: help venv build test matrix ci clean
 
 help:
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/'
@@ -38,6 +38,9 @@ test: build | $(PY) ## run the full test suite
 
 matrix: ## build + test against every installed llvm-config-NN (NN >= 21)
 	bash scripts/test_matrix.sh
+
+ci: ## run this repo's suite + cov-analysis's suite (cross-repo key contract)
+	bash scripts/ci_cross_repo.sh
 
 clean: ## remove analyzer build outputs
 	$(MAKE) -C analyzer clean BUILD=build

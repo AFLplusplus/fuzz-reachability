@@ -701,6 +701,9 @@ warning).
 ```bash
 make test       # full pytest suite (analyzer .ll goldens + per-language soundness)
 make matrix     # LLVM version-compatibility matrix (catches future-LLVM breakage)
+make ci         # this repo's suite + cov-analysis's suite, so a `key` JSON-schema
+                #   change that breaks the consumer fails loudly (needs a sibling
+                #   cov-analysis checkout, or COV_ANALYSIS_DIR set; else it SKIPs)
 ```
 
 Each fixture in `fixtures/` carries a `must_reach` / `must_not_reach` set; every
