@@ -1,4 +1,18 @@
 ### v1.1-dev
+- New `--mangling {auto,legacy,v0}` flag (default `auto`) on `reachability run`,
+  for every Rust `--lang` value: forces the analysis build's rustc
+  `-Csymbol-mangling-version` so its Rust symbols match whatever build you join
+  this report against. A `-Cinstrument-coverage` coverage build is always v0
+  regardless of the crate's own default, so `--mangling v0` makes the analysis
+  bitcode's mangled Rust names match it — byte-identical for every case measured
+  so far (crate-local generics) — closing the `key`/exact-name join gap the v0
+  mangling limitation previously described, with no disambiguator normalization
+  needed. A v0 disambiguator that drifted between two v0 builds (an untested
+  cross-crate/`-Zshare-generics` case) would fall back to cov-analysis's
+  `(file,line)` join. `auto` (the default) appends nothing, so
+  cargo-afl/ziggy/cargo-fuzz builds (legacy by default) are unaffected. The JSON
+  report gained a top-level `mangling` field (`"legacy"`/`"v0"`) reporting which
+  scheme the analyzed bitcode actually used.
 - JSON report: a new `summary.external_declarations` count and top-level
   `external_declarations` array (sorted mangled names) list reachable
   functions with no body in the analyzed bitcode — precompiled libs, Rust std

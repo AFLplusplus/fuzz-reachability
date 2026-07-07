@@ -90,7 +90,7 @@ def _acquire(args, tc, verbose=False):
             bcs.extend(
                 acquire_rust.acquire_rust_bitcode_native(
                     args.project, cmd, shell=shell, verbose=verbose,
-                    optimize=args.optimize,
+                    optimize=args.optimize, mangling=args.mangling,
                 )
             )
             if not args.optimize:
@@ -100,7 +100,8 @@ def _acquire(args, tc, verbose=False):
                 acquire_rust.acquire_rust_bitcode(
                     args.project, profile=(args.profile or "debug"),
                     build_std=args.build_std, codegen_units=args.codegen_units,
-                    verbose=verbose, optimize=args.optimize
+                    verbose=verbose, optimize=args.optimize,
+                    mangling=args.mangling,
                 )
             )
     return bcs
@@ -377,6 +378,14 @@ def build_parser():
                         "cargo's per-profile default (debug 256, release 16). "
                         "Ignored for libfuzzer/ziggy/afl (their build sets it)")
     r.add_argument("--build-std", action="store_true", dest="build_std")
+    r.add_argument("--mangling", default="auto", choices=["auto", "legacy", "v0"],
+                   help="Rust symbol-mangling scheme for the analysis build "
+                        "(all Rust --lang values). 'auto' (default) uses "
+                        "rustc's own default (legacy on stable toolchains); "
+                        "'legacy'/'v0' force -Csymbol-mangling-version=<v> so "
+                        "the analysis bitcode's Rust symbols match the target "
+                        "you join against (e.g. pass 'v0' to match a "
+                        "-Cinstrument-coverage coverage build, which is v0)")
     r.add_argument(
         "--optimize", action="store_true", dest="optimize",
         help="build at the target's real optimization (post-inline). By default "

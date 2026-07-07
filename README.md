@@ -470,6 +470,19 @@ is neither in the manifest nor the cargo default for that profile (e.g. one
 forced via `-Ccodegen-units` in `RUSTFLAGS`). `-v` prints the resolved
 `profile=… codegen-units=…` so you can confirm the match.
 
+- **`--mangling {auto,legacy,v0}`** (default `auto`, all Rust `--lang` values) —
+  the Rust symbol-mangling scheme rustc uses for the analysis build. `auto`
+  appends nothing, so rustc's own default applies (legacy, on stable
+  toolchains); `legacy`/`v0` append `-Csymbol-mangling-version=<v>` to force it.
+  Set this to match the scheme of whatever build you join this report against
+  by mangled name/`key`: a `-Cinstrument-coverage` coverage build is always
+  **v0** (`-Cinstrument-coverage` implies `-Csymbol-mangling-version=v0`,
+  regardless of the crate's own default), so pass `--mangling v0` to make the
+  analysis build's symbols byte-identical to it; `cargo-afl`/`ziggy`/cargo-fuzz
+  fuzz binaries are legacy by default, so leave `--mangling auto` (or pass
+  `legacy` explicitly) for those. The scheme actually used is echoed back in
+  the JSON report's top-level `mangling` field.
+
 The `fun:` patterns in the lists already tolerate the Rust mangling
 *disambiguator* (`17h<hash>`) drifting between builds (see [Output](#output)), but
 that only covers the *naming* of a given instance. Matching `--profile` /
@@ -488,7 +501,9 @@ cannot recover a function that one build inlined away and the other did not.
 
 `reachability run` writes three files:
 
-- **`<out>.json`** — `summary` counts (including `low_confidence` and
+- **`<out>.json`** — a top-level `mangling` field (`"legacy"` or `"v0"`, detected
+  from the analyzed bitcode's Rust symbols — see `--mangling` above), `summary`
+  counts (including `low_confidence` and
   `external_declarations`), a `reachable`
   array (mangled and demangled name, a `key` (the mangled name with the Rust
   `17h<hash>` disambiguator stripped — the build-independent join key
@@ -561,8 +576,17 @@ clang -fsanitize-coverage=trace-pc-guard -fsanitize-coverage-ignorelist=not_reac
 > `-Cinstrument-coverage`), so its `fun:` entries match. Under a v0-mangled
 > build there is no glob, so a disambiguator that drifts between the
 > analysis snapshot and the fuzz binary can cause an exact-name miss (a
-> blind spot) — matching the build (profile/codegen-units) minimizes this,
-> and full v0-aware normalization is a future enhancement; it also affects
+> blind spot) — matching the build (profile/codegen-units) minimizes this.
+> Pass **`--mangling v0`** to make the analysis build request the same v0
+> scheme a `-Cinstrument-coverage` build gets: for a crate-local generic this
+> makes the mangled name itself byte-identical between the two builds (no
+> disambiguator drift observed on this toolchain — see
+> `driver/tests/test_v0_mangling_probe.py`), so the exact-name/`key` join works
+> with no normalization needed and this whole caveat does not apply. Full
+> v0-aware normalization of a *drifting* disambiguator (the scenario this
+> caveat describes) remains unimplemented and is only a theoretical future
+> enhancement for the untested case of an upstream/std generic whose defining
+> crate could flip under `-Zshare-generics`; it also affects
 > consumers that must match a `-Cinstrument-coverage` build by name across
 > two independently-mangled builds, e.g.
 > [cov-analysis](https://github.com/AFLplusplus/cov-analysis)'s
@@ -733,15 +757,22 @@ etc.). The escape analysis follows local loads/stores, globals, aggregates,
 select/PHI values, defined wrapper arguments, and defined functions that return
 callbacks.
 
-**v0 Rust mangling disambiguator is not normalized (future enhancement).**
-The build-independent `key` and the `fun:` pattern-list `*` glob (see
+**v0 mangling is supported via scheme-matching, not via disambiguator
+normalization.** The build-independent `key` and the `fun:` pattern-list `*` glob (see
 [Output](#output)) only recognize the *legacy* Rust mangling scheme's
 `17h<hash>` disambiguator; under the **v0** scheme (`_R…`, forced by
 `-Cinstrument-coverage`) they are inert, so a name/key join against a
 v0-mangled build can miss instances whose disambiguator differs between
-builds. Consumers that also have source location can work around this via a
-`file`/`line` fallback (cov-analysis's JSON mode does this). A v0-demangler-aware
-disambiguator stripper — the v0 analogue of the legacy-mangling fix above —
-would close this gap but is not implemented; it is planned as a future
-enhancement and would likely warrant its own plan spanning both
-fuzz-reachability and any downstream consumer's shared normalization code.
+builds. **Run the analysis with `--mangling v0`** to request the same v0
+scheme the target uses in the first place: the mangled names then match
+verbatim with no normalization needed (see the `--mangling` note under
+[Matching the fuzz binary's build](#matching-the-fuzz-binarys-build) and the
+caveat under [Output](#output)), which closes this gap for every case
+measured so far. Consumers that also have source location can work around a
+residual mismatch via a `file`/`line` fallback (cov-analysis's JSON mode does
+this). A v0-demangler-aware disambiguator stripper — the v0 analogue of the
+legacy-mangling fix above, for the untested case of a disambiguator that
+actually drifts between two v0 builds — would close the remaining gap but is
+not implemented; it is planned as a future enhancement and would likely
+warrant its own plan spanning both fuzz-reachability and any downstream
+consumer's shared normalization code.

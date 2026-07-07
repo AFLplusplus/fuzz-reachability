@@ -347,6 +347,69 @@ def test_compose_rustflags_pins_debug_assertions_on(tmp_path, monkeypatch):
     assert "-Coverflow-checks=on" in flags
 
 
+def test_compose_rustflags_mangling_v0(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    flags = acquire_rust._compose_rustflags(str(tmp_path), mangling="v0")
+    assert "-Csymbol-mangling-version=v0" in flags
+    assert "-Zunstable-options" not in flags
+
+
+def test_compose_rustflags_mangling_legacy(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    flags = acquire_rust._compose_rustflags(str(tmp_path), mangling="legacy")
+    assert "-Csymbol-mangling-version=legacy" in flags
+
+
+def test_compose_rustflags_mangling_auto_appends_nothing(tmp_path, monkeypatch):
+    monkeypatch.delenv("RUSTFLAGS", raising=False)
+    monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
+    flags = acquire_rust._compose_rustflags(str(tmp_path))
+    assert not any(f.startswith("-Csymbol-mangling-version") for f in flags)
+    flags = acquire_rust._compose_rustflags(str(tmp_path), mangling="auto")
+    assert not any(f.startswith("-Csymbol-mangling-version") for f in flags)
+
+
+def test_native_carries_mangling_v0(monkeypatch, tmp_path):
+    seen = {}
+
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, cwd=None, env=None, capture_output=False, text=False):
+        seen["extra"] = env.get("REACH_EXTRA_RUSTFLAGS")
+        return R()
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", fake_run)
+    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: ["a.bc"])
+    monkeypatch.setattr(acquire_rust.tempfile, "mkdtemp", lambda prefix="": str(tmp_path))
+    acquire_rust.acquire_rust_bitcode_native(
+        str(tmp_path), ["cargo", "afl", "build"], mangling="v0")
+    assert "-Csymbol-mangling-version=v0" in seen["extra"]
+
+
+def test_native_mangling_auto_omits_flag(monkeypatch, tmp_path):
+    seen = {}
+
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, cwd=None, env=None, capture_output=False, text=False):
+        seen["extra"] = env.get("REACH_EXTRA_RUSTFLAGS")
+        return R()
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", fake_run)
+    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: ["a.bc"])
+    monkeypatch.setattr(acquire_rust.tempfile, "mkdtemp", lambda prefix="": str(tmp_path))
+    acquire_rust.acquire_rust_bitcode_native(str(tmp_path), ["cargo", "afl", "build"])
+    assert "-Csymbol-mangling-version" not in seen["extra"]
+
+
 def test_compose_rustflags_optimize_omits_assertion_pins(tmp_path, monkeypatch):
     monkeypatch.delenv("RUSTFLAGS", raising=False)
     monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)

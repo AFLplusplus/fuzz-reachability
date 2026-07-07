@@ -185,7 +185,7 @@ def _resolve_assertions(project_dir, profile):
 
 
 def _compose_rustflags(project_dir, codegen_units=1, optimize=False,
-                       profile="debug"):
+                       profile="debug", mangling="auto"):
     """The full rustc flag list: our emit flags plus whatever flags cargo would
     otherwise apply -- the caller's CARGO_ENCODED_RUSTFLAGS / RUSTFLAGS, or the
     project's config build.rustflags when the environment sets neither. When not
@@ -193,7 +193,11 @@ def _compose_rustflags(project_dir, codegen_units=1, optimize=False,
     over the profile) together with -Cdebug-assertions/-Coverflow-checks pinned
     to the profile's values, so forcing opt0 does not silently flip those cfgs
     (which would change which functions compile), giving source-faithful
-    (un-inlined) bitcode that still matches the real profile."""
+    (un-inlined) bitcode that still matches the real profile. mangling
+    ("auto"/"legacy"/"v0") appends -Csymbol-mangling-version=<mangling> so the
+    analysis bitcode's Rust symbols match a target built with that scheme (e.g.
+    a -Cinstrument-coverage build, which is v0); "auto" appends nothing, leaving
+    rustc's own default (legacy on stable toolchains)."""
     enc = os.environ.get("CARGO_ENCODED_RUSTFLAGS")
     env_rf = os.environ.get("RUSTFLAGS")
     if enc:
@@ -210,15 +214,18 @@ def _compose_rustflags(project_dir, codegen_units=1, optimize=False,
             f"-Cdebug-assertions={'on' if da else 'off'}",
             f"-Coverflow-checks={'on' if oc else 'off'}",
         ]
+    if mangling != "auto":
+        flags = flags + [f"-Csymbol-mangling-version={mangling}"]
     return flags
 
 
-def _build_env(project_dir, codegen_units=1, optimize=False, profile="debug"):
+def _build_env(project_dir, codegen_units=1, optimize=False, profile="debug",
+               mangling="auto"):
     """Build environment with the composed flags in CARGO_ENCODED_RUSTFLAGS, which
     cargo honours verbatim and in preference to both RUSTFLAGS and config."""
     env = dict(os.environ)
     env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(
-        _compose_rustflags(project_dir, codegen_units, optimize, profile))
+        _compose_rustflags(project_dir, codegen_units, optimize, profile, mangling))
     env.pop("RUSTFLAGS", None)
     return env
 
@@ -347,7 +354,8 @@ def _dedup_newest_per_crate(paths):
 
 
 def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
-                         codegen_units=None, verbose=False, optimize=False):
+                         codegen_units=None, verbose=False, optimize=False,
+                         mangling="auto"):
     """Build the Rust project and collect every .bc this build emitted.
 
     profile / codegen_units should match the fuzz binary's build so the emitted
@@ -363,12 +371,16 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     inlined away (source-faithful, matches llvm-cov, safe allowlist superset);
     when True analyze at the profile's real optimization to mirror the binary.
 
+    mangling: "auto" (default, rustc's own default), "legacy", or "v0" --
+    force the analysis build's Rust symbol-mangling scheme to match the target
+    it will be joined against (see _compose_rustflags).
+
     Returns a list of .bc paths. Raises AcquireError on a compile failure or when
     no .bc were produced.
     """
     codegen_units = _resolve_codegen_units(project_dir, profile, codegen_units)
     env = _build_env(project_dir, codegen_units, optimize=optimize,
-                     profile=profile)
+                     profile=profile, mangling=mangling)
     cmd = ["cargo", "build", "--message-format=json-render-diagnostics"]
     if profile == "release":
         cmd.append("--release")
@@ -446,7 +458,8 @@ exit $status
 """
 
 
-def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=False, optimize=False):
+def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=False,
+                                optimize=False, mangling="auto"):
     """Build via the fuzzer's own command (cargo afl/ziggy/fuzz, or a custom
     build_cmd) and collect the bitcode it emits. A RUSTC_WRAPPER adds
     --emit=llvm-bc to every crate rustc compiles and copies that crate's .bc into
@@ -465,7 +478,11 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
     optimize: when False (default) the wrapper also forces -Copt-level=0 so the
     emitted bitcode is source-faithful (functions not inlined away); the caller is
     responsible for cleaning the resulting throwaway opt-0 build. When True the
-    build mirrors the real instrumented binary."""
+    build mirrors the real instrumented binary.
+
+    mangling: "auto" (default, the harness's own scheme -- legacy for
+    cargo-afl/ziggy/cargo-fuzz), "legacy", or "v0" -- forces the wrapper's
+    -Csymbol-mangling-version to match the target being joined against."""
     collect = tempfile.mkdtemp(prefix="reach-bc-")
     atexit.register(shutil.rmtree, collect, ignore_errors=True)
     wrapper = os.path.join(collect, ".rustc-bc-wrapper.sh")
@@ -473,10 +490,14 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
         fh.write(_BC_WRAPPER)
     os.chmod(wrapper, 0o755)
 
+    extra = [] if optimize else ["-Copt-level=0"]
+    if mangling != "auto":
+        extra.append(f"-Csymbol-mangling-version={mangling}")
+
     env = dict(os.environ)
     env["RUSTC_WRAPPER"] = wrapper
     env["REACH_BC_DIR"] = collect
-    env["REACH_EXTRA_RUSTFLAGS"] = "" if optimize else "-Copt-level=0"
+    env["REACH_EXTRA_RUSTFLAGS"] = " ".join(extra)
     env.setdefault("AFLRS_REQUIRE_PLUGINS", "1")
 
     argv = ["sh", "-c", build_cmd] if shell else list(build_cmd)

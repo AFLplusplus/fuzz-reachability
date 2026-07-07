@@ -40,6 +40,13 @@ const char *confidenceStr(Via via, bool hasFlow) {
   return hasFlow ? "medium" : "low";
 }
 
+const char *manglingStr(Module &m) {
+  for (Function &f : m)
+    if (!f.isDeclaration() && f.getName().starts_with("_R"))
+      return "v0";
+  return "legacy";
+}
+
 // Emit one function object. `via` is null for unreachable functions.
 void emitFn(json::OStream &J, Function *f, const Via *via,
             const DenseSet<Function *> &flow,
@@ -120,6 +127,7 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
   J.object([&] {
     J.attribute("llvm_version", std::to_string(linkedLLVMMajor()));
     J.attribute("backend", backend);
+    J.attribute("mangling", manglingStr(m));
     J.attributeArray("entries", [&] {
       for (const auto &e : entries)
         J.value(e);

@@ -101,6 +101,7 @@ def test_acquire_native_cleans_when_not_optimize(monkeypatch, tmp_path):
         build_cmd = None
         profile = None
         optimize = False
+        mangling = "auto"
     cli._acquire(A(), tc=None, verbose=False)
     assert cleaned == [("afl", str(tmp_path))]
 
@@ -118,6 +119,7 @@ def test_acquire_native_skips_clean_when_optimize(monkeypatch, tmp_path):
         build_cmd = None
         profile = None
         optimize = True
+        mangling = "auto"
     cli._acquire(A(), tc=None, verbose=False)
     assert cleaned == []
 
@@ -332,7 +334,8 @@ def test_acquire_forwards_optimize_to_rust(monkeypatch, tmp_path):
     seen = {}
 
     def fake_rust(project_dir, profile="debug", build_std=False,
-                 codegen_units=None, verbose=False, optimize=False):
+                 codegen_units=None, verbose=False, optimize=False,
+                 mangling="auto"):
         seen["optimize"] = optimize
         return ["x.bc"]
 
@@ -348,6 +351,7 @@ def test_acquire_forwards_optimize_to_rust(monkeypatch, tmp_path):
         static_libs = "auto"
         artifact = None
         optimize = True
+        mangling = "auto"
 
     cli._acquire(A(), tc=None, verbose=False)
     assert seen["optimize"] is True
