@@ -115,8 +115,8 @@ cov-analysis report -d ../target-afl/out -e ./harness-cov -T 4 --reachability re
 ## How it works
 
 ```
- driver (Python)              analyzer (C++ / LLVM)
- ───────────────              ─────────────────────
+   driver (Python)                   analyzer (C++ / LLVM)
+   ───────────────                   ─────────────────────
    acquire bitcode ─┐
    C/C++ : gllvm    │   llvm-link    load .bc → build call graph →
    Rust  : rustc    ├─► merge .bc ─► resolve indirect calls → BFS from
@@ -144,9 +144,9 @@ Two components, joined by merged bitcode:
   **NOTE!** especially as a Rust user, we recommend to install LLVM via
   https://apt.llvm.org/llvm.sh instead of the distribution, as those will be outdated!
 - **Go** (to install `gllvm`), **Python ≥ 3.12**, and a **C++17** compiler. Rust
-  targets also need **rustc / cargo** (nightly, but one using LLVM 21 or prior).
+  targets also need **rustc / cargo** (nightly, using the same or older version of LLVM you are using).
 - [AFL++](https://github.com/AFLplusplus/AFLplusplus) compiled from commit 01a83a3d7098e605f0c7fd69381fcf4fc97144fe onwards (24 June 2026)
-- [cov-analysis](https://github.com/AFLplusplus/cov-analysis) from commit 72c239038430477181df99f7a2cd0a556f2701dd onwards (23 June 2026)
+- [cov-analysis](https://github.com/AFLplusplus/cov-analysis) from commit 07e7afc63a54f593a377556b8f6f6144f1f7dc08 onwards (8 July 2026)
 
 ## Install
 
