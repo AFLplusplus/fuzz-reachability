@@ -22,6 +22,7 @@ LLVM_LDLIBS      := $(if $(LLVM_CONFIG_PATH),$(shell '$(LLVM_CONFIG_PATH)' --lin
 # Use the clang++ that ships with the chosen LLVM (Make pre-defines CXX=g++, so
 # assign unconditionally; `make CXX=...` on the command line still overrides).
 CXX  := $(if $(LLVM_BINDIR),$(LLVM_BINDIR)/clang++,clang++)
+SCAN_BUILD := $(if $(wildcard $(LLVM_BINDIR)/scan-build),$(LLVM_BINDIR)/scan-build,scan-build-$(LLVM_MAJOR))
 BIN  := $(BUILD)/reachability-analyzer
 SRC  := $(wildcard src/*.cpp)
 OBJ  := $(patsubst src/%.cpp,$(BUILD)/%.o,$(SRC))
@@ -81,7 +82,7 @@ cppcheck:
 	cppcheck --enable=warning,performance,portability --std=c++17 --error-exitcode=1 --suppress=missingIncludeSystem src
 
 scan-build: check-llvm
-	scan-build --status-bugs $(MAKE) LLVM_CONFIG=$(LLVM_CONFIG_PATH) BUILD=$(BUILD)/scan-build clean all
+	$(SCAN_BUILD) --status-bugs $(MAKE) LLVM_CONFIG=$(LLVM_CONFIG_PATH) BUILD=$(BUILD)/scan-build clean all
 
 clean:
 	rm -rf $(BUILD) compile_commands.json
