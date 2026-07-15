@@ -1,0 +1,61 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: build analyzer + pytest (LLVM ${{ matrix.llvm }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm: ["21"]
+    env:
+      LLVM_MAJOR: ${{ matrix.llvm }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install LLVM ${{ matrix.llvm }}
+        run: |
+          wget -qO /tmp/llvm.sh https://apt.llvm.org/llvm.sh
+          chmod +x /tmp/llvm.sh
+          sudo /tmp/llvm.sh "$LLVM_MAJOR"
+          sudo apt-get install -y "llvm-$LLVM_MAJOR-dev" "clang-$LLVM_MAJOR"
+
+      - name: Install gllvm
+        run: go install github.com/SRI-CSL/gllvm/cmd/...@latest
+
+      - name: Install Rust nightly + rust-src
+        run: |
+          rustup toolchain install nightly --profile minimal --component rust-src
+          rustup default nightly
+
+      - name: Report toolchain versions
+        run: |
+          "llvm-config-$LLVM_MAJOR" --version
+          "clang-$LLVM_MAJOR" --version
+          gclang --version || true
+          rustc --version
+          python3 --version
+
+      - name: Build analyzer and run tests
+        run: make test LLVM_MAJOR="$LLVM_MAJOR"
