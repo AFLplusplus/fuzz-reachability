@@ -1,6 +1,7 @@
 ; Indirect call of type i32(i32). opt_a and opt_b are address-taken and match;
 ; other has a different type; take is unreachable from entry.
 @g = global ptr @opt_a
+@other_slot = global ptr @other
 
 define i32 @opt_a(i32 %x) {
   ret i32 %x

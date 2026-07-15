@@ -1,5 +1,7 @@
 # build artifacts
 analyzer/build/
+analyzer/compile_commands.json
+.reachability-cache/
 **/*.bc
 **/*.o
 **/target/

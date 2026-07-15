@@ -1,0 +1,13 @@
+[workspace]
+members = ["member"]
+resolver = "2"
+
+[profile.dev]
+codegen-units = 1
+debug-assertions = false
+overflow-checks = false
+
+[profile.release]
+codegen-units = 1
+debug-assertions = true
+overflow-checks = true

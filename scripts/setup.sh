@@ -11,8 +11,12 @@ LLVM_CONFIG="llvm-config-${LLVM_MAJOR}"
 
 # 1. gllvm (C/C++ whole-program bitcode extraction) via Go.
 if ! command -v gclang >/dev/null 2>&1; then
+  if ! command -v go >/dev/null 2>&1; then
+    echo "error: Go is required to install gllvm; install go and re-run setup" >&2
+    exit 1
+  fi
   echo "[setup] installing gllvm via go install..."
-  go install github.com/SRI-CSL/gllvm/cmd/...@latest
+  go install github.com/SRI-CSL/gllvm/cmd/...@v1.3.1
   echo "[setup] ensure $(go env GOPATH)/bin is on your PATH"
 fi
 

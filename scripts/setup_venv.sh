@@ -16,8 +16,8 @@ if [ ! -x "$VENV/bin/python" ]; then
 fi
 
 echo "[venv] installing driver + test deps (editable)"
-"$VENV/bin/pip" install --quiet --upgrade pip
-"$VENV/bin/pip" install --quiet -e "$ROOT/driver[test]"
+"$VENV/bin/pip" install --quiet --constraint "$ROOT/requirements-dev.txt" \
+  -e "$ROOT/driver[test]"
 
 echo "[venv] ready: $VENV"
 echo "[venv]   $VENV/bin/reachability check-toolchain"

@@ -123,17 +123,19 @@ What each piece does:
 The run prints a one-line summary. On this machine it is:
 
 ```
-reachable 1257 / defined 2467  (324 indirect-only, 1210 unreachable)  [backend=type-based]
+reachable 1294 / defined 2467  (302 indirect-only, 35 low-confidence, 1173 unreachable)  [backend=type-based]
 ```
 
 - **defined (2467)** — every libxml2 function (plus the harness) in the merged
   module. Because of `--static-libs all`, this is the whole library, not just the
   parts the harness pulls in.
-- **reachable (1257)** — the subset reachable from `LLVMFuzzerTestOneInput`.
-- **unreachable (1210)** — `defined − reachable`, everything the harness can
+- **reachable (1294)** — the subset reachable from `LLVMFuzzerTestOneInput`.
+- **unreachable (1173)** — `defined − reachable`, everything the harness can
   never touch (listed in `not_reached.txt`).
-- **indirect-only (324)** — reachable functions reached *only* through an
+- **indirect-only (302)** — reachable functions reached *only* through an
   indirect call. This is the over-approximation surface.
+- **low-confidence (35)** — indirect-only functions supported by type matching
+  but not by entry-relative address-flow evidence. They remain reachable.
 
 **Reachable** — the parser and everything it pulls in, since `xmlReadMemory`
 drives a full parse: `LLVMFuzzerTestOneInput`, `xmlReadMemory`,
@@ -287,7 +289,7 @@ What happens:
 The summary on this machine:
 
 ```
-reachable 11739 / defined 17428  (456 indirect-only, 5689 unreachable)  [backend=type-based]
+reachable 11867 / defined 17428  (462 indirect-only, 60 low-confidence, 5561 unreachable)  [backend=type-based]
 ```
 
 **Rooting at the Rust `main`.** The token `main` resolves to *two* symbols, shown
@@ -315,13 +317,13 @@ unreachable — `url::Url::set_scheme`, `set_host`, `set_port`, and the other 16
 the proc-macro crates (`proc_macro2`, parts of `syn`) are unreachable too.
 
 > **Over-approximation is heavier in Rust.** The reachable count is large
-> (11,739 of 17,428) because Rust dispatches pervasively through trait-object
+> (11,867 of 17,428) because Rust dispatches pervasively through trait-object
 > vtables. The type-based backend treats every address-taken function whose
 > signature matches a reached indirect call site as a candidate, so once any
 > `Debug::fmt`-shaped call is reachable, same-shaped `fmt` impls across
 > dependencies (much of `syn`, parts of `icu_*`) are pulled in as well. That is
 > the sound-leaning bias: it never drops a real edge. The `indirect-only` count
-> (456) measures functions reached *only* this way.
+> (462) measures functions reached *only* this way.
 
 ---
 
@@ -376,7 +378,7 @@ The link fails with `undefined symbol: __afl_manual_init` (and
 ### Step 3 — Link and analyze
 
 ```bash
-llvm-link-22 target/debug/deps/*.bc -o merged.bc     # one .bc per crate; clean deps/ first if you rebuilt
+llvm-link-22 target/debug/deps/*.bc -o merged.bc     # every fresh crate version/CGU; clean deps/ first
 reachability-analyzer merged.bc --entry main \
   --out cpp_demangle.json --reached-out reached.txt --not-reached-out not_reached.txt
 ```
@@ -392,7 +394,7 @@ The report's `summary` (in `cpp_demangle.json`) holds the counts:
 
 ```json
 "backend": "type-based",
-"summary": { "defined": 2446, "reachable": 1134, "indirect_only": 26, "unreachable": 1312 }
+"summary": { "defined": 2446, "reachable": 1142, "indirect_only": 29, "low_confidence": 18, "unreachable": 1304 }
 ```
 
 As with ziggy, `--entry main` resolves to both the C-ABI shim and the real Rust
@@ -403,7 +405,7 @@ main — `entries: ["main", "_ZN10afl_runner4main17h…E"]`.
 the recursive-descent grammar beneath it — the `ast::*::parse_internal` rules,
 `OperatorName` / `CtorDtorName`, the `starts_with` lookahead predicates,
 `ParseContext`, and the `subs::SubstitutionTable` *inserts* that record
-back-reference candidates as the parse runs. (Most of the 1,134 total are the
+back-reference candidates as the parse runs. (Most of the 1,142 total are the
 Rust runtime — `core` / `alloc` / `std` — that the parser pulls in.)
 
 ```json
@@ -440,7 +442,7 @@ constructs.
 > **The defined set includes the build toolchain.** `afl` 0.17 pulls in `semver`,
 > `xdg`, `home`, and `rustc_version` (its build-script and runtime-config crates);
 > their bitcode is emitted and merged, padding `defined` (2,446), and a few even
-> read as reachable through type-based over-approximation. The 26 `indirect-only`
+> read as reachable through type-based over-approximation. The 29 `indirect-only`
 > functions are almost all `catch_unwind` / `FnOnce::call_once` vtable shims from
 > the `afl::fuzz!` panic-handling machinery — the harness's dispatch surface, not
 > the library's.
@@ -514,7 +516,7 @@ fuzz build); they decide which monomorphizations are emitted. With
 ### Step 3 — Link and analyze
 
 ```bash
-llvm-link-22 target/debug/deps/*.bc -o merged.bc     # one .bc per crate; clean deps/ first if you rebuilt
+llvm-link-22 target/debug/deps/*.bc -o merged.bc     # every fresh crate version/CGU; clean deps/ first
 reachability-analyzer merged.bc --entry main \
   --out rustyknife.json --reached-out reached.txt --not-reached-out not_reached.txt
 ```
@@ -530,7 +532,7 @@ The report's `summary` (in `rustyknife.json`) holds the counts:
 
 ```json
 "backend": "type-based",
-"summary": { "defined": 17000, "reachable": 2217, "indirect_only": 79, "unreachable": 14783 }
+"summary": { "defined": 17000, "reachable": 2233, "indirect_only": 88, "low_confidence": 76, "unreachable": 14767 }
 ```
 
 As with ziggy, `--entry main` resolves to both the C-ABI shim and the real Rust
@@ -545,8 +547,8 @@ the RFC 5322 message grammar (`rustyknife::rfc5322::*`) and the RFC 2047
 encoded-word decoder (`rustyknife::rfc2047::decode_text`). The harness targets
 only the RFC 5321 mailbox grammar, and the report reflects exactly that.
 
-> **A focused harness yields a focused report.** Only 2,217 of 17,000 functions
-> are reachable, just 79 of them indirect-only. Because the harness funnels
+> **A focused harness yields a focused report.** Only 2,233 of 17,000 functions
+> are reachable, just 88 of them indirect-only. Because the harness funnels
 > through a single parser entry, the over-approximation stays small — a sharp
 > contrast with the `url` example (67% reachable), where pervasive trait-object
 > dispatch pulled in far more.

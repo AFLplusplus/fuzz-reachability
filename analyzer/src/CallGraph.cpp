@@ -1,5 +1,6 @@
 #include "CallGraph.h"
 #include "IndirectResolver.h"
+#include "Reachability.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Analysis/ValueTracking.h"
@@ -21,16 +22,24 @@ void CallGraph::addEdge(Function *from, Function *to, EdgeKind kind) {
 }
 
 Function *directCallee(CallBase &cb) {
-  if (Function *f = cb.getCalledFunction())
-    return f;
   if (cb.isInlineAsm())
     return nullptr;
-  Value *v = cb.getCalledOperand()->stripPointerCasts();
-  if (auto *f = dyn_cast<Function>(v))
-    return f;
-  if (auto *ga = dyn_cast<GlobalAlias>(v))
-    if (auto *f = dyn_cast<Function>(ga->getAliasee()->stripPointerCasts()))
+  return resolveCallableValue(cb.getCalledOperand());
+}
+
+Function *resolveCallableValue(Value *value) {
+  DenseSet<Value *> seen;
+  while (value) {
+    value = value->stripPointerCasts();
+    if (!seen.insert(value).second)
+      return nullptr;
+    if (auto *f = dyn_cast<Function>(value))
       return f;
+    auto *alias = dyn_cast<GlobalAlias>(value);
+    if (!alias)
+      return nullptr;
+    value = alias->getAliasee();
+  }
   return nullptr;
 }
 
@@ -38,6 +47,9 @@ void buildDirectEdges(Module &m, CallGraph &g) {
   for (Function &f : m) {
     if (f.isDeclaration())
       continue;
+    if (f.hasPersonalityFn())
+      if (Function *personality = resolveCallableValue(f.getPersonalityFn()))
+        g.addEdge(&f, personality, EdgeKind::Direct);
     for (Instruction &i : instructions(f))
       if (auto *cb = dyn_cast<CallBase>(&i))
         if (Function *callee = directCallee(*cb))
@@ -48,14 +60,12 @@ void buildDirectEdges(Module &m, CallGraph &g) {
 static bool isIndirect(CallBase &cb) {
   if (cb.isInlineAsm())
     return false;
-  if (cb.getCalledFunction())
-    return false;
-  Value *v = cb.getCalledOperand()->stripPointerCasts();
-  return !isa<Function>(v) && !isa<GlobalAlias>(v);
+  return directCallee(cb) == nullptr;
 }
 
-void buildIndirectEdges(Module &m, CallGraph &g, IndirectResolver &r) {
-  r.prepare(m);
+void buildIndirectEdges(Module &m, CallGraph &g, IndirectResolver &r,
+                        const EscapeIndex &idx) {
+  r.prepare(m, idx);
   for (Function &f : m) {
     if (f.isDeclaration())
       continue;
@@ -87,8 +97,19 @@ static Value *stripEscape(Value *v) {
   return v ? v->stripPointerCasts() : nullptr;
 }
 
+static void appendStoredValues(Value *value, const EscapeIndex &idx,
+                               SmallVectorImpl<Value *> &out) {
+  if (!value)
+    return;
+  Value *base = getUnderlyingObject(value);
+  auto it = idx.storedTo.find(base);
+  if (it != idx.storedTo.end())
+    out.append(it->second.begin(), it->second.end());
+}
+
 static void escapeSuccessors(Value *v, const EscapeIndex &idx,
                              SmallVectorImpl<Value *> &out) {
+  appendStoredValues(v, idx, out);
   if (auto *ga = dyn_cast<GlobalAlias>(v)) {
     out.push_back(ga->getAliasee());
     return;
@@ -109,9 +130,7 @@ static void escapeSuccessors(Value *v, const EscapeIndex &idx,
   if (auto *load = dyn_cast<LoadInst>(v)) {
     Value *base = getUnderlyingObject(load->getPointerOperand());
     out.push_back(base);
-    auto it = idx.storedTo.find(base);
-    if (it != idx.storedTo.end())
-      out.append(it->second.begin(), it->second.end());
+    appendStoredValues(load->getPointerOperand(), idx, out);
     return;
   }
   if (auto *call = dyn_cast<CallBase>(v)) {
@@ -140,10 +159,6 @@ static void escapeSuccessors(Value *v, const EscapeIndex &idx,
     if (auto *user = dyn_cast<User>(v))
       for (Use &u : user->operands())
         out.push_back(u.get());
-    Value *base = getUnderlyingObject(v);
-    auto it = idx.storedTo.find(base);
-    if (it != idx.storedTo.end())
-      out.append(it->second.begin(), it->second.end());
     return;
   }
 }
@@ -242,15 +257,20 @@ static void computeEscapeSets(const std::vector<Value *> &roots,
 static bool callsAnalyzableCallee(CallBase &cb) {
   if (cb.isInlineAsm())
     return false;
-  Function *callee = cb.getCalledFunction();
-  if (!callee) {
-    Value *v = cb.getCalledOperand()->stripPointerCasts();
-    callee = dyn_cast<Function>(v);
-    if (!callee)
-      if (auto *ga = dyn_cast<GlobalAlias>(v))
-        callee = dyn_cast<Function>(ga->getAliasee()->stripPointerCasts());
-  }
+  Function *callee = directCallee(cb);
   return callee && !callee->isDeclaration();
+}
+
+static void appendOperandBundleRoots(CallBase &cb,
+                                     std::vector<Value *> &roots,
+                                     std::vector<std::pair<Function *, Value *>> *sites,
+                                     Function *caller) {
+  for (unsigned i = 0; i < cb.getNumOperandBundles(); ++i)
+    for (const Use &input : cb.getOperandBundleAt(i).Inputs) {
+      roots.push_back(input.get());
+      if (sites)
+        sites->push_back({caller, input.get()});
+    }
 }
 
 void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
@@ -267,6 +287,7 @@ void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
           sites.push_back({&f, argU.get()});
           roots.push_back(argU.get());
         }
+        appendOperandBundleRoots(*cb, roots, &sites, &f);
       } else if (auto *ret = dyn_cast<ReturnInst>(&i)) {
         if (Value *rv = ret->getReturnValue()) {
           sites.push_back({&f, rv});
@@ -292,7 +313,22 @@ void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
   }
 }
 
-DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx) {
+DenseSet<Function *> computeValueFlowTargets(Value *root, const EscapeIndex &idx) {
+  std::vector<Value *> roots = {root};
+  DenseMap<Value *, unsigned> sccOf;
+  std::vector<SmallVector<Function *, 4>> sccSinks;
+  computeEscapeSets(roots, idx, sccOf, sccSinks);
+  DenseSet<Function *> out;
+  Value *value = stripEscape(root);
+  auto it = sccOf.find(value);
+  if (it != sccOf.end())
+    for (Function *f : sccSinks[it->second])
+      out.insert(f);
+  return out;
+}
+
+DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx,
+                                               const ReachResult &res) {
   // Root the value-flow at every place an address could be consumed as a
   // callable: an indirect call's callee operand, and the arguments/returns that
   // reach unanalyzable *code* that might call them. Inline asm and intrinsics
@@ -305,7 +341,7 @@ DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx
   // sound.)
   std::vector<Value *> roots;
   for (Function &f : m) {
-    if (f.isDeclaration())
+    if (f.isDeclaration() || !res.reached.count(&f))
       continue;
     for (Instruction &i : instructions(f)) {
       if (auto *cb = dyn_cast<CallBase>(&i)) {
@@ -319,6 +355,8 @@ DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx
         if (!callsAnalyzableCallee(*cb))
           for (const Use &argU : cb->args())
             roots.push_back(argU.get());
+        if (!callsAnalyzableCallee(*cb))
+          appendOperandBundleRoots(*cb, roots, nullptr, nullptr);
       } else if (auto *ret = dyn_cast<ReturnInst>(&i)) {
         if (Value *rv = ret->getReturnValue())
           roots.push_back(rv);

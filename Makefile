@@ -16,10 +16,14 @@ GOBIN       := $(shell go env GOPATH 2>/dev/null)/bin
 PY          := $(CURDIR)/.venv/bin/python
 ANALYZER     := $(CURDIR)/analyzer/build/reachability-analyzer
 
-.PHONY: help venv build test matrix ci clean
+.PHONY: help venv build test matrix ci compdb cppcheck scan-build static-analysis clean
 
 help:
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/'
+	@printf 'compdb\tgenerate analyzer/compile_commands.json for clangd\n'
+	@printf 'cppcheck\trun cppcheck on the analyzer\n'
+	@printf 'scan-build\trun Clang Static Analyzer on the analyzer\n'
+	@printf 'static-analysis\trun all analyzer static checks\n'
 
 venv: ## create the Python venv (.venv) with the driver + test deps
 	bash scripts/setup_venv.sh
@@ -36,12 +40,22 @@ test: build | $(PY) ## run the full test suite
 	  REACHABILITY_ANALYZER="$(ANALYZER)" \
 	  "$(PY)" -m pytest tests/ -q
 
-matrix: ## build + test against every installed llvm-config-NN (NN >= 21)
+matrix: | $(PY) ## build + test against every installed llvm-config-NN (NN >= 21)
 	bash scripts/test_matrix.sh
 
 ci: ## run this repo's suite + cov-analysis's suite (cross-repo key contract)
 	bash scripts/ci_cross_repo.sh
 
+compdb:
+	$(MAKE) -C analyzer LLVM_CONFIG=$(LLVM_CONFIG) compdb
+
+cppcheck:
+	$(MAKE) -C analyzer LLVM_CONFIG=$(LLVM_CONFIG) cppcheck
+
+scan-build:
+	$(MAKE) -C analyzer LLVM_CONFIG=$(LLVM_CONFIG) scan-build
+
+static-analysis: cppcheck scan-build
+
 clean: ## remove analyzer build outputs
 	$(MAKE) -C analyzer clean BUILD=build
-	rm -rf analyzer/build/2[0-9]

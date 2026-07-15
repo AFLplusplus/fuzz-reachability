@@ -36,7 +36,11 @@ against **every** installed `llvm-config-NN` with `NN ≥ 21`, and **fails if an
 build/test fails** — this is the early-warning system for breakage on future
 LLVM releases.
 
-Current results (2026-06-19, this machine):
+Discovery follows `PATH`, not only `/usr/bin`. With no supported installation,
+the command fails rather than printing a vacuous success; set
+`MATRIX_ALLOW_EMPTY=1` only for an explicitly optional local probe.
+
+Current results (2026-07-15, this machine):
 
 | LLVM | analyzer (type-based) |
 |------|-----------------------|

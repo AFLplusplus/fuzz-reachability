@@ -20,19 +20,23 @@ dropped. "none" keeps only the linker's view; "all" pulls in every bitcode
 archive found in the tree, save those whose members are already covered by a
 larger one. Merging the full archive with the target's *non-archive* objects (its
 manifest minus the archive members) avoids duplicate definitions. Archive manifests
-provide exact object provenance; incomplete extraction falls back atomically to the
-linker's view.
+provide exact object provenance; incomplete extraction fails the run.
 """
 
+import atexit
+from collections import deque
+import hashlib
 import mmap
 import os
 import shutil
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 
 from reachability import diagnostics
+from reachability.errors import build_looks_cached, decode, tail
 
 
 class AcquireError(RuntimeError):
@@ -46,12 +50,7 @@ _KIND_RANK = {"exec": 3, "shared": 2, "archive": 1, "object": 0}
 _MACHO_MAGIC = (0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE, 0xBEBAFECA, 0xBFBAFECA)
 
 
-def _build_looks_cached(output):
-    """True when the build tool reported it (re)compiled nothing, so the
-    artifact bitcode reflects an earlier compile rather than this run."""
-    t = output or ""
-    return any(m in t for m in ("Nothing to be done", " is up to date",
-                                "ninja: no work to do", "Nothing to do"))
+_build_looks_cached = build_looks_cached
 
 
 _BITCODE_NO_INLINE_FLAGS = "-fno-inline -fno-inline-functions"
@@ -67,11 +66,51 @@ def _build_env(clang_bindir: str, optimize: bool = False) -> dict:
     env["CC"] = "gclang"
     env["CXX"] = "gclang++"
     env["LLVM_COMPILER_PATH"] = clang_bindir
+    env["LC_ALL"] = "C"
     if not optimize:
         inherited = env.get("LLVM_BITCODE_GENERATION_FLAGS", "")
         env["LLVM_BITCODE_GENERATION_FLAGS"] = (
             (inherited + " " + _BITCODE_NO_INLINE_FLAGS).strip()
         )
+    return env
+
+
+def _gllvm_env(env, tc, tool_dir=None):
+    def resolved(value):
+        found = shutil.which(value)
+        return os.path.abspath(found or value)
+
+    clang = resolved(tc.clang)
+    clangxx = resolved(getattr(tc, "clangxx", clang))
+    llvm_link = resolved(getattr(tc, "llvm_link", "llvm-link"))
+    if tool_dir:
+        try:
+            os.makedirs(tool_dir, exist_ok=True)
+            for name, target in (
+                ("clang", clang), ("clang++", clangxx), ("llvm-link", llvm_link)
+            ):
+                path = os.path.join(tool_dir, name)
+                if os.path.lexists(path):
+                    os.unlink(path)
+                os.symlink(target, path)
+        except OSError as exc:
+            raise AcquireError(f"cannot prepare exact gllvm tool directory: {exc}") from exc
+        env["LLVM_COMPILER_PATH"] = tool_dir
+        env["LLVM_CC_NAME"] = "clang"
+        env["LLVM_CXX_NAME"] = "clang++"
+        env["LLVM_LINK_NAME"] = "llvm-link"
+    else:
+        env["LLVM_COMPILER_PATH"] = os.path.dirname(clang)
+        env["LLVM_CC_NAME"] = os.path.basename(clang)
+        env["LLVM_CXX_NAME"] = os.path.basename(clangxx)
+        env["LLVM_LINK_NAME"] = os.path.basename(llvm_link)
+    directories = ([tool_dir] if tool_dir else []) + [
+        os.path.dirname(clang), os.path.dirname(clangxx),
+        os.path.dirname(llvm_link),
+    ]
+    env["PATH"] = os.pathsep.join(dict.fromkeys(
+        [d for d in directories if d] + [env.get("PATH", "")]
+    ))
     return env
 
 
@@ -242,7 +281,17 @@ def find_artifacts(project_dir, newer_than=None):
     return [c[-1] for c in cands]
 
 
-def _extract_bc(art, out, archive=False, manifest=False):
+def _artifact_score(path, newer_than=None):
+    kind = _classify(path)
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0
+    fresh = newer_than is not None and mtime >= newer_than - 2
+    return (_has_bitcode_marker(path), fresh, _KIND_RANK.get(kind, -1))
+
+
+def _extract_bc(art, out, archive=False, manifest=False, env=None):
     """Run get-bc on `art` into `out`. `archive` uses -b to build one whole-archive
     module (instead of a lazy bitcode archive); `manifest` also writes the linked
     object list to `<out>.llvm.manifest`. Returns (ok, stderr)."""
@@ -252,9 +301,19 @@ def _extract_bc(art, out, archive=False, manifest=False):
     if manifest:
         cmd.append("-m")
     cmd += ["-o", out, art]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    ok = r.returncode == 0 and os.path.exists(out) and os.path.getsize(out) > 0
-    return ok, r.stderr.strip()
+    try:
+        r = subprocess.run(cmd, capture_output=True, env=env)
+    except OSError as exc:
+        return False, f"cannot run get-bc: {exc}"
+    try:
+        exists = os.path.exists(out) and os.path.getsize(out) > 0
+    except OSError as exc:
+        return False, f"cannot inspect get-bc output {out}: {exc}"
+    ok = r.returncode == 0 and exists
+    detail = tail(r.stderr or r.stdout)
+    if not ok and not detail:
+        detail = f"get-bc exited {r.returncode} without usable output"
+    return ok, detail
 
 
 def _manifest_objects(manifest_path):
@@ -281,15 +340,21 @@ def _member_name(bc_path):
 
 
 def _archive_members(archive_path):
-    """Member object names (basename) in a static archive, via `ar t`. Empty set
-    if the archive cannot be listed."""
+    """Member object names (basename) in a static archive, via `ar t`."""
     for tool in ("ar", "llvm-ar"):
         if not shutil.which(tool):
             continue
-        r = subprocess.run([tool, "t", archive_path], capture_output=True, text=True)
+        try:
+            r = subprocess.run([tool, "t", archive_path], capture_output=True)
+        except OSError:
+            continue
         if r.returncode == 0:
-            return {os.path.basename(m) for m in r.stdout.split() if m}
-    return set()
+            return {
+                os.path.basename(line)
+                for line in decode(r.stdout).splitlines()
+                if line
+            }
+    raise AcquireError(f"cannot list static archive members: {archive_path}")
 
 
 def _bitcode_archives(project_dir):
@@ -330,11 +395,11 @@ def _plan_static_libs(manifest, archive_members, mode):
     return chosen
 
 
-def _include_static_libs(project_dir, art, kind, primary_bc, mode):
+def _include_static_libs(project_dir, art, kind, primary_bc, mode,
+                         work_dir=None, env=None):
     """Replace `primary_bc` with the target's own objects plus the full contents
-    of the static archives it links. Returns the replacement bc list, or None to
-    keep just `primary_bc` (no relevant archive, or the target's objects could not
-    be isolated from it)."""
+    of the static archives it links. Returns the replacement bc list, or None when
+    there is no relevant archive."""
     archives = [a for a in _bitcode_archives(project_dir)
                 if os.path.realpath(a) != os.path.realpath(art)]
     if not archives:
@@ -350,33 +415,44 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode):
         return None
 
     extracted = []
-    failed = False
+    failures = []
     for a in chosen:
-        out = a + ".full.bc"
-        ok, err = _extract_bc(a, out, archive=True, manifest=True)
+        if work_dir:
+            tag = hashlib.sha256(os.path.realpath(a).encode()).hexdigest()[:16]
+            out = os.path.join(work_dir, f"{os.path.basename(a)}-{tag}.full.bc")
+        else:
+            out = a + ".full.bc"
+        ok, err = _extract_bc(a, out, archive=True, manifest=True, env=env)
         if ok:
             objects = _manifest_objects(out + ".llvm.manifest")
             if objects:
                 extracted.append((a, out, objects))
             else:
-                failed = True
-                print(f"warning: full bitcode manifest is empty for "
-                      f"{os.path.relpath(a, project_dir)}")
+                failures.append(
+                    f"empty full-archive manifest: {os.path.relpath(a, project_dir)}"
+                )
         else:
-            failed = True
-            print(f"warning: could not extract full bitcode from "
-                  f"{os.path.relpath(a, project_dir)}: {err}")
-    if failed or not extracted:
-        if extracted:
-            print("warning: static-library expansion was incomplete; keeping the "
-                  "linker's view only")
+            failures.append(
+                f"static-archive extraction failed: "
+                f"{os.path.relpath(a, project_dir)}: {err}"
+            )
+    if failures:
+        successful = ", ".join(os.path.relpath(a, project_dir) for a, _, _ in extracted)
+        detail = "\n  ".join(failures)
+        suffix = f"\n  successful full extractions retained: {successful}" if successful else ""
+        raise AcquireError(
+            "static-library expansion is incomplete; refusing to publish a "
+            f"complete-looking report:\n  {detail}{suffix}"
+        )
+    if not extracted:
         return None
 
     if kind in ("exec", "shared"):
         if not manifest:
-            print("warning: could not read the target object manifest; keeping the "
-                  "linker's view only")
-            return None
+            raise AcquireError(
+                f"empty target manifest for {os.path.relpath(art, project_dir)}; "
+                "cannot complete static-library expansion"
+            )
         primary_objects = {os.path.realpath(p) for p in manifest}
         if mode == "auto":
             extracted = [
@@ -413,28 +489,43 @@ def _run_build(cmd, project_dir, env, verbose):
     """Run the build, returning (returncode, combined_output). In verbose mode the
     output is streamed live and also captured, so cache detection and diagnostics
     still see it."""
-    if not verbose:
-        r = subprocess.run(cmd, cwd=project_dir, env=env,
-                           capture_output=True, text=True)
-        return r.returncode, "\n".join(p for p in (r.stdout, r.stderr) if p)
-    proc = subprocess.Popen(cmd, cwd=project_dir, env=env,
-                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True)
-    chunks = []
-    for line in proc.stdout:
-        sys.stdout.write(line)
-        chunks.append(line)
-    proc.wait()
-    return proc.returncode, "".join(chunks)
+    try:
+        if not verbose:
+            with tempfile.TemporaryFile() as log:
+                proc = subprocess.Popen(
+                    cmd, cwd=project_dir, env=env, stdout=log,
+                    stderr=subprocess.STDOUT,
+                )
+                proc.wait()
+                size = log.tell()
+                log.seek(max(0, size - 1024 * 1024))
+                return proc.returncode, decode(log.read())
+        proc = subprocess.Popen(
+            cmd, cwd=project_dir, env=env, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        chunks = deque()
+        length = 0
+        for raw in proc.stdout:
+            line = decode(raw)
+            sys.stdout.write(line)
+            chunks.append(line)
+            length += len(line)
+            while length > 1024 * 1024 and chunks:
+                length -= len(chunks.popleft())
+        proc.wait()
+        return proc.returncode, "".join(chunks)
+    except OSError as exc:
+        raise AcquireError(f"cannot run build command {cmd[0]}: {exc}") from exc
 
 
 def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
-                      static_libs="auto", verbose=False, optimize=False):
+                      static_libs="auto", verbose=False, optimize=False,
+                      work_dir=None):
     """Build `project_dir` with gllvm wrappers and extract its bitcode.
 
     artifact: path (relative to project_dir) of the built binary/object/archive.
-    When None (or it does not exist after the build), the build product is
-    auto-detected.
+    When None, the build product is auto-detected. An explicit path is strict.
     static_libs: "auto" (default) also extracts, in full, every static archive
     the target links; "none" keeps only the linker's view; "all" pulls in every
     bitcode archive in the tree (see the module docstring).
@@ -447,8 +538,14 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     """
     if not shutil.which("gclang"):
         raise AcquireError("gclang not found on PATH; run scripts/setup.sh")
+    if work_dir is None:
+        work_dir = tempfile.mkdtemp(prefix="reach-c-")
+        atexit.register(shutil.rmtree, work_dir, ignore_errors=True)
     clang_bindir = os.path.dirname(os.path.abspath(tc.clang))
-    env = _build_env(clang_bindir, optimize=optimize)
+    env = _gllvm_env(
+        _build_env(clang_bindir, optimize=optimize), tc,
+        tool_dir=os.path.join(work_dir, "gllvm-tools"),
+    )
     cmd = build_cmd or ["make"]
     before = time.time()
     if verbose:
@@ -473,28 +570,42 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
             return AcquireError(f"{base}\n\nLikely cause: {cause}\n{remedy}")
         return AcquireError(base)
 
-    explicit = os.path.join(project_dir, artifact) if artifact else None
-    if explicit and os.path.exists(explicit):
+    explicit = os.path.abspath(os.path.join(project_dir, artifact)) if artifact else None
+    if explicit:
+        if not os.path.exists(explicit):
+            raise AcquireError(f"explicit artifact does not exist: {explicit}")
+        explicit_kind = _classify(explicit)
+        if explicit_kind is None:
+            raise AcquireError(f"explicit artifact is unsupported: {explicit}")
+        print(f"artifact: {explicit}")
         candidates = [explicit]
     else:
-        if explicit:
-            print(f"warning: --artifact {artifact!r} not found after build; "
-                  "auto-detecting the build product")
-        candidates = find_artifacts(project_dir, newer_than=None if cached else before)
+        cutoff = None if cached else before
+        candidates = find_artifacts(project_dir, newer_than=cutoff)
+        if len(candidates) > 1:
+            best = _artifact_score(candidates[0], cutoff)
+            tied = [p for p in candidates if _artifact_score(p, cutoff) == best]
+            if len(tied) > 1:
+                ranked = "\n  ".join(os.path.relpath(p, project_dir) for p in tied)
+                raise AcquireError(
+                    "multiple equally plausible build artifacts remain; pass "
+                    f"--artifact with one of:\n  {ranked}"
+                )
     if not candidates:
         raise _no_bitcode(
             f"no build artifact with embedded bitcode found under {project_dir}; "
             "pass --artifact PATH to the built binary/object/archive")
 
     art = kind = primary = None
-    for cand in candidates[:8]:
+    for cand in candidates:
         ck = _classify(cand)
-        out = cand + ".bc"
+        tag = hashlib.sha256(os.path.realpath(cand).encode()).hexdigest()[:16]
+        out = os.path.join(work_dir, f"{os.path.basename(cand)}-{tag}.bc")
         ok, err = _extract_bc(cand, out, archive=(ck == "archive"),
-                              manifest=(ck in ("exec", "shared")))
+                              manifest=(ck in ("exec", "shared")), env=env)
         if ok:
             art, kind, primary = cand, ck, out
-            if not (explicit and cand == explicit):
+            if not explicit:
                 print(f"artifact: {os.path.relpath(cand, project_dir)}")
             break
         errors.append(f"{os.path.relpath(cand, project_dir)}: {err}")
@@ -504,7 +615,10 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
             + "\n  ".join(errors))
 
     if static_libs != "none":
-        expanded = _include_static_libs(project_dir, art, kind, primary, static_libs)
+        expanded = _include_static_libs(
+            project_dir, art, kind, primary, static_libs,
+            work_dir=work_dir, env=env,
+        )
         if expanded is not None:
             return expanded
     return [primary]

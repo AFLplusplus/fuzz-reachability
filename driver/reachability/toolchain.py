@@ -22,6 +22,8 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 
+from .errors import decode, tail
+
 MIN_LLVM_MAJOR = 21
 
 
@@ -37,6 +39,20 @@ _RUSTC_FULL_RE = re.compile(
 _TOOL_FULL_RE = re.compile(
     r"version\s+(\d+)(?:\.(\d+))?(?:\.(\d+))?", re.IGNORECASE
 )
+
+
+def _run_version(cmd, label):
+    try:
+        result = subprocess.run(cmd, capture_output=True)
+    except OSError as exc:
+        raise ToolchainError(f"cannot run {label}: {exc}") from exc
+    if result.returncode != 0:
+        detail = tail(result.stderr or result.stdout)
+        raise ToolchainError(
+            f"{label} failed (exit {result.returncode})"
+            + (f":\n{detail}" if detail else "")
+        )
+    return decode(result.stdout)
 
 
 def _version_tuple(m) -> tuple:
@@ -59,24 +75,14 @@ def _parse_llvm_major(text: str) -> int:
 
 def rustc_llvm_major() -> int:
     """Pinned LLVM major == the LLVM that rustc bundles."""
-    try:
-        out = subprocess.run(
-            ["rustc", "-vV"], capture_output=True, text=True, check=True
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as e:
-        raise ToolchainError(f"cannot run rustc: {e}") from e
+    out = _run_version(["rustc", "-vV"], "rustc -vV")
     return _parse_llvm_major_from_rustc(out)
 
 
 def rustc_llvm_version() -> tuple:
     """Full (major, minor, patch) of the LLVM that rustc bundles -- the version
     of the bitcode rustc emits."""
-    try:
-        out = subprocess.run(
-            ["rustc", "-vV"], capture_output=True, text=True, check=True
-        ).stdout
-    except (OSError, subprocess.CalledProcessError) as e:
-        raise ToolchainError(f"cannot run rustc: {e}") from e
+    out = _run_version(["rustc", "-vV"], "rustc -vV")
     m = _RUSTC_FULL_RE.search(out)
     if not m:
         raise ToolchainError(f"cannot parse LLVM version from rustc output:\n{out}")
@@ -95,17 +101,13 @@ def find_tool(name: str, env_var: str, versioned: str | None) -> str:
 
 
 def tool_llvm_major(path: str) -> int:
-    out = subprocess.run(
-        [path, "--version"], capture_output=True, text=True, check=True
-    ).stdout
+    out = _run_version([path, "--version"], f"{path} --version")
     return _parse_llvm_major(out)
 
 
 def tool_llvm_version(path: str) -> tuple:
     """Full (major, minor, patch) reported by an LLVM tool's --version."""
-    out = subprocess.run(
-        [path, "--version"], capture_output=True, text=True, check=True
-    ).stdout
+    out = _run_version([path, "--version"], f"{path} --version")
     m = _TOOL_FULL_RE.search(out)
     if not m:
         raise ToolchainError(f"cannot parse version from: {out!r}")
@@ -114,9 +116,7 @@ def tool_llvm_version(path: str) -> tuple:
 
 def analyzer_llvm_major(path: str) -> int:
     """The analyzer's --version prints the LLVM major it was linked against."""
-    out = subprocess.run(
-        [path, "--version"], capture_output=True, text=True, check=True
-    ).stdout
+    out = _run_version([path, "--version"], f"{path} --version")
     m = re.search(r"LLVM\s+(\d+)", out)
     if not m:
         raise ToolchainError(f"analyzer --version lacks LLVM major:\n{out}")

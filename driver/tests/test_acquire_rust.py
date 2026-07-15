@@ -62,6 +62,22 @@ def test_manifest_codegen_units_walks_up_to_workspace_root(tmp_path):
     assert acquire_rust._manifest_codegen_units(str(member), "release") == 1
 
 
+def test_workspace_root_profiles_override_member_profiles(tmp_path):
+    (tmp_path / "Cargo.toml").write_text(
+        '[workspace]\nmembers = ["member"]\nresolver = "2"\n'
+        '[profile.release]\ncodegen-units = 2\ndebug-assertions = false\n'
+    )
+    member = tmp_path / "member"
+    (member / "src").mkdir(parents=True)
+    (member / "src" / "lib.rs").write_text("pub fn value() {}\n")
+    (member / "Cargo.toml").write_text(
+        '[package]\nname = "member"\nversion = "0.1.0"\nedition = "2021"\n'
+        '[profile.release]\ncodegen-units = 99\ndebug-assertions = true\n'
+    )
+    assert acquire_rust._manifest_codegen_units(str(member), "release") == 2
+    assert acquire_rust._resolve_assertions(str(member), "release") == (False, False)
+
+
 def test_config_rustflags_read_array(tmp_path):
     cfg = tmp_path / ".cargo" / "config.toml"
     cfg.parent.mkdir(parents=True)
@@ -83,6 +99,28 @@ def test_config_rustflags_walks_up_to_parent(tmp_path):
     child = tmp_path / "fuzz-ziggy"
     child.mkdir()
     assert acquire_rust._config_rustflags(str(child)) == ["--cfg", "tokio_unstable"]
+
+
+def test_config_rustflags_merges_hierarchy(tmp_path, monkeypatch):
+    home = tmp_path / "cargo-home"
+    root = tmp_path / "root"
+    child = root / "member"
+    home.mkdir()
+    (root / ".cargo").mkdir(parents=True)
+    (child / ".cargo").mkdir(parents=True)
+    (home / "config.toml").write_text(
+        '[build]\nrustflags = ["--cfg", "from_home"]\n'
+    )
+    (root / ".cargo" / "config.toml").write_text(
+        '[build]\nrustflags = ["--cfg", "from_root"]\n'
+    )
+    (child / ".cargo" / "config.toml").write_text(
+        '[build]\nrustflags = ["--cfg", "from_child"]\n'
+    )
+    monkeypatch.setenv("CARGO_HOME", str(home))
+    assert acquire_rust._config_rustflags(str(child)) == [
+        "--cfg", "from_home", "--cfg", "from_root", "--cfg", "from_child",
+    ]
 
 
 def test_compose_rustflags_merges_project_config(tmp_path, monkeypatch):
@@ -151,6 +189,15 @@ def test_failed_cargo_never_uses_stale_bitcode(tmp_path, monkeypatch):
         acquire_rust.acquire_rust_bitcode(str(tmp_path))
 
 
+def test_cargo_spawn_failure_is_domain_error(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise FileNotFoundError("missing")
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", fail)
+    with pytest.raises(acquire_rust.AcquireError, match="cannot run cargo build"):
+        acquire_rust.acquire_rust_bitcode(str(tmp_path))
+
+
 def test_build_std_is_only_a_cargo_option(tmp_path, monkeypatch):
     seen = {}
 
@@ -187,8 +234,7 @@ def test_dedup_newest_per_crate(tmp_path):
     os.utime(new, (2, 2))
     os.utime(other, (1, 1))
     kept = acquire_rust._dedup_newest_per_crate([str(old), str(new), str(other)])
-    assert str(new) in kept and str(other) in kept
-    assert str(old) not in kept
+    assert kept == sorted([str(old), str(new), str(other)])
 
 
 def test_dedup_newest_per_crate_keeps_all_cgus(tmp_path):
@@ -200,8 +246,30 @@ def test_dedup_newest_per_crate_keeps_all_cgus(tmp_path):
         os.utime(p, (10, 10))
     os.utime(old, (1, 1))
     kept = acquire_rust._dedup_newest_per_crate(
-        [str(old)] + [str(p) for p in new])
+        [str(old)] + [str(p) for p in new], newer_than=10)
     assert kept == sorted(str(p) for p in new)
+
+
+def test_fallback_preserves_two_live_versions_and_all_codegen_units(tmp_path):
+    version_one = [
+        tmp_path / f"same_crate-1111111111111111.cgu{i}.rcgu.bc"
+        for i in range(2)
+    ]
+    version_two = [
+        tmp_path / f"same_crate-2222222222222222.cgu{i}.rcgu.bc"
+        for i in range(3)
+    ]
+    stale = tmp_path / "same_crate-3333333333333333.bc"
+    for path in [*version_one, *version_two, stale]:
+        path.write_text("x")
+    for path in [*version_one, *version_two]:
+        os.utime(path, (20, 20))
+    os.utime(stale, (1, 1))
+    kept = acquire_rust._dedup_newest_per_crate(
+        [str(path) for path in [*version_one, *version_two, stale]],
+        newer_than=20,
+    )
+    assert kept == sorted(str(path) for path in [*version_one, *version_two])
 
 
 def test_build_bc_paths_from_artifact_stream(tmp_path):
@@ -220,6 +288,61 @@ def test_build_bc_paths_from_artifact_stream(tmp_path):
     noise = "Compiling msmith v0.1.0\n" + json.dumps({"reason": "build-finished", "success": True})
     bcs = acquire_rust._build_bc_paths(line + "\n" + noise)
     assert bcs == [str(keep)]
+
+
+def test_artifact_stream_filters_stale_hash_after_flag_change(tmp_path):
+    deps = tmp_path / "target" / "debug" / "deps"
+    deps.mkdir(parents=True)
+    stale = deps / "crate-1111111111111111.bc"
+    fresh = deps / "crate-2222222222222222.bc"
+    stale.write_text("stale")
+    fresh.write_text("fresh")
+    os.utime(stale, (1, 1))
+    os.utime(fresh, (20, 20))
+    messages = "\n".join(json.dumps({
+        "reason": "compiler-artifact",
+        "target": {"name": "crate", "kind": ["lib"]},
+        "filenames": [str(deps / f"libcrate-{hash_value}.rlib")],
+    }) for hash_value in ("1111111111111111", "2222222222222222"))
+    assert acquire_rust._build_bc_paths(messages, newer_than=20) == [str(fresh)]
+
+
+def test_build_bc_paths_excludes_host_only_artifacts(tmp_path):
+    deps = tmp_path / "target" / "debug" / "deps"
+    deps.mkdir(parents=True)
+    build_bc = deps / "build_script_build-1111111111111111.bc"
+    proc_bc = deps / "derive-2222222222222222.bc"
+    build_bc.write_text("x")
+    proc_bc.write_text("x")
+    messages = [
+        {
+            "reason": "compiler-artifact",
+            "target": {"name": "build-script-build", "kind": ["custom-build"]},
+            "filenames": [str(deps / "build_script_build-1111111111111111")],
+        },
+        {
+            "reason": "compiler-artifact",
+            "target": {"name": "derive", "kind": ["proc-macro"]},
+            "filenames": [str(deps / "libderive-2222222222222222.so")],
+        },
+    ]
+    assert acquire_rust._build_bc_paths(
+        "\n".join(json.dumps(message) for message in messages)
+    ) == []
+
+
+def test_target_dir_honors_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CARGO_TARGET_DIR", "custom-target")
+    assert acquire_rust._target_dir(str(tmp_path)) == str(tmp_path / "custom-target")
+    absolute = tmp_path / "absolute-target"
+    monkeypatch.setenv("CARGO_TARGET_DIR", str(absolute))
+    assert acquire_rust._target_dir(str(tmp_path)) == str(absolute)
+
+
+def test_unreadable_rust_bitcode_is_domain_error(tmp_path):
+    missing = tmp_path / "missing.bc"
+    with pytest.raises(acquire_rust.AcquireError, match="cannot read Rust bitcode"):
+        acquire_rust._validate_bitcode_paths([str(missing)])
 
 
 def test_build_bc_paths_includes_bin_crate(tmp_path):
@@ -384,7 +507,9 @@ def test_native_carries_mangling_v0(monkeypatch, tmp_path):
         return R()
 
     monkeypatch.setattr(acquire_rust.subprocess, "run", fake_run)
-    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: ["a.bc"])
+    bc = tmp_path / "a.bc"
+    bc.write_bytes(b"x")
+    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: [str(bc)])
     monkeypatch.setattr(acquire_rust.tempfile, "mkdtemp", lambda prefix="": str(tmp_path))
     acquire_rust.acquire_rust_bitcode_native(
         str(tmp_path), ["cargo", "afl", "build"], mangling="v0")
@@ -404,7 +529,9 @@ def test_native_mangling_auto_omits_flag(monkeypatch, tmp_path):
         return R()
 
     monkeypatch.setattr(acquire_rust.subprocess, "run", fake_run)
-    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: ["a.bc"])
+    bc = tmp_path / "a.bc"
+    bc.write_bytes(b"x")
+    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: [str(bc)])
     monkeypatch.setattr(acquire_rust.tempfile, "mkdtemp", lambda prefix="": str(tmp_path))
     acquire_rust.acquire_rust_bitcode_native(str(tmp_path), ["cargo", "afl", "build"])
     assert "-Csymbol-mangling-version" not in seen["extra"]
@@ -451,7 +578,9 @@ def test_native_sets_opt0_env_by_default(monkeypatch, tmp_path):
         return R()
 
     monkeypatch.setattr(acquire_rust.subprocess, "run", fake_run)
-    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: ["a.bc"])
+    bc = tmp_path / "a.bc"
+    bc.write_bytes(b"x")
+    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: [str(bc)])
     monkeypatch.setattr(acquire_rust.tempfile, "mkdtemp", lambda prefix="": str(tmp_path))
     acquire_rust.acquire_rust_bitcode_native(str(tmp_path), ["cargo", "afl", "build"])
     assert seen["extra"] == "-Copt-level=0"
@@ -470,7 +599,9 @@ def test_native_optimize_clears_opt0_env(monkeypatch, tmp_path):
         return R()
 
     monkeypatch.setattr(acquire_rust.subprocess, "run", fake_run)
-    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: ["a.bc"])
+    bc = tmp_path / "a.bc"
+    bc.write_bytes(b"x")
+    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: [str(bc)])
     monkeypatch.setattr(acquire_rust.tempfile, "mkdtemp", lambda prefix="": str(tmp_path))
     acquire_rust.acquire_rust_bitcode_native(
         str(tmp_path), ["cargo", "afl", "build"], optimize=True)

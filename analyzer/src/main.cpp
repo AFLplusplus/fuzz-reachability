@@ -13,6 +13,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/IR/Constants.h"
+#include "llvm/IR/GlobalIFunc.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/CommandLine.h"
@@ -61,6 +62,10 @@ static cl::opt<bool> NoNameRoots("no-name-roots",
                                           "functions reached only by runtime name lookup "
                                           "(dlsym/dlopen-by-name); it is on by default and "
                                           "active only when the module performs such a lookup."));
+static cl::opt<bool> IncludeProcessLifecycleRoots(
+    "include-process-lifecycle-roots",
+    cl::desc("include constructors, destructors, ifunc resolvers, and a defined "
+             "LLVMFuzzerInitialize as roots (default off)"));
 
 namespace {
 
@@ -216,12 +221,71 @@ std::vector<std::string> collectNameReferencedRoots(Module &m) {
   return added;
 }
 
+void addLifecycleRoot(Function *f, std::set<std::string> &have,
+                      std::vector<std::string> &roots,
+                      std::vector<std::string> &added) {
+  if (!f || f->isDeclaration())
+    return;
+  std::string name = f->getName().str();
+  if (have.insert(name).second) {
+    roots.push_back(name);
+    added.push_back(name);
+  }
+}
+
+void collectLifecycleGlobal(Module &m, StringRef name, std::set<std::string> &have,
+                            std::vector<std::string> &roots,
+                            std::vector<std::string> &added) {
+  GlobalVariable *global = m.getNamedGlobal(name);
+  if (!global)
+    return;
+  auto *array = global->hasInitializer()
+                    ? dyn_cast<ConstantArray>(global->getInitializer())
+                    : nullptr;
+  if (!array) {
+    errs() << "warning: malformed " << name << " lifecycle records\n";
+    return;
+  }
+  for (unsigned i = 0; i < array->getNumOperands(); ++i) {
+    auto *record = dyn_cast<Constant>(array->getOperand(i));
+    Constant *target = record ? record->getAggregateElement(1u) : nullptr;
+    Function *function = reach::resolveCallableValue(target);
+    if (!function || function->isDeclaration()) {
+      errs() << "warning: malformed " << name << " lifecycle record " << i << "\n";
+      continue;
+    }
+    addLifecycleRoot(function, have, roots, added);
+  }
+}
+
+std::vector<std::string> collectProcessLifecycleRoots(
+    Module &m, std::set<std::string> &have, std::vector<std::string> &roots) {
+  std::vector<std::string> added;
+  collectLifecycleGlobal(m, "llvm.global_ctors", have, roots, added);
+  collectLifecycleGlobal(m, "llvm.global_dtors", have, roots, added);
+  for (GlobalIFunc &ifunc : m.ifuncs()) {
+    Function *resolver = ifunc.getResolverFunction();
+    if (!resolver || resolver->isDeclaration()) {
+      errs() << "warning: malformed ifunc resolver for " << ifunc.getName() << "\n";
+      continue;
+    }
+    addLifecycleRoot(resolver, have, roots, added);
+  }
+  addLifecycleRoot(m.getFunction("LLVMFuzzerInitialize"), have, roots, added);
+  return added;
+}
+
 void disableDebugInfoAutoUpgrade() {
   auto &opts = cl::getRegisteredOptions();
   auto it = opts.find("disable-auto-upgrade-debug-info");
   if (it == opts.end())
     return;
-  auto *o = static_cast<cl::opt<bool> *>(it->second);
+  auto *o = dynamic_cast<cl::opt<bool> *>(it->second);
+  if (!o) {
+    errs() << "warning: LLVM option disable-auto-upgrade-debug-info has an "
+              "unexpected type\n";
+    return;
+  }
   if (o->getNumOccurrences() == 0)
     *o = true;
 }
@@ -274,7 +338,7 @@ int main(int argc, char **argv) {
     resolver = std::make_unique<reach::AnyResolver>();
   else
     resolver = std::make_unique<reach::TypeBasedResolver>();
-  reach::buildIndirectEdges(*mod, graph, *resolver);
+  reach::buildIndirectEdges(*mod, graph, *resolver, escapeIdx);
 
   if (DumpEdges) {
     for (auto &kv : graph.edges())
@@ -284,10 +348,6 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  if (entries.empty()) {
-    suggestEntries(*mod, requested);
-    return 1;
-  }
   if (!unresolved.empty()) {
     errs() << "warning: unresolved entry symbols:";
     for (auto &n : unresolved)
@@ -296,8 +356,8 @@ int main(int argc, char **argv) {
   }
 
   std::vector<std::string> roots = entries;
+  std::set<std::string> have(roots.begin(), roots.end());
   if (!NoNameRoots) {
-    std::set<std::string> have(roots.begin(), roots.end());
     std::vector<std::string> added;
     for (const std::string &n : collectNameReferencedRoots(*mod))
       if (have.insert(n).second) {
@@ -312,6 +372,20 @@ int main(int argc, char **argv) {
       errs() << "\n";
     }
   }
+  if (IncludeProcessLifecycleRoots) {
+    std::vector<std::string> added =
+        collectProcessLifecycleRoots(*mod, have, roots);
+    if (!added.empty()) {
+      errs() << "note: added " << added.size() << " process lifecycle root(s):";
+      for (const std::string &n : added)
+        errs() << " " << n;
+      errs() << "\n";
+    }
+  }
+  if (roots.empty()) {
+    suggestEntries(*mod, requested);
+    return 1;
+  }
 
   reach::ReachResult res = reach::computeReachability(*mod, graph, roots);
   if (res.reached.empty()) {
@@ -319,7 +393,7 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  auto flowTargets = reach::computeAddressFlowTargets(*mod, escapeIdx);
+  auto flowTargets = reach::computeAddressFlowTargets(*mod, escapeIdx, res);
   auto metrics = reach::computeMetrics(*mod, graph, res, roots);
 
   auto writeFile = [&](const std::string &path, const char *what,
@@ -349,7 +423,7 @@ int main(int argc, char **argv) {
 
   const char *backendName = IndirectAny ? "indirect-any" : "type-based";
   if (OutFile.empty()) {
-    reach::writeJson(outs(), *mod, graph, res, backendName, entries, flowTargets,
+    reach::writeJson(outs(), *mod, graph, res, backendName, roots, flowTargets,
                      metrics);
   } else {
     std::error_code ec;
@@ -359,7 +433,7 @@ int main(int argc, char **argv) {
              << "\n";
       return 1;
     }
-    reach::writeJson(out, *mod, graph, res, backendName, entries, flowTargets,
+    reach::writeJson(out, *mod, graph, res, backendName, roots, flowTargets,
                      metrics);
   }
   return 0;

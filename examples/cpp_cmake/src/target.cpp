@@ -23,8 +23,8 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 }
 
 // A trivial driver so the project links as an executable (real fuzz targets get
-// their main() from libFuzzer). Reachability is rooted at the fuzz entry, so
-// main() itself is reported unreachable-from-entry.
+// their main() from libFuzzer). Under --lang cpp, main and the fuzz entry are
+// both roots.
 int main() {
     const uint8_t b[1] = {0};
     return LLVMFuzzerTestOneInput(b, sizeof b);

@@ -63,3 +63,22 @@ def test_check_coherence_c_only_skips_rustc(monkeypatch):
     )
     tc = toolchain.check_coherence("/fake/analyzer", require_rust=False)
     assert tc.rustc_major is None
+
+
+def test_version_probe_spawn_failure_is_domain_error(monkeypatch):
+    def fail(*args, **kwargs):
+        raise FileNotFoundError("missing")
+
+    monkeypatch.setattr(toolchain.subprocess, "run", fail)
+    with pytest.raises(toolchain.ToolchainError, match="cannot run clang"):
+        toolchain._run_version(["clang", "--version"], "clang")
+
+
+def test_version_probe_nonzero_invalid_bytes_is_domain_error(monkeypatch):
+    result = type("R", (), {
+        "returncode": 2, "stdout": b"", "stderr": b"failure \xff",
+    })()
+    monkeypatch.setattr(toolchain.subprocess, "run", lambda *a, **k: result)
+    with pytest.raises(toolchain.ToolchainError) as exc:
+        toolchain._run_version(["clang", "--version"], "clang")
+    assert "failure \ufffd" in str(exc.value)

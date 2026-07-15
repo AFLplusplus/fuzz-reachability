@@ -10,8 +10,10 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 
-from . import __version__, acquire_c, acquire_rust, analyze, link, report, toolchain
+from . import (__version__, acquire_c, acquire_rust, analyze, link, outputs,
+               report, toolchain)
 
 # --lang selects a target type: a source language (how to acquire bitcode) or a
 # fuzz-harness shape (which also implies the default entry point). Each maps to
@@ -56,7 +58,7 @@ def default_analyzer():
     return path
 
 
-def _acquire(args, tc, verbose=False):
+def _acquire(args, tc, verbose=False, work_dir=None):
     """Return the list of .bc files for the project per --lang."""
     mode = TARGETS[args.lang][0]
     bcs = []
@@ -72,13 +74,17 @@ def _acquire(args, tc, verbose=False):
             print(f"build command: {build or 'make'}"
                   f"{'' if build else ' (default; no build system detected)'}")
         build_cmd = ["sh", "-c", build] if build else None
-        bcs.extend(
-            acquire_c.acquire_c_bitcode(
-                args.project, tc, args.artifact, build_cmd,
-                static_libs=args.static_libs, verbose=verbose,
-                optimize=args.optimize,
+        before = _snapshot_c_artifacts(args.project)
+        try:
+            bcs.extend(
+                acquire_c.acquire_c_bitcode(
+                    args.project, tc, args.artifact, build_cmd,
+                    static_libs=args.static_libs, verbose=verbose,
+                    optimize=args.optimize, work_dir=work_dir,
+                )
             )
-        )
+        finally:
+            _record_c_artifacts(args.project, before)
     if mode in ("rust", "mixed"):
         if args.lang in _RUST_NATIVE:
             cmd = args.build_cmd or _native_build_cmd(args.lang, args.profile)
@@ -128,10 +134,73 @@ def _native_clean(project_dir, lang, verbose):
         return
     if verbose:
         print(f"  cleaning native build: {' '.join(argv)} ({cwd})")
-    subprocess.run(argv, cwd=cwd, capture_output=not verbose, text=True)
+    try:
+        subprocess.run(argv, cwd=cwd, capture_output=not verbose, text=True)
+    except OSError:
+        return
 
 
 _C_CLEAN_SUFFIXES = (".bc", ".o", ".llvm.manifest")
+_OWNED_DIR = ".reachability-cache"
+_OWNED_FILE = "owned-c-artifacts.json"
+
+
+def _snapshot_c_artifacts(project):
+    state = {}
+    for root, dirs, files in os.walk(project):
+        dirs[:] = [d for d in dirs if d not in acquire_c._SKIP_DIRS]
+        for name in files:
+            if not name.endswith(_C_CLEAN_SUFFIXES):
+                continue
+            path = os.path.join(root, name)
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            state[os.path.abspath(path)] = (stat.st_mtime_ns, stat.st_size)
+    return state
+
+
+def _owned_manifest(project):
+    return os.path.join(project, _OWNED_DIR, _OWNED_FILE)
+
+
+def _load_owned_artifacts(project):
+    try:
+        with open(_owned_manifest(project), encoding="utf-8") as fh:
+            values = json.load(fh)
+    except (OSError, json.JSONDecodeError, UnicodeError):
+        return []
+    return [value for value in values if isinstance(value, str)]
+
+
+def _record_c_artifacts(project, before):
+    after = _snapshot_c_artifacts(project)
+    owned = set(_load_owned_artifacts(project))
+    root = os.path.realpath(project)
+    for path, state in after.items():
+        if before.get(path) == state:
+            continue
+        real = os.path.realpath(path)
+        try:
+            if os.path.commonpath([root, real]) != root:
+                continue
+        except ValueError:
+            continue
+        owned.add(os.path.relpath(path, project))
+    if not owned:
+        return
+    directory = os.path.join(project, _OWNED_DIR)
+    try:
+        os.makedirs(directory, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".owned-", dir=directory)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(sorted(owned), fh)
+            fh.write("\n")
+        os.replace(temporary, _owned_manifest(project))
+    except OSError as exc:
+        print(f"warning: could not record analysis-owned C artifacts: {exc}",
+              file=sys.stderr)
 
 
 def _cargo_clean(directory, verbose=False):
@@ -143,9 +212,12 @@ def _cargo_clean(directory, verbose=False):
     if shutil.which("cargo") and os.path.exists(os.path.join(directory, "Cargo.toml")):
         if verbose:
             print(f"  cargo clean ({directory})")
-        r = subprocess.run(["cargo", "clean"], cwd=directory,
-                           capture_output=not verbose, text=True)
-        ran = r.returncode == 0
+        try:
+            r = subprocess.run(["cargo", "clean"], cwd=directory,
+                               capture_output=not verbose, text=True)
+            ran = r.returncode == 0
+        except OSError:
+            ran = False
     if not ran and os.path.isdir(target):
         shutil.rmtree(target, ignore_errors=True)
         if verbose:
@@ -179,16 +251,17 @@ def _run_clean(cmd, directory, verbose):
         return
     if verbose:
         print(f"  {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=directory, capture_output=not verbose, text=True)
+    try:
+        subprocess.run(cmd, cwd=directory, capture_output=not verbose, text=True)
+    except OSError:
+        return
 
 
 def _clean_c_artifacts(project, drop, verbose=False):
     """Clean a C/C++ build in place under `project` without deleting build
     directories — some projects build in-source and have none. Each configured
     build tree is cleaned with its own tool (make/ninja/cmake/meson, see
-    `_build_clean_cmd`), then every leftover object / extracted-bitcode file
-    (`*.o`, `*.bc`, `*.llvm.manifest`) is removed so the next gllvm build
-    recompiles from clean. All of these are build artifacts (see .gitignore)."""
+    `_build_clean_cmd`), then files recorded as analysis-owned are removed."""
     cleaned = []
     for root, dirs, files in os.walk(project):
         dirs[:] = [d for d in dirs if d not in acquire_c._SKIP_DIRS]
@@ -197,20 +270,27 @@ def _clean_c_artifacts(project, drop, verbose=False):
             if cmd is not None:
                 _run_clean(cmd, root, verbose)
                 cleaned.append(root)
-        for f in files:
-            if f.endswith(_C_CLEAN_SUFFIXES):
-                drop(os.path.join(root, f))
+    project_real = os.path.realpath(project)
+    for relative in _load_owned_artifacts(project):
+        path = os.path.abspath(os.path.join(project, relative))
+        try:
+            if os.path.commonpath([project_real, os.path.realpath(path)]) != project_real:
+                continue
+        except ValueError:
+            continue
+        drop(path)
+    cache = os.path.join(project, _OWNED_DIR)
+    if os.path.isdir(cache):
+        shutil.rmtree(cache)
+        if verbose:
+            print(f"  removed {cache}")
 
 
-def _clean_project(args, verbose=False):
-    """Remove cached build artifacts and prior outputs under --project so the
-    run rebuilds from clean (a cached build otherwise yields stale or empty
-    bitcode). Rust targets get `cargo clean` (and the same for fuzz/ so
-    cargo-fuzz's fuzz/target is dropped); C/C++ targets are cleaned in place
-    with their own build system (build directories are kept, since some
-    projects build in-source) and their object/bitcode files removed. The
-    merged module and any prior reachability.json / reached.txt /
-    not_reached.txt (and --dot) are removed for every target."""
+def _clean_project(args, verbose=False, output_paths=None):
+    """Remove selected outputs and tool-owned build state after validating every
+    destination. Rust targets use cargo clean. C/C++ targets use configured clean
+    commands and remove only paths recorded in the ownership manifest."""
+    output_paths = output_paths or outputs.resolve(args)
     project = args.project
     removed = 0
 
@@ -219,8 +299,6 @@ def _clean_project(args, verbose=False):
         try:
             if os.path.islink(path) or os.path.isfile(path):
                 os.remove(path)
-            elif os.path.isdir(path):
-                shutil.rmtree(path)
             else:
                 return
         except OSError as e:
@@ -231,12 +309,8 @@ def _clean_project(args, verbose=False):
             print(f"  removed {path}")
 
     drop(os.path.join(project, "merged.bc"))
-    outdir = os.path.dirname(os.path.abspath(args.out))
-    drop(args.out)
-    drop(args.reached or os.path.join(outdir, "reached.txt"))
-    drop(args.not_reached or os.path.join(outdir, "not_reached.txt"))
-    if args.dot:
-        drop(args.dot)
+    for _, path in output_paths.items():
+        drop(path)
 
     mode = TARGETS[args.lang][0]
     if mode in ("rust", "mixed"):
@@ -255,10 +329,7 @@ def cmd_run(args):
     if args.backend is not None:
         print("warning: --backend is deprecated and ignored; the type-based "
               "backend is always used", file=sys.stderr)
-    if args.out is None:
-        args.out = os.path.join(args.project, "reachability.json")
-    elif os.path.isdir(args.out):
-        args.out = os.path.join(args.out, "reachability.json")
+    output_paths = outputs.resolve(args)
     rust_target = TARGETS[args.lang][0] in ("rust", "mixed")
     tc = toolchain.check_coherence(default_analyzer(), require_rust=rust_target)
     if v:
@@ -274,40 +345,46 @@ def cmd_run(args):
     if args.clean:
         if v:
             print("==> cleaning cached build artifacts and prior outputs")
-        _clean_project(args, verbose=v)
+        _clean_project(args, verbose=v, output_paths=output_paths)
 
     if v:
         print(f"==> [2/4] acquiring bitcode (lang={args.lang})")
-    bcs = _acquire(args, tc, verbose=v)
-    if v:
-        print(f"  collected {len(bcs)} bitcode module(s):")
-        for b in bcs:
-            print(f"    {b}")
+    try:
+        with tempfile.TemporaryDirectory(prefix="reachability-run-") as work_dir:
+            with outputs.Transaction(output_paths) as transaction:
+                bcs = _acquire(args, tc, verbose=v, work_dir=work_dir)
+                if v:
+                    print(f"  collected {len(bcs)} bitcode module(s):")
+                    for b in bcs:
+                        print(f"    {b}")
 
-    merged = os.path.join(args.project, "merged.bc")
-    if v:
-        print(f"==> [3/4] merging {len(bcs)} module(s) with llvm-link -> {merged}")
-    link.link_bitcode(bcs, merged, tc)
+                merged = os.path.join(work_dir, "merged.bc")
+                if v:
+                    print(f"==> [3/4] merging {len(bcs)} module(s) with llvm-link -> {merged}")
+                link.link_bitcode(bcs, merged, tc)
 
-    # The two sancov lists land next to the JSON output (override with flags).
-    outdir = os.path.dirname(os.path.abspath(args.out))
-    reached = args.reached or os.path.join(outdir, "reached.txt")
-    not_reached = args.not_reached or os.path.join(outdir, "not_reached.txt")
-    if v:
-        print(f"==> [4/4] analyzing from entries [{', '.join(args.entry)}]")
-    result = analyze.analyze(
-        merged, tc, args.entry, dot=args.dot,
-        reached_out=reached, not_reached_out=not_reached, verbose=v,
-    )
-    with open(args.out, "w") as fh:
-        json.dump(result, fh, indent=2)
+                if v:
+                    print(f"==> [4/4] analyzing from entries [{', '.join(args.entry)}]")
+                result = analyze.analyze(
+                    merged, tc, args.entry,
+                    dot=transaction.path("--dot") if output_paths.dot else None,
+                    reached_out=transaction.path("--reached"),
+                    not_reached_out=transaction.path("--not-reached"),
+                    out_path=transaction.path("--out"), verbose=v,
+                    include_process_lifecycle_roots=(
+                        getattr(args, "include_process_lifecycle_roots", False)
+                    ),
+                )
+                transaction.publish()
+    except OSError as exc:
+        raise outputs.OutputError(f"pipeline temporary-file failure: {exc}") from exc
     report.print_summary(result)
     advisory = report.external_advisory(result)
     if advisory:
         print(advisory)
-    print(f"wrote {args.out}")
-    print(f"wrote {reached}  (sancov allowlist of reachable functions)")
-    print(f"wrote {not_reached}  (sancov ignorelist of unreachable functions)")
+    print(f"wrote {output_paths.json}")
+    print(f"wrote {output_paths.reached}  (sancov allowlist of reachable functions)")
+    print(f"wrote {output_paths.not_reached}  (sancov ignorelist of unreachable functions)")
     return 0
 
 
@@ -319,6 +396,9 @@ def cmd_check_toolchain(args):
     print(f"  clang++   {tc.clangxx}")
     print(f"  llvm-link {tc.llvm_link}")
     print(f"  analyzer  {tc.analyzer}")
+    print(f"  gllvm CC  {tc.clang}")
+    print(f"  gllvm CXX {tc.clangxx}")
+    print(f"  gllvm link {tc.llvm_link}")
     return 0
 
 
@@ -362,6 +442,10 @@ def build_parser():
                    help="entry function (repeatable; overrides the --lang default). "
                         "Accepts a mangled symbol, a demangled name, a '::name' "
                         "suffix like 'main', or the alias 'fuzz_target!'")
+    r.add_argument("--include-process-lifecycle-roots", action="store_true",
+                   dest="include_process_lifecycle_roots",
+                   help="also root constructors, destructors, ifunc resolvers, "
+                        "and a defined LLVMFuzzerInitialize (default: off)")
     r.add_argument("--backend", default=None,
                    help="deprecated and ignored; the type-based backend is "
                         "always used")
@@ -393,23 +477,17 @@ def build_parser():
              "via -Copt-level=0), so reachability matches llvm-cov and is a safe "
              "allowlist superset. Controls inlining only; LTO is still stripped.")
     r.add_argument("--clean", action="store_true",
-                   help="remove cached build artifacts and prior outputs under "
-                        "--project before building, so the run rebuilds from "
-                        "clean (a cached build otherwise yields stale or empty "
-                        "bitcode). Rust: `cargo clean` (also in fuzz/ for "
-                        "cargo-fuzz). C/C++: runs the build system's own clean "
-                        "(make/ninja/cmake/meson) in each build tree and "
-                        "removes *.o/*.bc (build dirs are kept). "
-                        "Always removes merged.bc and any prior "
-                        "reachability.json/reached.txt/not_reached.txt/--dot.")
+                   help="remove prior selected output files and tool-owned build "
+                        "state before rebuilding. Rust uses cargo clean; C/C++ "
+                        "uses configured build-system clean targets and removes "
+                        "only artifacts recorded as produced by this tool")
     r.add_argument("--dot", default=None)
     r.add_argument("--reached", default=None,
                    help="sancov allowlist path (default: reached.txt next to --out)")
     r.add_argument("--not-reached", default=None, dest="not_reached",
                    help="sancov ignorelist path (default: not_reached.txt next to --out)")
     r.add_argument("--out", default=None,
-                   help="output JSON path, or a directory to write "
-                        "reachability.json into (default: reachability.json "
+                   help="output JSON file path (default: reachability.json "
                         "in --project)")
     r.add_argument("-v", "--verbose", action="store_true",
                    help="narrate each pipeline stage (toolchain, build, merge, "
@@ -432,7 +510,8 @@ def main(argv=None):
     try:
         return args.func(args)
     except (toolchain.ToolchainError, acquire_c.AcquireError,
-            acquire_rust.AcquireError, link.LinkError, analyze.AnalyzeError) as e:
+            acquire_rust.AcquireError, link.LinkError, analyze.AnalyzeError,
+            outputs.OutputError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 

@@ -1,6 +1,7 @@
 #include "JsonReport.h"
 #include "Demangle.h"
 #include "SymbolKey.h"
+#include "Text.h"
 #include "Toolchain.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/Support/JSON.h"
@@ -52,12 +53,13 @@ void emitFn(json::OStream &J, Function *f, const Via *via,
             const DenseSet<Function *> &flow,
             const DenseMap<Function *, unsigned> &depth,
             const DenseMap<Function *, FuncMetrics> &metrics) {
+  std::string name = sanitizeUtf8(f->getName());
   J.object([&] {
-    J.attribute("mangled", f->getName());
-    J.attribute("demangled", demangle(f->getName()));
-    J.attribute("key", canonicalKey(f->getName()));
+    J.attribute("mangled", name);
+    J.attribute("demangled", demangle(name));
+    J.attribute("key", canonicalKey(name));
     if (DISubprogram *sp = f->getSubprogram()) {
-      J.attribute("file", sp->getFilename());
+      J.attribute("file", sanitizeUtf8(sp->getFilename()));
       J.attribute("line", (int64_t)sp->getLine());
     } else {
       J.attribute("file", nullptr);
@@ -120,7 +122,7 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
       continue;
     for (auto &[to, kind] : kv.second)
       if (to->isDeclaration() && !to->isIntrinsic())
-        externalCallees.insert(to->getName().str());
+        externalCallees.insert(sanitizeUtf8(to->getName()));
   }
 
   json::OStream J(os, 2);
@@ -130,7 +132,7 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
     J.attribute("mangling", manglingStr(m));
     J.attributeArray("entries", [&] {
       for (const auto &e : entries)
-        J.value(e);
+        J.value(sanitizeUtf8(e));
     });
     J.attributeObject("summary", [&] {
       J.attribute("defined", (int64_t)(reachable.size() + unreachable.size()));
@@ -153,14 +155,15 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
         J.value(n);
     });
     J.attributeArray("edges", [&] {
-      std::vector<std::tuple<StringRef, StringRef, EdgeKind>> edges;
+      std::vector<std::tuple<std::string, std::string, EdgeKind>> edges;
       for (auto &kv : g.edges()) {
         Function *from = kv.first;
         if (from->isDeclaration() || !res.reached.count(from))
           continue;
         for (auto &[to, kind] : kv.second)
           if (!to->isDeclaration() && res.reached.count(to))
-            edges.emplace_back(from->getName(), to->getName(), kind);
+            edges.emplace_back(sanitizeUtf8(from->getName()),
+                               sanitizeUtf8(to->getName()), kind);
       }
       std::sort(edges.begin(), edges.end(), [](const auto &a, const auto &b) {
         if (std::get<0>(a) != std::get<0>(b))
@@ -170,8 +173,8 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
         return std::get<2>(a) < std::get<2>(b);
       });
       for (auto &e : edges) {
-        StringRef from = std::get<0>(e);
-        StringRef to = std::get<1>(e);
+        const std::string &from = std::get<0>(e);
+        const std::string &to = std::get<1>(e);
         EdgeKind kind = std::get<2>(e);
         J.object([&] {
           J.attribute("from", from);

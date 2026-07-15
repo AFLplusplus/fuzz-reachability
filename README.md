@@ -164,8 +164,16 @@ make build                   # build the analyzer on the auto-selected LLVM (≥
 make build LLVM_MAJOR=23     # ...or pin a specific major
 make test                    # run the full test suite
 make matrix                  # build + test against every installed LLVM ≥ 21
+make compdb                  # generate analyzer/compile_commands.json for clangd
+make static-analysis         # run cppcheck + Clang Static Analyzer
 make help                    # list all targets
 ```
+
+Setup installs the pinned gllvm 1.3.1 and Python test dependencies from
+`requirements-dev.txt`; it does not upgrade pip implicitly. `make matrix`
+discovers versioned `llvm-config-*` programs anywhere on `PATH` and fails when
+none are available. An explicitly optional local probe can set
+`MATRIX_ALLOW_EMPTY=1` to report a skip instead.
 
 To run the CLI, point it at the built analyzer and put `gllvm` on `PATH`:
 
@@ -183,8 +191,15 @@ reachability run --lang <target> --project <dir> [--out <file>]
 ```
 
 `--out` is optional; it defaults to `reachability.json` in the `--project`
-directory. If `--out` points at an existing directory, the report is written
-to `reachability.json` inside it.
+directory. `--out`, `--reached`, `--not-reached`, and `--dot` always name files;
+an existing directory is rejected before anything is removed or built. The
+destinations must be distinct after absolute and symlink resolution.
+
+All requested outputs are staged beside their final destinations and published
+as one transaction after acquisition, linking, analysis, and validation succeed.
+A failed run preserves the complete previous output set (or leaves no new set),
+and each invocation keeps extracted bitcode and `merged.bc` in its own temporary
+directory, so concurrent runs in one project do not share intermediates.
 
 `<target>` is a source language (`c`, `cpp`, `rust`, `mixed`) or a Rust fuzz
 harness (`libfuzzer`, `ziggy`, `afl`). Each sets a default entry point, so the
@@ -322,18 +337,19 @@ entry point(s).
 |--------|---------|---------|
 | `--project DIR` | *(required)* | Project directory to build and analyze. |
 | `--lang TARGET` | *(required)* | Target type (see the table below): sets how bitcode is acquired and the default entry. |
-| `--out FILE` | `reachability.json` in `--project` | Path for the JSON report. A directory writes `reachability.json` into it. The two sancov lists default to `reached.txt` / `not_reached.txt` beside it. |
+| `--out FILE` | `reachability.json` in `--project` | File path for the JSON report. Existing directories are rejected. The two sancov lists default to `reached.txt` / `not_reached.txt` beside it. |
 | `--entry NAME` | per `--lang` | Entry to root reachability at. **Repeatable**; overrides the target default. See [Entry resolution](#entry-resolution). |
+| `--include-process-lifecycle-roots` | off | Also root `llvm.global_ctors`, `llvm.global_dtors`, ifunc resolvers, and a defined `LLVMFuzzerInitialize`. See [Process-lifecycle roots](#process-lifecycle-roots). |
 | `--backend NAME` | *(none)* | Deprecated and ignored; the type-based backend is always used. Accepted for backward compatibility — passing it prints a warning. |
-| `--artifact PATH` | auto-detect | C/C++ only: the built binary/object/archive to extract bitcode from (relative to `--project`). Auto-detected otherwise, preferring an executable over a shared library, archive, then object. |
+| `--artifact PATH` | auto-detect | C/C++ only: a strict built binary/object/archive target (relative to `--project`). A missing, unsupported, or unextractable explicit path fails; automatic discovery runs only when the option is omitted. Discovery prefers executables over shared libraries, archives, then objects, and requires `--artifact` when equally plausible candidates remain. |
 | `--build-cmd CMD` | auto-detect | Shell build command. C/C++: run with `gllvm` injected, auto-detected otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`); e.g. `"cmake -S . -B build && cmake --build build"`. An auto-detected build is forced static where the build system allows it (shared libraries are linked separately, so their bitcode never reaches the target): `--disable-shared`/`--enable-static` for `configure` when `configure --help` lists them, `-DBUILD_SHARED_LIBS=OFF` for CMake, `--default-library=static` for Meson. An auto-detected build also disables link-time optimization, since gllvm cannot embed bitcode under `-flto`: `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF` for CMake, `-Db_lto=false` for Meson, and `--disable-lto` for `configure` when its `--help` lists an LTO toggle. If bitcode extraction still fails, the error names the likely cause (LTO, an afl-clang-fast/clang-LTO binary, a ccache/sccache layer, or assembly-only units) and its fix. Pass `--build-cmd` to override this entirely. `libfuzzer`/`ziggy`/`afl`: overrides the native build command (default `cargo fuzz build` / `cargo ziggy build --no-honggfuzz` / `cargo afl build`). |
-| `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree. Exact archive manifests prevent linked objects from being dropped; unresolved duplicate definitions fail the merge instead of silently replacing one body. |
+| `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree. Exact archive manifests prevent linked objects from being dropped. Requested expansion fails closed if any archive cannot be listed or fully extracted, so an incomplete report is never published as complete. |
 | `--profile {debug,release}` | tool default | Build profile. `libfuzzer`/`ziggy`/`afl`: `release` adds `--release` to the native command (else the tool's default). Plain `--lang rust`: the cargo profile (default `debug`). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--codegen-units N` | auto | Plain `--lang rust` only (positive integer): rustc `-Ccodegen-units`, auto-detected from `Cargo.toml` else cargo's per-profile default. Ignored for `libfuzzer`/`ziggy`/`afl` (their build sets it). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--optimize` | off | Build the analysis at the target's real optimization (post-inline). By default the analysis build is **source-faithful**: C/C++ analysis bitcode is built with `-fno-inline -fno-inline-functions` (via `LLVM_BITCODE_GENERATION_FLAGS`); Rust with `-Copt-level=0` (via composed `RUSTFLAGS` for plain `--lang rust`/`mixed`, or via `RUSTC_WRAPPER` for native harnesses). Functions are not inlined away, so the reachable set matches what `llvm-cov` reports and is a safe allowlist superset. For native Rust harnesses (`libfuzzer`/`ziggy`/`afl`), `--optimize` also skips the post-analysis clean (otherwise their throwaway opt-0 build is discarded). Pass `--optimize` when you want the set and per-function metrics to mirror a specific `-O3` instrumented binary. Controls inlining only — LTO is still stripped. |
 | `--build-std` | off | Rust only: build the standard library from source with Cargo's `-Zbuild-std` option and rustc's detected host target, so std functions appear in the graph instead of as external declarations. |
-| `--clean` | off | Remove cached build artifacts and prior outputs under `--project` before building, so the run rebuilds from clean (a cached build otherwise yields stale or empty bitcode — see [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)). Rust runs `cargo clean` (also in `fuzz/` for cargo-fuzz); C/C++ runs the build system's own clean (`make`/`ninja`/`cmake`/`meson`) in each configured build tree and removes `*.o`/`*.bc` files (build directories are kept, since some projects build in-source); every target also drops `merged.bc` and any prior `reachability.json` / `reached.txt` / `not_reached.txt` / `--dot`. |
-| `--dot FILE` | *(none)* | Also write the reachable subgraph as Graphviz DOT (indirect edges dashed/red). |
+| `--clean` | off | Validate every selected output first, then remove those files and tool-owned build state before rebuilding. Rust uses `cargo clean` (also in `fuzz/` for cargo-fuzz). C/C++ runs configured build-system clean targets and removes only artifacts recorded in `.reachability-cache/owned-c-artifacts.json`; unrelated `.o`, `.bc`, and manifest files are not swept recursively. |
+| `--dot FILE` | *(none)* | Also write the deterministic reachable-defined subgraph as Graphviz DOT (indirect edges dashed/red; bodyless declarations remain in the JSON `external_declarations` list rather than as DOT nodes). |
 | `--reached FILE` | beside `--out` | Path for the sancov **allowlist** of reachable functions. |
 | `--not-reached FILE` | beside `--out` | Path for the sancov **ignorelist** of unreachable functions. |
 | `-v`, `--verbose` | off | Narrate each pipeline stage (toolchain → build → merge → analyze): echoes the tool commands run, streams the build output live, and lists the collected bitcode modules. |
@@ -372,6 +388,20 @@ of:
 Matching more than one function only adds roots, which stays sound. For a Rust
 binary, just root at `main`: the token matches the real Rust `main`, so you never
 need to type a mangled symbol.
+
+Any entry token that does not resolve is reported as a warning even without
+`--verbose`; resolved entries still run. Analyzer warnings are always forwarded
+once on stderr and never mixed into JSON output.
+
+#### Process-lifecycle roots
+
+By default, reachability starts only at the selected entries and runtime
+name-lookup roots. Pass `--include-process-lifecycle-roots` when the analyzed
+execution model includes process startup/shutdown behavior. It adds valid
+constructors, destructors, ifunc resolvers, and `LLVMFuzzerInitialize` to the
+existing `entries` metadata, deduplicated against all other roots. Malformed
+lifecycle records produce warnings. The default remains off so existing
+harness-only reports do not unexpectedly widen.
 
 #### Matching the fuzz binary's build
 
@@ -494,7 +524,7 @@ cannot recover a function that one build inlined away and the other did not.
 | Variable | Purpose |
 |----------|---------|
 | `REACHABILITY_ANALYZER` | Path to the analyzer binary (default `analyzer/build/reachability-analyzer`). |
-| `CLANG` / `CLANGXX` / `LLVM_LINK` / `OPT` | Override individual tool paths (otherwise resolved by major from the analyzer's LLVM). |
+| `CLANG` / `CLANGXX` / `LLVM_LINK` | Override individual tool paths (otherwise resolved by major from the analyzer's LLVM). |
 | `PATH` | Must contain `gclang` / `gclang++` / `get-bc` (gllvm) for C/C++/mixed targets. |
 
 ## Output
@@ -519,8 +549,8 @@ cannot recover a function that one build inlined away and the other did not.
   `summary.external_declarations` is its count), and an `edges` array — the
   reachable call graph as
   `{ "from", "to", "kind" }` objects (`kind` = `direct`/`indirect`), restricted to
-  edges whose endpoints are both reachable. With `--dot FILE`, also the reachable
-  subgraph in Graphviz form.
+  edges whose endpoints are both reachable defined functions. With `--dot FILE`,
+  also the same reachable-defined subgraph in deterministic Graphviz form.
 - **`reached.txt`** — a SanitizerCoverage **allowlist** of reachable functions.
 - **`not_reached.txt`** — a SanitizerCoverage **ignorelist** of unreachable
   functions.
@@ -598,9 +628,13 @@ clang -fsanitize-coverage=trace-pc-guard -fsanitize-coverage-ignorelist=not_reac
 Indirect calls (C function pointers, C++ virtual dispatch, Rust `dyn`/`fn`
 pointers) are resolved by the **type-based** resolver: an indirect call of
 function type `T` may reach any address-taken function whose LLVM function type
-is `T`. It is language-agnostic, always available, and sound — a deliberate
-over-approximation. The `--indirect-any` debug flag widens this further, to any
-address-taken function regardless of type.
+is `T`. Exact matches remain the primary path. The resolver also unions any
+candidate whose address flow reaches that call site even when a cast changed its
+declared type; if provenance disappears across a cast, it conservatively falls
+back to all address-taken functions at that site. Definitions and declarations
+use the same policy. This is language-agnostic and deliberately favors soundness
+over precision. The analyzer's `--indirect-any` debug flag widens every indirect
+site to all address-taken functions regardless of type or local provenance.
 
 See [`docs/llvm-support.md`](docs/llvm-support.md) for the LLVM compatibility
 matrix.
@@ -645,8 +679,9 @@ call. Each reachable function in the JSON therefore carries a `confidence`:
   an integer, and stored or XOR-ed but never called). `summary.low_confidence`
   counts these.
 
-It is computed by re-running the escape value-flow rooted at indirect callee
-operands and at non-asm, non-intrinsic escapes; inline asm (`std::hint::black_box`
+It is entry-relative: evidence is collected only inside functions reached from
+the selected roots, then escape value-flow is rooted at indirect callee operands
+and at non-asm, non-intrinsic escapes; inline asm (`std::hint::black_box`
 lowers to empty `asm sideeffect ""`) and intrinsics (`llvm.lifetime`, `memcpy`,
 `dbg`, …) observe or move a value but cannot invoke it, so they do not count as
 callable sinks.
@@ -727,7 +762,10 @@ make test       # full pytest suite (analyzer .ll goldens + per-language soundne
 make matrix     # LLVM version-compatibility matrix (catches future-LLVM breakage)
 make ci         # this repo's suite + cov-analysis's suite, so a `key` JSON-schema
                 #   change that breaks the consumer fails loudly (needs a sibling
-                #   cov-analysis checkout, or COV_ANALYSIS_DIR set; else it SKIPs)
+                #   cov-analysis checkout or COV_ANALYSIS_DIR; use
+                #   SKIP_CROSS_REPO=1 only for an explicit local skip)
+make compdb     # generate analyzer/compile_commands.json for clangd
+make static-analysis
 ```
 
 Each fixture in `fixtures/` carries a `must_reach` / `must_not_reach` set; every
@@ -740,7 +778,8 @@ analyzer/   C++ analyzer + Makefile (src/, built via llvm-config)
 driver/     Python driver (toolchain, acquire_*, link, analyze, cli)
 fixtures/   per-language test targets with expected reachable sets
 examples/   worked examples (cpp_cmake/)
-scripts/    setup.sh, test_matrix.sh, select_llvm.sh
+scripts/    setup.sh, setup_venv.sh, test_matrix.sh, select_llvm.sh,
+            ci_cross_repo.sh, gen_dangerous_list.sh
 docs/       worked examples (EXAMPLES.md), LLVM support
 ```
 

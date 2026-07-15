@@ -8,13 +8,13 @@ requires-python = ">=3.12"
 reachability = "reachability.cli:main"
 
 [project.optional-dependencies]
-test = ["pytest"]
+test = ["pytest==9.1.1"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
 [build-system]
-requires = ["setuptools"]
+requires = ["setuptools==80.9.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]

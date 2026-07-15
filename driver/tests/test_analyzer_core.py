@@ -7,6 +7,9 @@ toolchain.
 
 import fnmatch
 import json
+import subprocess
+
+import pytest
 
 from conftest import ll
 
@@ -46,6 +49,30 @@ def test_json_output(run_analyzer):
     assert j["summary"]["reachable"] == 2
     assert int(j["llvm_version"]) >= 21  # min supported; newer LLVMs allowed
     assert j["backend"] == "type-based"
+
+
+def test_json_schema_contract(run_analyzer):
+    r = run_analyzer([FNPTR(), "--entry", "entry"])
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    assert set(report) == {
+        "llvm_version", "backend", "mangling", "entries", "summary",
+        "reachable", "unreachable_defined", "external_declarations", "edges",
+    }
+    assert set(report["summary"]) == {
+        "defined", "reachable", "indirect_only", "low_confidence",
+        "unreachable", "external_declarations",
+    }
+    assert set(report["reachable"][0]) == {
+        "mangled", "demangled", "key", "file", "line", "via",
+        "indirect_only", "confidence", "depth", "basic_blocks",
+        "dangerous_calls", "C11", "cyclomatic", "loops", "interesting",
+        "bottleneck", "dead_end",
+    }
+    assert set(report["unreachable_defined"][0]) == {
+        "mangled", "demangled", "key", "file", "line",
+    }
+    assert set(report["edges"][0]) == {"from", "to", "kind"}
 
 
 def test_json_depth_min_path(run_analyzer):
@@ -153,12 +180,15 @@ def test_typebased_indirect(run_analyzer):
 
 
 def test_indirect_any_includes_other(run_analyzer):
-    # --indirect-any links indirect calls to ALL address-taken funcs; but
-    # `other` is not address-taken, so it stays unreachable here.
-    r = run_analyzer([FNPTR(), "--entry", "entry", "--indirect-any"])
-    j = json.loads(r.stdout)
-    names = {f["mangled"] for f in j["reachable"]}
-    assert {"opt_a", "opt_b"} <= names
+    precise = run_analyzer([FNPTR(), "--entry", "entry"])
+    maximal = run_analyzer([FNPTR(), "--entry", "entry", "--indirect-any"])
+    assert precise.returncode == 0, precise.stderr
+    assert maximal.returncode == 0, maximal.stderr
+    precise_names = {f["mangled"] for f in json.loads(precise.stdout)["reachable"]}
+    maximal_names = {f["mangled"] for f in json.loads(maximal.stdout)["reachable"]}
+    assert "other" not in precise_names
+    assert "other" in maximal_names
+    assert maximal_names > precise_names
 
 
 def test_external_callback_loaded_from_local(run_analyzer):
@@ -303,6 +333,18 @@ def test_dot_export(run_analyzer, tmp_path):
     assert "dashed" in txt  # indirect edges styled
 
 
+def test_dot_export_is_deterministic_and_excludes_declarations(run_analyzer, tmp_path):
+    first = tmp_path / "first.dot"
+    second = tmp_path / "second.dot"
+    args = [ll("indirect_external.ll"), "--entry", "entry"]
+    a = run_analyzer([*args, "--dot", str(first)])
+    b = run_analyzer([*args, "--dot", str(second)])
+    assert a.returncode == 0, a.stderr
+    assert b.returncode == 0, b.stderr
+    assert first.read_bytes() == second.read_bytes()
+    assert "external_callback" not in first.read_text()
+
+
 def _fun_patterns(text):
     return [ln[len("fun:"):] for ln in text.splitlines() if ln.startswith("fun:")]
 
@@ -334,6 +376,156 @@ def test_reachable_external_declarations(run_analyzer):
     j = json.loads(r.stdout)
     assert j["summary"]["external_declarations"] == 1
     assert j["external_declarations"] == ["ext"]
+
+
+def test_stores_into_escaping_memory_objects(run_analyzer, tmp_path):
+    ignore = tmp_path / "ignore.txt"
+    r = run_analyzer([
+        ll("escape_stores.ll"), "--entry", "entry",
+        "--not-reached-out", str(ignore),
+    ])
+    assert r.returncode == 0, r.stderr
+    expected = {
+        "initial_callback", "null_callback", "first_callback",
+        "second_callback", "struct_callback", "array_callback",
+        "heap_callback", "stack_callback",
+    }
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert expected <= names
+    ignored = set(_fun_patterns(ignore.read_text()))
+    assert not expected & ignored
+
+
+def test_alias_chains_resolve_to_direct_callee(run_analyzer):
+    r = run_analyzer([ll("alias_chain.ll"), "--entry", "entry"])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {"real", "address_space_real"} <= names
+    edges = run_analyzer([ll("alias_chain.ll"), "--dump-edges"])
+    assert edges.returncode == 0, edges.stderr
+    assert "entry -> real [direct]" in edges.stdout
+    assert "entry -> address_space_real [direct]" in edges.stdout
+    assert "entry -> external [direct]" in edges.stdout
+
+
+def test_process_lifecycle_roots_are_opt_in(run_analyzer):
+    base = run_analyzer([ll("lifecycle.ll"), "--entry", "entry"])
+    assert base.returncode == 0, base.stderr
+    base_names = {f["mangled"] for f in json.loads(base.stdout)["reachable"]}
+    expected = {
+        "constructor", "constructor_leaf", "destructor", "ifunc_resolver",
+        "LLVMFuzzerInitialize",
+    }
+    assert not expected & base_names
+    enabled = run_analyzer([
+        ll("lifecycle.ll"), "--entry", "entry",
+        "--include-process-lifecycle-roots",
+    ])
+    assert enabled.returncode == 0, enabled.stderr
+    report = json.loads(enabled.stdout)
+    names = {f["mangled"] for f in report["reachable"]}
+    assert expected <= names
+    assert expected - {"constructor_leaf"} <= set(report["entries"])
+    assert "malformed llvm.global_ctors lifecycle record" in enabled.stderr
+
+
+def test_type_punned_flow_is_unioned_with_exact_candidates(run_analyzer):
+    r = run_analyzer([ll("type_punned.ll"), "--entry", "entry"])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {"punned_target", "exact_decoy"} <= names
+
+
+def test_exact_indirect_control_stays_narrower_than_indirect_any(run_analyzer):
+    exact = run_analyzer([ll("type_punned.ll"), "--entry", "control"])
+    maximal = run_analyzer([
+        ll("type_punned.ll"), "--entry", "control", "--indirect-any",
+    ])
+    assert exact.returncode == 0, exact.stderr
+    assert maximal.returncode == 0, maximal.stderr
+    exact_names = {f["mangled"] for f in json.loads(exact.stdout)["reachable"]}
+    maximal_names = {f["mangled"] for f in json.loads(maximal.stdout)["reachable"]}
+    assert "punned_target" not in exact_names
+    assert "punned_target" in maximal_names
+
+
+@pytest.mark.parametrize("extra", [[], ["--indirect-any"]])
+def test_indirect_external_declaration_is_reported(run_analyzer, extra):
+    r = run_analyzer([ll("indirect_external.ll"), "--entry", "entry", *extra])
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    assert report["external_declarations"] == ["external_callback"]
+    assert report["summary"]["external_declarations"] == 1
+    assert report["summary"]["defined"] == 1
+
+
+def test_confidence_evidence_is_entry_relative(run_analyzer):
+    base = run_analyzer([ll("entry_confidence.ll"), "--entry", "entry"])
+    assert base.returncode == 0, base.stderr
+    confidence = {
+        f["mangled"]: f["confidence"] for f in json.loads(base.stdout)["reachable"]
+    }
+    assert confidence["decoy"] == "low"
+    reached = run_analyzer([
+        ll("entry_confidence.ll"), "--entry", "entry",
+        "--entry", "reached_escape",
+    ])
+    assert reached.returncode == 0, reached.stderr
+    confidence = {
+        f["mangled"]: f["confidence"] for f in json.loads(reached.stdout)["reachable"]
+    }
+    assert confidence["decoy"] == "medium"
+
+
+def test_operand_bundle_callback_is_reachable(run_analyzer, tmp_path):
+    ignored = tmp_path / "ignored.txt"
+    r = run_analyzer([
+        ll("operand_bundle.ll"), "--entry", "entry",
+        "--not-reached-out", str(ignored),
+    ])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert "callback" in names
+    assert "fun:callback" not in ignored.read_text()
+
+
+def test_defined_personality_is_a_reachable_edge(run_analyzer, tmp_path):
+    ignored = tmp_path / "ignored.txt"
+    r = run_analyzer([
+        ll("personality.ll"), "--entry", "entry",
+        "--not-reached-out", str(ignored),
+    ])
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    assert "defined_personality" in {f["mangled"] for f in report["reachable"]}
+    assert {"from": "entry", "to": "defined_personality", "kind": "direct"} in report["edges"]
+    assert "fun:defined_personality" not in ignored.read_text()
+
+
+def test_invalid_utf8_symbol_is_sanitized(run_analyzer):
+    r = run_analyzer([ll("invalid_utf8.ll"), "--entry", "entry"])
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    assert "bad\ufffd" in {f["mangled"] for f in report["reachable"]}
+
+
+def test_large_call_graph_output_is_deterministic(analyzer, tmp_path):
+    path = tmp_path / "large.ll"
+    functions = []
+    for index in range(1500):
+        body = f"  call void @f{index + 1}()\n" if index < 1499 else ""
+        functions.append(f"define void @f{index}() {{\n{body}  ret void\n}}\n")
+    path.write_text("\n".join(functions))
+    first = subprocess.run(
+        [analyzer, str(path), "--entry", "f0"], capture_output=True, text=True,
+    )
+    second = subprocess.run(
+        [analyzer, str(path), "--entry", "f0"], capture_output=True, text=True,
+    )
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert first.stdout == second.stdout
+    assert json.loads(first.stdout)["summary"]["reachable"] == 1500
 
 
 RUSTKEY = lambda: ll("rust_key.ll")

@@ -1,4 +1,5 @@
 import os
+import shutil
 import struct
 
 import pytest
@@ -29,6 +30,35 @@ def test_build_env_sets_wrappers(monkeypatch):
     assert env["CC"].endswith("gclang")
     assert env["CXX"].endswith("gclang++")
     assert env["LLVM_COMPILER_PATH"] == "/usr/lib/llvm-21/bin"
+
+
+def test_gllvm_env_pins_exact_tools(tmp_path):
+    paths = [
+        tmp_path / "opt" / "bin" / "clang-23",
+        tmp_path / "different" / "bin" / "clang++-23",
+        tmp_path / "link" / "bin" / "llvm-link-23",
+    ]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write(path, b"", executable=True)
+    tc = type("TC", (), {
+        "clang": str(paths[0]),
+        "clangxx": str(paths[1]),
+        "llvm_link": str(paths[2]),
+    })()
+
+    env = acquire_c._gllvm_env({}, tc, str(tmp_path / "tools"))
+    assert env["LLVM_COMPILER_PATH"] == str(tmp_path / "tools")
+    assert env["LLVM_CC_NAME"] == "clang"
+    assert env["LLVM_CXX_NAME"] == "clang++"
+    assert env["LLVM_LINK_NAME"] == "llvm-link"
+    assert env["PATH"].split(os.pathsep)[0] == str(tmp_path / "tools")
+    assert shutil.which("llvm-link", path=env["PATH"]) == str(
+        tmp_path / "tools" / "llvm-link"
+    )
+    assert os.readlink(tmp_path / "tools" / "clang") == tc.clang
+    assert os.readlink(tmp_path / "tools" / "clang++") == tc.clangxx
+    assert os.readlink(tmp_path / "tools" / "llvm-link") == tc.llvm_link
 
 
 def test_build_env_injects_no_inline_by_default(monkeypatch):
@@ -230,6 +260,15 @@ def test_plan_static_libs_auto_no_manifest_picks_nothing():
     assert chosen == []
 
 
+def test_archive_member_names_preserve_spaces(monkeypatch):
+    result = type("R", (), {
+        "returncode": 0, "stdout": b"member one.o\nplain.o\n",
+    })()
+    monkeypatch.setattr(acquire_c.shutil, "which", lambda name: "/usr/bin/ar")
+    monkeypatch.setattr(acquire_c.subprocess, "run", lambda *a, **k: result)
+    assert acquire_c._archive_members("archive.a") == {"member one.o", "plain.o"}
+
+
 def test_plan_static_libs_all_keeps_distinct_archives():
     manifest = ["/p/tools/.thumbnail.o.bc"]
     members = {
@@ -279,9 +318,11 @@ def test_include_static_libs_partial_failure_is_atomic(monkeypatch):
         acquire_c, "_extract_bc",
         lambda p, *a, **k: (not p.endswith("a.a"), "failed"),
     )
-    assert acquire_c._include_static_libs(
-        "/p", "/p/app", "exec", "/p/app.bc", "auto",
-    ) is None
+    with pytest.raises(acquire_c.AcquireError, match="refusing to publish") as exc:
+        acquire_c._include_static_libs(
+            "/p", "/p/app", "exec", "/p/app.bc", "auto",
+        )
+    assert "successful full extractions retained: b.a" in str(exc.value)
 
 
 def test_run_build_captures_when_not_verbose():
@@ -304,6 +345,25 @@ def test_run_build_tees_when_verbose(capsys):
     assert rc == 0
     assert "streamed" in out
     assert "streamed" in capsys.readouterr().out
+
+
+def test_build_spawn_failure_is_domain_error(monkeypatch):
+    def fail(*args, **kwargs):
+        raise FileNotFoundError("missing")
+
+    monkeypatch.setattr(acquire_c.subprocess, "Popen", fail)
+    with pytest.raises(acquire_c.AcquireError, match="cannot run build command"):
+        acquire_c._run_build(["missing-build"], ".", dict(os.environ), False)
+
+
+def test_get_bc_spawn_failure_is_reported(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        acquire_c.subprocess, "run",
+        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError("missing")),
+    )
+    ok, detail = acquire_c._extract_bc("artifact", str(tmp_path / "out.bc"))
+    assert ok is False
+    assert "cannot run get-bc" in detail
 
 
 class _TC:
@@ -339,3 +399,70 @@ def test_acquire_forwards_optimize_to_build_env(monkeypatch, tmp_path):
         acquire_c.acquire_c_bitcode(
             str(tmp_path), _TC(), build_cmd=["sh", "-c", "true"], optimize=True)
     assert seen["optimize"] is True
+
+
+def test_missing_explicit_artifact_never_discovers(monkeypatch, tmp_path):
+    monkeypatch.setattr(acquire_c.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(acquire_c, "_run_build", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(
+        acquire_c, "find_artifacts",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("discovery ran")),
+    )
+    with pytest.raises(acquire_c.AcquireError, match="explicit artifact does not exist"):
+        acquire_c.acquire_c_bitcode(
+            str(tmp_path), _TC(), artifact="typo", static_libs="none",
+            work_dir=str(tmp_path / "work"),
+        )
+
+
+def test_unsupported_explicit_artifact_never_discovers(monkeypatch, tmp_path):
+    unsupported = tmp_path / "artifact.txt"
+    unsupported.write_text("not an artifact")
+    monkeypatch.setattr(acquire_c.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(acquire_c, "_run_build", lambda *a, **k: (0, ""))
+    monkeypatch.setattr(
+        acquire_c, "find_artifacts",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("discovery ran")),
+    )
+    with pytest.raises(acquire_c.AcquireError, match=str(unsupported)):
+        acquire_c.acquire_c_bitcode(
+            str(tmp_path), _TC(), artifact=unsupported.name, static_libs="none",
+            work_dir=str(tmp_path / "work"),
+        )
+
+
+def test_omitted_artifact_uses_discovery(monkeypatch, tmp_path):
+    artifact = tmp_path / "program"
+    _write(str(artifact), _fake_elf(2), executable=True)
+    called = []
+    monkeypatch.setattr(acquire_c.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(acquire_c, "_run_build", lambda *a, **k: (0, ""))
+
+    def discover(*args, **kwargs):
+        called.append(True)
+        return [str(artifact)]
+
+    def extract(_artifact, out, **kwargs):
+        _write(out, b"bitcode")
+        return True, ""
+
+    monkeypatch.setattr(acquire_c, "find_artifacts", discover)
+    monkeypatch.setattr(acquire_c, "_extract_bc", extract)
+    result = acquire_c.acquire_c_bitcode(
+        str(tmp_path), _TC(), static_libs="none",
+        work_dir=str(tmp_path / "work"),
+    )
+    assert called == [True]
+    assert len(result) == 1
+
+
+def test_auto_discovery_rejects_equally_plausible_artifacts(monkeypatch, tmp_path):
+    for name in ("first", "second"):
+        _write(str(tmp_path / name), _fake_elf(2), executable=True)
+    monkeypatch.setattr(acquire_c.shutil, "which", lambda n: "/usr/bin/" + n)
+    monkeypatch.setattr(acquire_c, "_run_build", lambda *a, **k: (0, ""))
+    with pytest.raises(acquire_c.AcquireError, match="multiple equally plausible"):
+        acquire_c.acquire_c_bitcode(
+            str(tmp_path), _TC(), static_libs="none",
+            work_dir=str(tmp_path / "work"),
+        )

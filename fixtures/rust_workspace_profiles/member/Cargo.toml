@@ -1,0 +1,17 @@
+[package]
+name = "profile_member"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib"]
+
+[profile.dev]
+codegen-units = 99
+debug-assertions = true
+overflow-checks = true
+
+[profile.release]
+codegen-units = 99
+debug-assertions = false
+overflow-checks = false

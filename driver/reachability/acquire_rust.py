@@ -19,8 +19,8 @@ The .bc set is taken from the crates this build actually produced (parsed from
 cargo's --message-format=json artifact stream), not from a blind glob of
 target/<profile>/deps/*.bc. A glob also picks up stale .bc left by earlier builds
 -- cargo never deletes old artifacts -- and linking several .bc of the same crate
-fails with "symbol multiply defined". Restricting to this build's artifacts gives
-one .bc per crate while preserving genuinely distinct crate versions.
+fails with "symbol multiply defined". Restricting to this build's artifacts
+preserves every current codegen unit and genuinely distinct crate version.
 
 RUSTFLAGS is composed so the project's own flags survive: rustc's bitcode-emit
 flags are merged with the caller's RUSTFLAGS / CARGO_ENCODED_RUSTFLAGS, or with
@@ -38,7 +38,10 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import time
 import tomllib
+
+from .errors import build_looks_cached, decode, tail
 
 
 class AcquireError(RuntimeError):
@@ -47,14 +50,7 @@ class AcquireError(RuntimeError):
 
 _HASH_RE = re.compile(r"-([0-9a-f]{16})\.")
 _BASE_RE = re.compile(r"-[0-9a-f]{16}.*\.bc$")
-def _build_looks_cached(output):
-    """True when the build tool reported it (re)compiled nothing, so its
-    artifacts/bitcode reflect an earlier compile rather than this run."""
-    t = output or ""
-    if any(m in t for m in ("Nothing to be done", " is up to date",
-                            "ninja: no work to do", "Nothing to do")):
-        return True
-    return "Finished" in t and "Compiling " not in t
+_build_looks_cached = build_looks_cached
 
 
 def _emit_flags(codegen_units: int = 1):
@@ -83,55 +79,129 @@ def _read_config_rustflags(path):
 
 def _config_rustflags(project_dir):
     """The build.rustflags cargo would apply for a build in project_dir: the
-    closest .cargo/config(.toml) walking up to the filesystem root, else the one
-    in $CARGO_HOME / ~/.cargo. Empty list when none defines build.rustflags."""
+    hierarchical merge from $CARGO_HOME through ancestor .cargo/config files.
+    Empty list when none defines build.rustflags."""
+    directories = []
     d = os.path.abspath(project_dir)
     while True:
-        for name in ("config.toml", "config"):
-            rf = _read_config_rustflags(os.path.join(d, ".cargo", name))
-            if rf is not None:
-                return rf
+        directories.append(d)
         parent = os.path.dirname(d)
         if parent == d:
             break
         d = parent
     home = os.environ.get("CARGO_HOME") or os.path.join(os.path.expanduser("~"), ".cargo")
-    for name in ("config.toml", "config"):
-        rf = _read_config_rustflags(os.path.join(home, name))
-        if rf is not None:
-            return rf
-    return []
+    config_dirs = [home] + [
+        os.path.join(directory, ".cargo") for directory in reversed(directories)
+    ]
+    merged = []
+    seen = set()
+    for config_dir in config_dirs:
+        identity = os.path.realpath(config_dir)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        for name in ("config.toml", "config"):
+            rf = _read_config_rustflags(os.path.join(config_dir, name))
+            if rf is not None:
+                merged.extend(rf)
+                break
+    return merged
 
 
 _PROFILE_SECTION = {"debug": "dev", "release": "release"}
 _CARGO_DEFAULT_CGU = {"debug": 256, "release": 16}
 
 
-def _manifest_codegen_units(project_dir, profile):
-    """codegen-units for `profile` from the nearest Cargo.toml up from
-    project_dir that sets [profile.<name>] codegen-units (cargo honours the
-    workspace-root manifest's profiles, which is found on the way up), or None
-    when no manifest in the chain sets it."""
-    name = _PROFILE_SECTION.get(profile, profile)
-    d = os.path.abspath(project_dir)
+def _cargo_metadata(project_dir):
+    cmd = ["cargo", "metadata", "--no-deps", "--format-version", "1"]
+    try:
+        result = subprocess.run(cmd, cwd=project_dir, capture_output=True)
+    except OSError as exc:
+        raise AcquireError(f"cannot run cargo metadata: {exc}") from exc
+    if result.returncode != 0:
+        raise AcquireError(
+            f"cargo metadata failed (exit {result.returncode}):\n{tail(result.stderr)}"
+        )
+    try:
+        return json.loads(decode(result.stdout))
+    except json.JSONDecodeError as exc:
+        raise AcquireError(f"cargo metadata returned malformed JSON: {exc}") from exc
+
+
+def _profile_manifest(project_dir):
+    directory = os.path.realpath(project_dir)
+    fallback = None
+    workspace_fallback = None
+    current = directory
     while True:
+        candidate = os.path.join(current, "Cargo.toml")
+        if os.path.isfile(candidate):
+            if fallback is None:
+                fallback = candidate
+            try:
+                with open(candidate, "rb") as fh:
+                    config = tomllib.load(fh)
+            except (OSError, tomllib.TOMLDecodeError):
+                config = {}
+            if isinstance(config.get("workspace"), dict):
+                workspace_fallback = candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    if fallback is None:
+        return None
+    try:
+        metadata = _cargo_metadata(project_dir)
+    except AcquireError:
+        return workspace_fallback or fallback
+    workspace_root = os.path.realpath(metadata.get("workspace_root", ""))
+    members = set(metadata.get("workspace_members") or [])
+    candidates = []
+    for package in metadata.get("packages") or []:
+        manifest = os.path.realpath(package.get("manifest_path", ""))
+        package_dir = os.path.dirname(manifest)
         try:
-            with open(os.path.join(d, "Cargo.toml"), "rb") as fh:
-                cfg = tomllib.load(fh)
-        except (OSError, tomllib.TOMLDecodeError):
-            cfg = None
-        if cfg:
-            section = cfg.get("profile", {}).get(name) if isinstance(
-                cfg.get("profile"), dict) else None
-            if isinstance(section, dict) and "codegen-units" in section:
-                try:
-                    return int(section["codegen-units"])
-                except (TypeError, ValueError):
-                    return None
-        parent = os.path.dirname(d)
-        if parent == d:
-            return None
-        d = parent
+            inside = os.path.commonpath([directory, package_dir]) == package_dir
+        except ValueError:
+            inside = False
+        if inside:
+            candidates.append((len(package_dir), package, manifest))
+    if candidates:
+        _, package, manifest = max(candidates)
+        if package.get("id") in members and workspace_root:
+            return os.path.join(workspace_root, "Cargo.toml")
+        return manifest
+    manifest = os.path.join(directory, "Cargo.toml")
+    if workspace_root:
+        return os.path.join(workspace_root, "Cargo.toml")
+    return manifest
+
+
+def _profile_section(project_dir, profile):
+    name = _PROFILE_SECTION.get(profile, profile)
+    manifest = _profile_manifest(project_dir)
+    if manifest is None:
+        return {}
+    try:
+        with open(manifest, "rb") as fh:
+            cfg = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError) as exc:
+        raise AcquireError(f"cannot read Cargo profile configuration: {exc}") from exc
+    profiles = cfg.get("profile")
+    section = profiles.get(name) if isinstance(profiles, dict) else None
+    return section if isinstance(section, dict) else {}
+
+
+def _manifest_codegen_units(project_dir, profile):
+    """codegen-units for `profile` using Cargo workspace profile semantics."""
+    section = _profile_section(project_dir, profile)
+    if "codegen-units" not in section:
+        return None
+    try:
+        return int(section["codegen-units"])
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_codegen_units(project_dir, profile, codegen_units):
@@ -146,26 +216,9 @@ def _resolve_codegen_units(project_dir, profile, codegen_units):
 
 
 def _manifest_profile_bool(project_dir, profile, key):
-    """The bool at [profile.<name>].<key> from the nearest Cargo.toml up from
-    project_dir that sets it, or None when none in the chain does."""
-    name = _PROFILE_SECTION.get(profile, profile)
-    d = os.path.abspath(project_dir)
-    while True:
-        try:
-            with open(os.path.join(d, "Cargo.toml"), "rb") as fh:
-                cfg = tomllib.load(fh)
-        except (OSError, tomllib.TOMLDecodeError):
-            cfg = None
-        if cfg:
-            section = cfg.get("profile", {}).get(name) if isinstance(
-                cfg.get("profile"), dict) else None
-            if isinstance(section, dict) and key in section:
-                v = section[key]
-                return v if isinstance(v, bool) else None
-        parent = os.path.dirname(d)
-        if parent == d:
-            return None
-        d = parent
+    """The bool at [profile.<name>].<key> using Cargo workspace semantics."""
+    value = _profile_section(project_dir, profile).get(key)
+    return value if isinstance(value, bool) else None
 
 
 def _resolve_assertions(project_dir, profile):
@@ -175,10 +228,13 @@ def _resolve_assertions(project_dir, profile):
     these keeps the source-faithful -Copt-level=0 build -- which would otherwise
     derive debug-assertions=on from opt0 -- consistent with the real profile."""
     name = _PROFILE_SECTION.get(profile, profile)
-    da = _manifest_profile_bool(project_dir, profile, "debug-assertions")
+    section = _profile_section(project_dir, profile)
+    value = section.get("debug-assertions")
+    da = value if isinstance(value, bool) else None
     if da is None:
         da = name != "release"
-    oc = _manifest_profile_bool(project_dir, profile, "overflow-checks")
+    value = section.get("overflow-checks")
+    oc = value if isinstance(value, bool) else None
     if oc is None:
         oc = da
     return da, oc
@@ -248,9 +304,12 @@ def _compile_errors(text):
 
 
 def _rustc_host():
-    r = subprocess.run(["rustc", "-vV"], capture_output=True, text=True)
+    try:
+        r = subprocess.run(["rustc", "-vV"], capture_output=True)
+    except OSError as exc:
+        raise AcquireError(f"cannot run rustc -vV: {exc}") from exc
     if r.returncode == 0:
-        for line in r.stdout.splitlines():
+        for line in decode(r.stdout).splitlines():
             if line.startswith("host: "):
                 return line[6:].strip()
     raise AcquireError("cannot determine rustc host target from `rustc -vV`")
@@ -259,7 +318,7 @@ def _rustc_host():
 _NAMED_KINDS = ("bin", "cdylib", "staticlib", "dylib")
 
 
-def _named_bc_paths(msg, files):
+def _named_bc_paths(msg, files, newer_than=None):
     """The .bc files for a link-product artifact (bin/cdylib/staticlib/dylib),
     whose cargo message carries only the bare or uplifted output path
     (target/<profile>/<name>, no build hash) -- so the hash-based collection
@@ -276,8 +335,11 @@ def _named_bc_paths(msg, files):
         return []
     deps = os.path.join(os.path.dirname(files[0]), "deps")
     stem = name.replace("-", "_")
-    cands = [p for p in glob.glob(os.path.join(deps, f"{stem}-*.bc"))
-             if _BASE_RE.sub("", os.path.basename(p)) == stem]
+    cands = [
+        p for p in glob.glob(os.path.join(deps, f"{stem}-*.bc"))
+        if _BASE_RE.sub("", os.path.basename(p)) == stem
+        and (newer_than is None or os.path.getmtime(p) >= newer_than - 2)
+    ]
     if not cands:
         return []
     hashes = {mm.group(1) for p in cands
@@ -293,7 +355,7 @@ def _named_bc_paths(msg, files):
     return sorted(p for p in cands if f"-{m.group(1)}." in os.path.basename(p))
 
 
-def _build_bc_paths(stdout):
+def _build_bc_paths_lines(lines, newer_than=None):
     """The .bc files this build produced, from cargo's json compiler-artifact
     messages: a library (rlib) unit carries the build hash in its output
     filenames, and the matching deps/*-<hash>.bc lives beside them. A
@@ -302,8 +364,8 @@ def _build_bc_paths(stdout):
     .bc per built crate; stale .bc from other builds (different or absent hash)
     are not included."""
     bcs = set()
-    for line in stdout.splitlines():
-        line = line.strip()
+    for line in lines:
+        line = decode(line).strip()
         if not line.startswith("{"):
             continue
         try:
@@ -311,6 +373,11 @@ def _build_bc_paths(stdout):
         except json.JSONDecodeError:
             continue
         if msg.get("reason") != "compiler-artifact":
+            continue
+        target = msg.get("target") or {}
+        kinds = set(target.get("kind") or [])
+        name = target.get("name") or ""
+        if "custom-build" in kinds or "proc-macro" in kinds or name.startswith("build_script_"):
             continue
         files = list(msg.get("filenames") or [])
         if msg.get("executable"):
@@ -322,35 +389,59 @@ def _build_bc_paths(stdout):
                 bcs.update(glob.glob(os.path.join(os.path.dirname(f), f"*-{m.group(1)}*.bc")))
                 matched = True
         if not matched:
-            bcs.update(_named_bc_paths(msg, files))
+            bcs.update(_named_bc_paths(msg, files, newer_than=newer_than))
+    if newer_than is not None:
+        bcs = {path for path in bcs if os.path.getmtime(path) >= newer_than - 2}
     return sorted(bcs)
 
 
-def _dedup_newest_per_crate(paths):
-    """The newest build's .bc for each crate, keeping every codegen unit of that
-    build. Fallback when no artifact stream is available: a glob of deps/*.bc can
-    mix several builds (cargo never deletes old artifacts) and, at codegen-units >
-    1, several .bc per build. Group by crate (filename with the trailing -<hash>...
-    stripped), take the most recently modified file in each group as this build,
-    and keep all of that group's files sharing its build hash."""
-    groups = {}
+def _build_bc_paths(stdout, newer_than=None):
+    return _build_bc_paths_lines(decode(stdout).splitlines(), newer_than=newer_than)
+
+
+def _file_tail(stream, limit=1024 * 1024):
+    stream.seek(0, os.SEEK_END)
+    size = stream.tell()
+    stream.seek(max(0, size - limit))
+    return decode(stream.read())
+
+
+def _dedup_newest_per_crate(paths, newer_than=None):
+    """Keep every unique invocation-fresh fallback bitcode path."""
+    kept = []
+    seen = set()
     for p in paths:
-        base = _BASE_RE.sub("", os.path.basename(p))
         try:
             mtime = os.path.getmtime(p)
         except OSError:
             continue
-        groups.setdefault(base, []).append((mtime, p))
-    kept = []
-    for items in groups.values():
-        _, newest = max(items)
-        m = _HASH_RE.search(os.path.basename(newest))
-        if not m:
-            kept.append(newest)
+        if newer_than is not None and mtime < newer_than - 2:
             continue
-        tag = f"-{m.group(1)}."
-        kept.extend(p for _, p in items if tag in os.path.basename(p))
+        identity = os.path.realpath(p)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        kept.append(p)
     return sorted(kept)
+
+
+def _target_dir(project_dir):
+    configured = os.environ.get("CARGO_TARGET_DIR")
+    if not configured:
+        return os.path.join(project_dir, "target")
+    if os.path.isabs(configured):
+        return configured
+    return os.path.abspath(os.path.join(project_dir, configured))
+
+
+def _validate_bitcode_paths(paths):
+    for path in paths:
+        try:
+            with open(path, "rb") as fh:
+                fh.read(1)
+        except OSError as exc:
+            raise AcquireError(f"cannot read Rust bitcode {path}: {exc}") from exc
+    return paths
 
 
 def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
@@ -389,38 +480,63 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     if verbose:
         print(f"  profile={profile}, codegen-units={codegen_units}")
         print("  " + " ".join(cmd))
-    r = subprocess.run(cmd, cwd=project_dir, env=env, capture_output=True, text=True)
-    if verbose and r.stderr.strip():
-        print(r.stderr.strip())
+    started = time.time()
+    try:
+        with tempfile.TemporaryFile() as stdout_log, tempfile.TemporaryFile() as stderr_log:
+            r = subprocess.run(
+                cmd, cwd=project_dir, env=env, stdout=stdout_log, stderr=stderr_log,
+            )
+            mocked_stdout = getattr(r, "stdout", None)
+            mocked_stderr = getattr(r, "stderr", None)
+            if mocked_stdout:
+                stdout_log.write(
+                    mocked_stdout if isinstance(mocked_stdout, bytes)
+                    else str(mocked_stdout).encode()
+                )
+            if mocked_stderr:
+                stderr_log.write(
+                    mocked_stderr if isinstance(mocked_stderr, bytes)
+                    else str(mocked_stderr).encode()
+                )
+            stdout_log.seek(0)
+            bcs = _build_bc_paths_lines(stdout_log, newer_than=started)
+            stdout = _file_tail(stdout_log)
+            stderr = _file_tail(stderr_log)
+    except OSError as exc:
+        raise AcquireError(f"cannot run cargo build: {exc}") from exc
+    if verbose and stderr.strip():
+        print(stderr.strip())
 
-    errs = _compile_errors(r.stderr)
+    errs = _compile_errors(stderr)
     if errs:
         raise AcquireError(
             "cargo failed to compile a crate, so the bitcode set would be "
             "incomplete -- fix the build first:\n  " + "\n  ".join(errs[:20]))
-    if r.returncode != 0 and "error: linking with " not in r.stderr:
-        tail = (r.stderr.strip() or r.stdout.strip())[-2000:]
-        raise AcquireError(f"cargo build failed (exit {r.returncode}):\n  {tail}")
+    if r.returncode != 0 and "error: linking with " not in stderr:
+        detail = tail(stderr or stdout, 2000)
+        raise AcquireError(f"cargo build failed (exit {r.returncode}):\n  {detail}")
 
-    if _build_looks_cached(r.stderr):
+    if _build_looks_cached(stderr):
         print("warning: cargo recompiled nothing -- this build is CACHED, so the "
               "bitcode is from an earlier compile and may be stale. Run "
               "`cargo clean` and re-run for a fresh build.")
 
-    bcs = _build_bc_paths(r.stdout)
     if not bcs and r.returncode == 0:
-        patterns = [os.path.join(project_dir, "target", profile, "deps", "*.bc")]
+        target_dir = _target_dir(project_dir)
+        patterns = [os.path.join(target_dir, profile, "deps", "*.bc")]
         if build_std:
-            patterns.append(os.path.join(project_dir, "target", "*", profile, "deps", "*.bc"))
+            patterns.append(os.path.join(target_dir, "*", profile, "deps", "*.bc"))
         globbed = []
         for pat in patterns:
             globbed.extend(glob.glob(pat))
-        bcs = _dedup_newest_per_crate(globbed)
+        bcs = _dedup_newest_per_crate(globbed, newer_than=started)
         if bcs:
-            print(f"warning: cargo emitted no artifact stream; "
-                  f"deduplicated {len(globbed)} .bc in deps/ to {len(bcs)} (one per crate)")
+            print(f"warning: fallback bitcode collection: cargo emitted no artifact "
+                  f"stream; selected {len(bcs)} of {len(globbed)} invocation-fresh "
+                  ".bc files")
     if not bcs:
-        raise AcquireError(f"no .bc produced under {project_dir}/target/{profile}/deps/")
+        raise AcquireError(f"no invocation-fresh .bc produced under {_target_dir(project_dir)}")
+    _validate_bitcode_paths(bcs)
     print(f"rust bitcode: {len(bcs)} crate modules")
     return bcs
 
@@ -486,9 +602,12 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
     collect = tempfile.mkdtemp(prefix="reach-bc-")
     atexit.register(shutil.rmtree, collect, ignore_errors=True)
     wrapper = os.path.join(collect, ".rustc-bc-wrapper.sh")
-    with open(wrapper, "w") as fh:
-        fh.write(_BC_WRAPPER)
-    os.chmod(wrapper, 0o755)
+    try:
+        with open(wrapper, "w") as fh:
+            fh.write(_BC_WRAPPER)
+        os.chmod(wrapper, 0o755)
+    except OSError as exc:
+        raise AcquireError(f"cannot create rustc bitcode wrapper: {exc}") from exc
 
     extra = [] if optimize else ["-Copt-level=0"]
     if mangling != "auto":
@@ -503,24 +622,30 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
     argv = ["sh", "-c", build_cmd] if shell else list(build_cmd)
     if verbose:
         print("  native build: " + (build_cmd if shell else " ".join(argv)))
-    r = subprocess.run(argv, cwd=project_dir, env=env, capture_output=True, text=True)
-    if verbose and r.stderr.strip():
-        print(r.stderr.strip())
+    try:
+        r = subprocess.run(argv, cwd=project_dir, env=env, capture_output=True)
+    except OSError as exc:
+        raise AcquireError(f"cannot run native Rust build: {exc}") from exc
+    stdout = decode(r.stdout)
+    stderr = decode(r.stderr)
+    if verbose and stderr.strip():
+        print(stderr.strip())
     if r.returncode != 0:
-        tail = (r.stderr.strip() or r.stdout.strip())[-2000:]
+        detail = tail(stderr or stdout, 2000)
         hint = ""
-        if "plugin" in tail.lower():
+        if "plugin" in detail.lower():
             hint = ("\n  AFL++ LLVM plugins are required (AFLRS_REQUIRE_PLUGINS=1); "
                     "build them with `cargo afl config --build --plugins --force`.")
-        raise AcquireError("the fuzzer build failed; fix it first:\n  " + tail + hint)
+        raise AcquireError("the fuzzer build failed; fix it first:\n  " + detail + hint)
 
     bcs = sorted(glob.glob(os.path.join(collect, "*.bc")))
     if not bcs:
         why = ("the build was CACHED (the tool recompiled nothing), so rustc "
-               "never ran" if _build_looks_cached(r.stderr + "\n" + r.stdout)
+               "never ran" if _build_looks_cached(stderr + "\n" + stdout)
                else "no bitcode was captured")
         raise AcquireError(
             why + ". Clean it first (e.g. `cargo clean`, or for cargo-fuzz remove "
             "fuzz/target) and re-run so every crate compiles under the wrapper.")
+    _validate_bitcode_paths(bcs)
     print(f"rust bitcode (native build): {len(bcs)} crate modules")
     return bcs

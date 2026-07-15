@@ -1,4 +1,57 @@
 ### v1.1-dev
+- Analyzer soundness: callback value-flow now follows every indexed store into
+  globals, aggregates, stack objects, loads, and heap-returned objects; alias and
+  pointer-cast chains use one cycle-safe callable resolver; callback-like operand
+  bundles and defined personality functions contribute call-graph edges.
+- Indirect resolution keeps exact function types as its precise path but unions
+  address-flow-proven type-punned targets and conservatively widens unresolved
+  cast provenance. Address-taken declarations use the same policy and appear as
+  reached opaque leaves in `external_declarations` without changing defined-body
+  metrics.
+- New default-off `--include-process-lifecycle-roots` option adds constructors,
+  destructors, ifunc resolvers, and a defined `LLVMFuzzerInitialize` as roots.
+  Selected roots appear in `entries`; malformed records and unresolved explicit
+  entries are always visible as warnings.
+- Confidence evidence is now entry-relative. Unreachable code can no longer
+  raise an indirectly reached decoy from `low` to `medium` confidence.
+- Analyzer robustness: invalid-UTF-8 symbols are replaced safely in JSON/DOT,
+  the LLVM debug-info option lookup is type-checked, and deterministic DOT output
+  contains the same reachable defined-function subgraph as JSON edges.
+- Output destinations are file-only, collision-checked through symlinks, and
+  validated before cleanup. JSON, lists, and optional DOT are staged beside
+  their destinations and published transactionally; failed or concurrent runs
+  cannot expose mixed output sets or share extraction/link intermediates.
+- `--clean` no longer recursively deletes project-wide `*.o`, `*.bc`, or
+  manifests. It removes selected output files and C/C++ artifacts recorded in
+  `.reachability-cache/owned-c-artifacts.json`, while retaining unrelated files.
+- An explicit `--artifact` is now a strict contract: missing, unsupported, or
+  unextractable paths fail rather than triggering discovery. Automatic discovery
+  has no first-eight limit and rejects equally plausible candidates with a
+  ranked list.
+- Static archive expansion fails closed if any requested archive cannot be
+  listed or fully extracted. Successful expansion work is retained for
+  diagnostics, member names containing spaces are parsed correctly, and no
+  complete-looking partial report is published.
+- gllvm builds and every `get-bc` invocation now use per-run stable symlinks to
+  the exact checked `clang`, `clang++`, and `llvm-link`; `check-toolchain` reports
+  those effective tools.
+- Rust acquisition uses Cargo metadata for workspace-root profile semantics,
+  hierarchically merges Cargo configuration, honors `CARGO_TARGET_DIR`, filters
+  host-only artifacts consistently, and restricts fallback collection to the
+  current invocation. Multiple live versions and every codegen unit of the same
+  crate are preserved instead of collapsing by crate name.
+- Expected subprocess, decoding, JSON, and I/O failures now become concise
+  stage-specific CLI errors without tracebacks. Analyzer warnings are forwarded
+  on every run, while clean runs stay quiet.
+- Large bitcode sets are linked in bounded batches, Cargo artifact output and
+  non-verbose C/C++ build logs are spooled, and the analyzer writes staged JSON
+  directly to its final parser input rather than round-tripping a second copy.
+- Hosted CI covers LLVM 21, 22, and 23 plus full C/Rust CLI paths and reproducible
+  cppcheck/Clang Static Analyzer gates. Matrix discovery follows `PATH` and fails
+  without a supported LLVM unless an explicit local skip is requested.
+- Development setup pins gllvm 1.3.1, pytest 9.1.1, and setuptools 80.9.0;
+  `make compdb` generates a clangd compilation database and
+  `make static-analysis` reproduces the analyzer checks.
 - New `--mangling {auto,legacy,v0}` flag (default `auto`) on `reachability run`,
   for every Rust `--lang` value: forces the analysis build's rustc
   `-Csymbol-mangling-version` so its Rust symbols match whatever build you join
@@ -73,9 +126,6 @@
 - The toolchain check no longer requires `opt` on `PATH`: it was only
   version-probed as a redundant proxy, so `clang`/`clang++`/`llvm-link` (the
   actual bitcode producer/merger) now define coherence.
-- Rust acquisition warns when `deps/` holds bitcode from more than one build of a
-  crate (the newest is chosen by mtime, which can be stale if that crate was
-  cached); re-run with `--clean` for a fresh build.
 - C/C++ artifact detection now recognizes fat/universal Mach-O binaries.
 
 ### v1.0

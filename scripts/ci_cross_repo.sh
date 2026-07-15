@@ -11,9 +11,11 @@ cov="${COV_ANALYSIS_DIR:-$root/../cov-analysis}"
 
 PATH="$(go env GOPATH 2>/dev/null)/bin:$PATH" make -C "$root" test
 
-if [ -d "$cov" ]; then
+if [ "${SKIP_CROSS_REPO:-0}" = 1 ]; then
+  echo "SKIP cross-repo: explicitly disabled with SKIP_CROSS_REPO=1"
+elif [ -d "$cov" ]; then
   PATH=/usr/bin:$PATH bash "$cov/tests/run.sh"
 else
-  echo "SKIP cross-repo: cov-analysis not found at $cov (set COV_ANALYSIS_DIR)"
-  exit 0
+  echo "error: cov-analysis not found at $cov (set COV_ANALYSIS_DIR or SKIP_CROSS_REPO=1)" >&2
+  exit 1
 fi
