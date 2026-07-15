@@ -697,7 +697,10 @@ def test_run_rust_end_to_end(analyzer, tmp_path, monkeypatch):
         "run", "--project", str(work), "--lang", "rust", "--out", str(out),
     ]) == 0
     names = {f["demangled"] for f in json.load(open(out))["reachable"]}
-    assert "main" in names and any("::main::h" in name for name in names)
+    assert "main" in names and any(
+        name == "rust_main::main" or name.startswith("rust_main::main::h")
+        for name in names
+    )
 
 
 @pytest.mark.skipif(

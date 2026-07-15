@@ -59,8 +59,14 @@ void buildEscapeEdges(llvm::Module &m, CallGraph &g, const EscapeIndex &idx);
 // match. Used only to annotate reachability *confidence*; it never prunes the
 // (sound) reachable set. A function reached purely by type matching but absent
 // here is a low-confidence (likely-spurious) indirect target.
-llvm::DenseSet<llvm::Function *> computeValueFlowTargets(llvm::Value *root,
-                                                         const EscapeIndex &idx);
+struct ValueFlowResult {
+  llvm::DenseSet<llvm::Function *> targets;
+  bool hasCast = false;
+  bool unresolved = false;
+};
+
+ValueFlowResult computeValueFlowTargets(llvm::Value *root,
+                                        const EscapeIndex &idx);
 llvm::DenseSet<llvm::Function *> computeAddressFlowTargets(
     llvm::Module &m, const EscapeIndex &idx, const ReachResult &res);
 

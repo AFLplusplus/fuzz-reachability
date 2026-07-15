@@ -449,6 +449,34 @@ def test_exact_indirect_control_stays_narrower_than_indirect_any(run_analyzer):
     assert "punned_target" in maximal_names
 
 
+def test_partial_integer_laundering_falls_back_conservatively(run_analyzer):
+    r = run_analyzer([
+        ll("type_punned.ll"), "--entry", "partially_laundered",
+    ])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {"punned_target", "hidden_target"} <= names
+
+
+def test_resolved_integer_roundtrip_does_not_force_maximal_fallback(run_analyzer):
+    r = run_analyzer([
+        ll("type_punned.ll"), "--entry", "resolved_integer_roundtrip",
+    ])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {"punned_target", "punned_other"} <= names
+    assert "hidden_target" not in names
+
+
+def test_stored_integer_laundering_falls_back_conservatively(run_analyzer):
+    r = run_analyzer([
+        ll("type_punned.ll"), "--entry", "stored_integer_laundering",
+    ])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert "hidden_target" in names
+
+
 @pytest.mark.parametrize("extra", [[], ["--indirect-any"]])
 def test_indirect_external_declaration_is_reported(run_analyzer, extra):
     r = run_analyzer([ll("indirect_external.ll"), "--entry", "entry", *extra])

@@ -97,6 +97,7 @@ def _acquire(args, tc, verbose=False, work_dir=None):
                 acquire_rust.acquire_rust_bitcode_native(
                     args.project, cmd, shell=shell, verbose=verbose,
                     optimize=args.optimize, mangling=args.mangling,
+                    work_dir=work_dir,
                 )
             )
             if not args.optimize:
@@ -207,7 +208,7 @@ def _cargo_clean(directory, verbose=False):
     """Drop a Cargo target dir so the next build recompiles every crate and
     re-emits bitcode: run `cargo clean` when a manifest is present, else (or on
     failure) remove `target/` directly."""
-    target = os.path.join(directory, "target")
+    target = acquire_rust._target_dir(directory)
     ran = False
     if shutil.which("cargo") and os.path.exists(os.path.join(directory, "Cargo.toml")):
         if verbose:

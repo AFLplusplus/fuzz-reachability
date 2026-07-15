@@ -97,6 +97,13 @@ static Value *stripEscape(Value *v) {
   return v ? v->stripPointerCasts() : nullptr;
 }
 
+static bool isEscapeCast(Value *v) {
+  if (isa<CastInst>(v))
+    return true;
+  auto *expr = dyn_cast_or_null<ConstantExpr>(v);
+  return expr && expr->isCast();
+}
+
 static void appendStoredValues(Value *value, const EscapeIndex &idx,
                                SmallVectorImpl<Value *> &out) {
   if (!value)
@@ -152,21 +159,47 @@ static void escapeSuccessors(Value *v, const EscapeIndex &idx,
       out.push_back(u.get());
     return;
   }
-  if (isa<PHINode>(v) || isa<SelectInst>(v) || isa<FreezeInst>(v) ||
-      isa<CastInst>(v) || isa<GetElementPtrInst>(v) ||
-      isa<ExtractValueInst>(v) || isa<InsertValueInst>(v) ||
-      isa<AllocaInst>(v)) {
-    if (auto *user = dyn_cast<User>(v))
-      for (Use &u : user->operands())
-        out.push_back(u.get());
+  if (auto *phi = dyn_cast<PHINode>(v)) {
+    for (Value *incoming : phi->incoming_values())
+      out.push_back(incoming);
     return;
   }
+  if (auto *select = dyn_cast<SelectInst>(v)) {
+    out.push_back(select->getTrueValue());
+    out.push_back(select->getFalseValue());
+    return;
+  }
+  if (auto *freeze = dyn_cast<FreezeInst>(v)) {
+    out.push_back(freeze->getOperand(0));
+    return;
+  }
+  if (auto *cast = dyn_cast<CastInst>(v)) {
+    out.push_back(cast->getOperand(0));
+    return;
+  }
+  if (auto *gep = dyn_cast<GetElementPtrInst>(v)) {
+    out.push_back(gep->getPointerOperand());
+    return;
+  }
+  if (auto *extract = dyn_cast<ExtractValueInst>(v)) {
+    out.push_back(extract->getAggregateOperand());
+    return;
+  }
+  if (auto *insert = dyn_cast<InsertValueInst>(v)) {
+    out.push_back(insert->getAggregateOperand());
+    out.push_back(insert->getInsertedValueOperand());
+    return;
+  }
+  if (isa<AllocaInst>(v))
+    return;
 }
 
 static void computeEscapeSets(const std::vector<Value *> &roots,
                               const EscapeIndex &idx,
                               DenseMap<Value *, unsigned> &sccOf,
-                              std::vector<SmallVector<Function *, 4>> &sccSinks) {
+                              std::vector<SmallVector<Function *, 4>> &sccSinks,
+                              std::vector<bool> *sccUnresolved = nullptr,
+                              std::vector<bool> *sccCasts = nullptr) {
   struct Frame {
     Value *v;
     SmallVector<Value *, 8> succ;
@@ -225,23 +258,42 @@ static void computeEscapeSets(const std::vector<Value *> &roots,
         for (Value *w : members)
           sccOf[w] = id;
         DenseSet<Function *> funcs;
+        bool unresolved = false;
+        bool hasCast = false;
         SmallVector<Value *, 8> succ;
         for (Value *w : members) {
           if (auto *f = dyn_cast<Function>(w))
             funcs.insert(f);
+          if (sccCasts && isEscapeCast(w))
+            hasCast = true;
           succ.clear();
           escapeSuccessors(w, idx, succ);
+          if (sccUnresolved && succ.empty() && !isa<Function>(w) &&
+              !(isa<Constant>(w) && !isa<GlobalValue>(w)) &&
+              !isa<AllocaInst>(w))
+            unresolved = true;
           for (Value *s : succ) {
+            if (sccCasts && isEscapeCast(s))
+              hasCast = true;
             s = stripEscape(s);
             if (!s)
               continue;
             auto si = sccOf.find(s);
-            if (si != sccOf.end() && si->second != id)
+            if (si != sccOf.end() && si->second != id) {
               for (Function *f : sccSinks[si->second])
                 funcs.insert(f);
+              if (sccUnresolved && (*sccUnresolved)[si->second])
+                unresolved = true;
+              if (sccCasts && (*sccCasts)[si->second])
+                hasCast = true;
+            }
           }
         }
         sccSinks.emplace_back(funcs.begin(), funcs.end());
+        if (sccUnresolved)
+          sccUnresolved->push_back(unresolved);
+        if (sccCasts)
+          sccCasts->push_back(hasCast);
       }
       unsigned vlow = low[v];
       stack.pop_back();
@@ -313,17 +365,22 @@ void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
   }
 }
 
-DenseSet<Function *> computeValueFlowTargets(Value *root, const EscapeIndex &idx) {
+ValueFlowResult computeValueFlowTargets(Value *root, const EscapeIndex &idx) {
   std::vector<Value *> roots = {root};
   DenseMap<Value *, unsigned> sccOf;
   std::vector<SmallVector<Function *, 4>> sccSinks;
-  computeEscapeSets(roots, idx, sccOf, sccSinks);
-  DenseSet<Function *> out;
+  std::vector<bool> sccUnresolved;
+  std::vector<bool> sccCasts;
+  computeEscapeSets(roots, idx, sccOf, sccSinks, &sccUnresolved, &sccCasts);
+  ValueFlowResult out;
   Value *value = stripEscape(root);
   auto it = sccOf.find(value);
-  if (it != sccOf.end())
+  if (it != sccOf.end()) {
     for (Function *f : sccSinks[it->second])
-      out.insert(f);
+      out.targets.insert(f);
+    out.hasCast = isEscapeCast(root) || sccCasts[it->second];
+    out.unresolved = sccUnresolved[it->second];
+  }
   return out;
 }
 

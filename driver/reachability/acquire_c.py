@@ -408,8 +408,16 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode,
     manifest = []
     if kind in ("exec", "shared"):
         manifest = _manifest_objects(primary_bc + ".llvm.manifest")
+        if not manifest:
+            raise AcquireError(
+                f"empty target manifest for {os.path.relpath(art, project_dir)}; "
+                "cannot complete static-library expansion"
+            )
 
     members = {a: _archive_members(a) for a in archives}
+    for archive, names in sorted(members.items()):
+        if not names:
+            print(f"static library (genuinely empty): {os.path.relpath(archive, project_dir)}")
     chosen = _plan_static_libs(manifest, members, mode)
     if not chosen:
         return None
@@ -448,11 +456,6 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode,
         return None
 
     if kind in ("exec", "shared"):
-        if not manifest:
-            raise AcquireError(
-                f"empty target manifest for {os.path.relpath(art, project_dir)}; "
-                "cannot complete static-library expansion"
-            )
         primary_objects = {os.path.realpath(p) for p in manifest}
         if mode == "auto":
             extracted = [
@@ -610,6 +613,11 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
             break
         errors.append(f"{os.path.relpath(cand, project_dir)}: {err}")
     if primary is None:
+        if explicit:
+            raise _no_bitcode(
+                f"get-bc could not extract bitcode from explicit artifact {explicit}:\n  "
+                + "\n  ".join(errors)
+            )
         raise _no_bitcode(
             "get-bc could not extract bitcode from any detected artifact:\n  "
             + "\n  ".join(errors))

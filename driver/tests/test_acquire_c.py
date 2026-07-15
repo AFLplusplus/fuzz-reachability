@@ -325,6 +325,25 @@ def test_include_static_libs_partial_failure_is_atomic(monkeypatch):
     assert "successful full extractions retained: b.a" in str(exc.value)
 
 
+def test_include_static_libs_distinguishes_empty_target_manifest(monkeypatch):
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: ["/p/lib.a"])
+    monkeypatch.setattr(acquire_c, "_manifest_objects", lambda p: [])
+    with pytest.raises(acquire_c.AcquireError, match="empty target manifest"):
+        acquire_c._include_static_libs(
+            "/p", "/p/app", "exec", "/p/app.bc", "auto",
+        )
+
+
+def test_include_static_libs_reports_genuinely_empty_archive(monkeypatch, capsys):
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: ["/p/empty.a"])
+    monkeypatch.setattr(acquire_c, "_archive_members", lambda p: set())
+    result = acquire_c._include_static_libs(
+        "/p", "/p/app", "archive", "/p/app.bc", "all",
+    )
+    assert result is None
+    assert "static library (genuinely empty): empty.a" in capsys.readouterr().out
+
+
 def test_run_build_captures_when_not_verbose():
     rc, out = acquire_c._run_build(
         ["sh", "-c", "echo hello; echo oops >&2"], ".", dict(os.environ), False)

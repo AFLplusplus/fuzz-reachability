@@ -37,6 +37,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import tomllib
@@ -389,9 +390,8 @@ def _build_bc_paths_lines(lines, newer_than=None):
                 bcs.update(glob.glob(os.path.join(os.path.dirname(f), f"*-{m.group(1)}*.bc")))
                 matched = True
         if not matched:
-            bcs.update(_named_bc_paths(msg, files, newer_than=newer_than))
-    if newer_than is not None:
-        bcs = {path for path in bcs if os.path.getmtime(path) >= newer_than - 2}
+            cutoff = None if msg.get("fresh") else newer_than
+            bcs.update(_named_bc_paths(msg, files, newer_than=cutoff))
     return sorted(bcs)
 
 
@@ -404,6 +404,51 @@ def _file_tail(stream, limit=1024 * 1024):
     size = stream.tell()
     stream.seek(max(0, size - limit))
     return decode(stream.read())
+
+
+def _scan_cargo_stderr(stream, verbose=False):
+    stream.seek(0)
+    compile_errors = []
+    saw_compiling = False
+    saw_finished = False
+    cached_marker = False
+    for raw in stream:
+        line = decode(raw)
+        if verbose:
+            sys.stderr.write(line)
+        compile_errors.extend(_compile_errors(line))
+        saw_compiling = saw_compiling or "Compiling " in line
+        saw_finished = saw_finished or "Finished" in line
+        cached_marker = cached_marker or any(marker in line for marker in (
+            "Nothing to be done", " is up to date", "ninja: no work to do",
+            "Nothing to do",
+        ))
+    return compile_errors, cached_marker or (saw_finished and not saw_compiling)
+
+
+def _snapshot_bitcode(patterns):
+    snapshot = {}
+    for pattern in patterns:
+        for path in glob.glob(pattern):
+            try:
+                stat = os.stat(path)
+            except OSError:
+                continue
+            snapshot[os.path.realpath(path)] = (stat.st_mtime_ns, stat.st_size)
+    return snapshot
+
+
+def _changed_bitcode(paths, before):
+    changed = []
+    for path in paths:
+        try:
+            stat = os.stat(path)
+        except OSError:
+            continue
+        state = (stat.st_mtime_ns, stat.st_size)
+        if before.get(os.path.realpath(path)) != state:
+            changed.append(path)
+    return changed
 
 
 def _dedup_newest_per_crate(paths, newer_than=None):
@@ -480,6 +525,11 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     if verbose:
         print(f"  profile={profile}, codegen-units={codegen_units}")
         print("  " + " ".join(cmd))
+    target_dir = _target_dir(project_dir)
+    patterns = [os.path.join(target_dir, profile, "deps", "*.bc")]
+    if build_std:
+        patterns.append(os.path.join(target_dir, "*", profile, "deps", "*.bc"))
+    before_bitcode = _snapshot_bitcode(patterns)
     started = time.time()
     try:
         with tempfile.TemporaryFile() as stdout_log, tempfile.TemporaryFile() as stderr_log:
@@ -498,16 +548,13 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
                     mocked_stderr if isinstance(mocked_stderr, bytes)
                     else str(mocked_stderr).encode()
                 )
+            stderr = _file_tail(stderr_log)
+            errs, cached = _scan_cargo_stderr(stderr_log, verbose=verbose)
             stdout_log.seek(0)
             bcs = _build_bc_paths_lines(stdout_log, newer_than=started)
             stdout = _file_tail(stdout_log)
-            stderr = _file_tail(stderr_log)
     except OSError as exc:
         raise AcquireError(f"cannot run cargo build: {exc}") from exc
-    if verbose and stderr.strip():
-        print(stderr.strip())
-
-    errs = _compile_errors(stderr)
     if errs:
         raise AcquireError(
             "cargo failed to compile a crate, so the bitcode set would be "
@@ -516,20 +563,16 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
         detail = tail(stderr or stdout, 2000)
         raise AcquireError(f"cargo build failed (exit {r.returncode}):\n  {detail}")
 
-    if _build_looks_cached(stderr):
+    if cached:
         print("warning: cargo recompiled nothing -- this build is CACHED, so the "
               "bitcode is from an earlier compile and may be stale. Run "
               "`cargo clean` and re-run for a fresh build.")
 
     if not bcs and r.returncode == 0:
-        target_dir = _target_dir(project_dir)
-        patterns = [os.path.join(target_dir, profile, "deps", "*.bc")]
-        if build_std:
-            patterns.append(os.path.join(target_dir, "*", profile, "deps", "*.bc"))
         globbed = []
         for pat in patterns:
             globbed.extend(glob.glob(pat))
-        bcs = _dedup_newest_per_crate(globbed, newer_than=started)
+        bcs = _dedup_newest_per_crate(_changed_bitcode(globbed, before_bitcode))
         if bcs:
             print(f"warning: fallback bitcode collection: cargo emitted no artifact "
                   f"stream; selected {len(bcs)} of {len(globbed)} invocation-fresh "
@@ -544,38 +587,46 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
 _BC_WRAPPER = """#!/bin/sh
 real="$1"
 shift
+[ -n "$REACH_BC_DIR" ] || exec "$real" "$@" --emit=llvm-bc $REACH_EXTRA_RUSTFLAGS
+marker="$REACH_BC_DIR/.started.$$"
+: > "$marker" || exit 1
 "$real" "$@" --emit=llvm-bc $REACH_EXTRA_RUSTFLAGS
 status=$?
-[ -n "$REACH_BC_DIR" ] || exit $status
 outdir=""
 cname=""
 ctype=""
+extra=""
 prev=""
 for a in "$@"; do
   case "$a" in
     --out-dir=*) outdir="${a#--out-dir=}" ;;
     --crate-name=*) cname="${a#--crate-name=}" ;;
     --crate-type=*) ctype="${a#--crate-type=}" ;;
+    -Cextra-filename=*) extra="${a#-Cextra-filename=}" ;;
   esac
   case "$prev" in
     --out-dir) outdir="$a" ;;
     --crate-name) cname="$a" ;;
     --crate-type) ctype="$a" ;;
+    -C) case "$a" in extra-filename=*) extra="${a#extra-filename=}" ;; esac ;;
   esac
   prev="$a"
 done
-[ -n "$outdir" ] && [ -n "$cname" ] || exit $status
-case "$cname" in build_script_*) exit $status ;; esac
-case "$ctype" in *proc-macro*) exit $status ;; esac
-for f in "$outdir/$cname"-*.bc; do
-  [ -e "$f" ] && cp -f "$f" "$REACH_BC_DIR/" 2>/dev/null
-done
+[ -n "$outdir" ] && [ -n "$cname" ] || { rm -f "$marker"; exit $status; }
+case "$cname" in build_script_*) rm -f "$marker"; exit $status ;; esac
+case "$ctype" in *proc-macro*) rm -f "$marker"; exit $status ;; esac
+if [ -n "$extra" ]; then
+  find "$outdir" -maxdepth 1 -type f -name "$cname$extra*.bc" -exec cp -f {} "$REACH_BC_DIR/" ';' 2>/dev/null
+else
+  find "$outdir" -maxdepth 1 -type f -newer "$marker" '(' -name "$cname.bc" -o -name "$cname-*.bc" ')' -exec cp -f {} "$REACH_BC_DIR/" ';' 2>/dev/null
+fi
+rm -f "$marker"
 exit $status
 """
 
 
 def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=False,
-                                optimize=False, mangling="auto"):
+                                optimize=False, mangling="auto", work_dir=None):
     """Build via the fuzzer's own command (cargo afl/ziggy/fuzz, or a custom
     build_cmd) and collect the bitcode it emits. A RUSTC_WRAPPER adds
     --emit=llvm-bc to every crate rustc compiles and copies that crate's .bc into
@@ -599,8 +650,15 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
     mangling: "auto" (default, the harness's own scheme -- legacy for
     cargo-afl/ziggy/cargo-fuzz), "legacy", or "v0" -- forces the wrapper's
     -Csymbol-mangling-version to match the target being joined against."""
-    collect = tempfile.mkdtemp(prefix="reach-bc-")
-    atexit.register(shutil.rmtree, collect, ignore_errors=True)
+    if work_dir is None:
+        collect = tempfile.mkdtemp(prefix="reach-bc-")
+        atexit.register(shutil.rmtree, collect, ignore_errors=True)
+    else:
+        collect = os.path.join(work_dir, "rust-native")
+        try:
+            os.makedirs(collect)
+        except OSError as exc:
+            raise AcquireError(f"cannot create native Rust bitcode directory: {exc}") from exc
     wrapper = os.path.join(collect, ".rustc-bc-wrapper.sh")
     try:
         with open(wrapper, "w") as fh:

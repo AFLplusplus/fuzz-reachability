@@ -1,5 +1,6 @@
 import json
 import os
+import subprocess
 
 import pytest
 
@@ -290,7 +291,7 @@ def test_build_bc_paths_from_artifact_stream(tmp_path):
     assert bcs == [str(keep)]
 
 
-def test_artifact_stream_filters_stale_hash_after_flag_change(tmp_path):
+def test_artifact_stream_preserves_authoritative_hashes(tmp_path):
     deps = tmp_path / "target" / "debug" / "deps"
     deps.mkdir(parents=True)
     stale = deps / "crate-1111111111111111.bc"
@@ -304,7 +305,9 @@ def test_artifact_stream_filters_stale_hash_after_flag_change(tmp_path):
         "target": {"name": "crate", "kind": ["lib"]},
         "filenames": [str(deps / f"libcrate-{hash_value}.rlib")],
     }) for hash_value in ("1111111111111111", "2222222222222222"))
-    assert acquire_rust._build_bc_paths(messages, newer_than=20) == [str(fresh)]
+    assert acquire_rust._build_bc_paths(messages, newer_than=20) == [
+        str(stale), str(fresh),
+    ]
 
 
 def test_build_bc_paths_excludes_host_only_artifacts(tmp_path):
@@ -563,6 +566,69 @@ def test_resolve_assertions_manifest_override(tmp_path):
 
 def test_bc_wrapper_appends_extra_rustflags():
     assert "$REACH_EXTRA_RUSTFLAGS" in acquire_rust._BC_WRAPPER
+
+
+def test_bc_wrapper_collects_only_current_build_identity(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+    collect = tmp_path / "collect"
+    collect.mkdir()
+    stale = output / "crate-1111111111111111.bc"
+    stale.write_bytes(b"stale")
+    compiler = tmp_path / "rustc"
+    compiler.write_text(
+        "#!/bin/sh\nprintf fresh > \"$FAKE_OUT/crate-2222222222222222.bc\"\n"
+    )
+    compiler.chmod(0o755)
+    wrapper = tmp_path / "wrapper"
+    wrapper.write_text(acquire_rust._BC_WRAPPER)
+    wrapper.chmod(0o755)
+    env = dict(os.environ)
+    env.update({
+        "FAKE_OUT": str(output),
+        "REACH_BC_DIR": str(collect),
+        "REACH_EXTRA_RUSTFLAGS": "",
+    })
+    result = subprocess.run([
+        str(wrapper), str(compiler), "--out-dir", str(output),
+        "--crate-name", "crate", "--crate-type", "lib", "-C",
+        "extra-filename=-2222222222222222",
+    ], env=env)
+    assert result.returncode == 0
+    assert sorted(path.name for path in collect.glob("*.bc")) == [
+        "crate-2222222222222222.bc",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("crate_name", "crate_type"),
+    [("build_script_build", "bin"), ("derive", "proc-macro")],
+)
+def test_bc_wrapper_excludes_host_only_artifacts(tmp_path, crate_name, crate_type):
+    output = tmp_path / "output"
+    output.mkdir()
+    collect = tmp_path / "collect"
+    collect.mkdir()
+    compiler = tmp_path / "rustc"
+    compiler.write_text(
+        f"#!/bin/sh\nprintf host > \"$FAKE_OUT/{crate_name}-1111111111111111.bc\"\n"
+    )
+    compiler.chmod(0o755)
+    wrapper = tmp_path / "wrapper"
+    wrapper.write_text(acquire_rust._BC_WRAPPER)
+    wrapper.chmod(0o755)
+    env = dict(os.environ)
+    env.update({
+        "FAKE_OUT": str(output),
+        "REACH_BC_DIR": str(collect),
+        "REACH_EXTRA_RUSTFLAGS": "",
+    })
+    result = subprocess.run([
+        str(wrapper), str(compiler), "--out-dir", str(output),
+        "--crate-name", crate_name, "--crate-type", crate_type,
+    ], env=env)
+    assert result.returncode == 0
+    assert list(collect.glob("*.bc")) == []
 
 
 def test_native_sets_opt0_env_by_default(monkeypatch, tmp_path):

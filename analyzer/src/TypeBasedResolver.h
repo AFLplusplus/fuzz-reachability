@@ -7,9 +7,8 @@
 
 namespace reach {
 
-// Default backend: an indirect call of function type T may reach any
-// address-taken function whose type is structurally identical to T.
-// LLVM uniques FunctionType per context, so pointer identity == type identity.
+// Default backend: exact type matches plus address-flow targets, with a
+// conservative address-taken fallback for unresolved cast flows.
 class TypeBasedResolver : public IndirectResolver {
 public:
   void prepare(llvm::Module &m, const EscapeIndex &idx) override;
