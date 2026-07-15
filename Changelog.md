@@ -1,4 +1,8 @@
 ### v1.1-dev
+- Indirect resolution precision: escape value-flow follows exact operands
+  (PHI/select/GEP/aggregate) and the conservative address-taken fallback fires
+  only for genuinely unresolved cast flows, trimming spurious low-confidence
+  targets without shrinking the sound reachable set.
 - Analyzer soundness: callback value-flow now follows every indexed store into
   globals, aggregates, stack objects, loads, and heap-returned objects; alias and
   pointer-cast chains use one cycle-safe callable resolver; callback-like operand
