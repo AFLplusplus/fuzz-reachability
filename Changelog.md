@@ -1,4 +1,7 @@
 ### v1.1-dev
+- C/C++ "build is CACHED" warning is confirmed against the artifact's mtime, so a
+  single up-to-date subdirectory in a recursive `make` no longer triggers a false
+  cache warning when the analyzed artifact was actually rebuilt.
 - Indirect resolution precision: escape value-flow follows exact operands
   (PHI/select/GEP/aggregate) and the conservative address-taken fallback fires
   only for genuinely unresolved cast flows, trimming spurious low-confidence

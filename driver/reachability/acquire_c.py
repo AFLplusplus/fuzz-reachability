@@ -36,7 +36,7 @@ import tempfile
 import time
 
 from reachability import diagnostics
-from reachability.errors import build_looks_cached, decode, tail
+from reachability.errors import build_is_cached, build_looks_cached, decode, tail
 
 
 class AcquireError(RuntimeError):
@@ -559,10 +559,6 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
         raise AcquireError(f"build failed (exit {rc}){detail}")
 
     cached = _build_looks_cached(build_output)
-    if cached:
-        print("warning: the build is CACHED (nothing was recompiled); the "
-              "extracted bitcode reflects the existing artifact, not this run. "
-              "Rebuild from clean if the target or its flags changed.")
 
     errors = []
 
@@ -621,6 +617,11 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
         raise _no_bitcode(
             "get-bc could not extract bitcode from any detected artifact:\n  "
             + "\n  ".join(errors))
+
+    if build_is_cached(build_output, art, before):
+        print("warning: the build is CACHED (nothing was recompiled); the "
+              "extracted bitcode reflects the existing artifact, not this run. "
+              "Rebuild from clean if the target or its flags changed.")
 
     if static_libs != "none":
         expanded = _include_static_libs(

@@ -90,6 +90,42 @@ def test_build_looks_cached():
     assert not acquire_c._build_looks_cached("cc -c foo.c -o foo.o")
 
 
+def test_build_is_cached_stale_artifact(tmp_path):
+    art = tmp_path / "harness.o"
+    _write(art, b"x")
+    old = os.path.getmtime(art) - 100
+    os.utime(art, (old, old))
+    started = old + 50
+    assert acquire_c.build_is_cached(
+        "make: Nothing to be done for 'all'.", str(art), started)
+
+
+def test_build_is_cached_fresh_artifact_recursive_subdir(tmp_path):
+    # Recursive make: one subdir is up-to-date but the artifact was rebuilt.
+    art = tmp_path / "harness.o"
+    _write(art, b"x")
+    started = os.path.getmtime(art) - 100
+    output = ("  CC       gjobread.o\n"
+              "make[2]: Nothing to be done for 'all'.\n"
+              "  CCLD     harness\n")
+    assert not acquire_c.build_is_cached(output, str(art), started)
+
+
+def test_build_is_cached_requires_marker(tmp_path):
+    art = tmp_path / "harness.o"
+    _write(art, b"x")
+    old = os.path.getmtime(art) - 100
+    os.utime(art, (old, old))
+    assert not acquire_c.build_is_cached("  CC harness.o", str(art), old + 50)
+
+
+def test_build_is_cached_missing_artifact_falls_back(tmp_path):
+    missing = str(tmp_path / "nope.o")
+    assert acquire_c.build_is_cached(
+        "make: Nothing to be done for 'all'.", missing, 0.0)
+    assert not acquire_c.build_is_cached("cc -c foo.c -o foo.o", missing, 0.0)
+
+
 def test_detect_build_cmd_none(tmp_path):
     assert acquire_c.detect_build_cmd(str(tmp_path)) is None
 
