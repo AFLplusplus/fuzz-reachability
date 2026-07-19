@@ -1,3 +1,7 @@
+### v1.2-dev
+- ...
+
+
 ### v1.1
 - C/C++ "build is CACHED" warning is confirmed against the artifact's mtime, so a
   single up-to-date subdirectory in a recursive `make` no longer triggers a false
