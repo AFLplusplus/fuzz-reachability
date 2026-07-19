@@ -14,7 +14,7 @@ is a bug.
 - Worked examples, step by step — a generic `LLVMFuzzerTestOneInput` harness for AFL++/libfuzzer (libxml2), a ziggy harness (the `url` crate), and cargo-afl harnesses (cpp_demangle and rustyknife) — [`docs/EXAMPLES.md`](docs/EXAMPLES.md)
 - LLVM version support — [`docs/llvm-support.md`](docs/llvm-support.md)
 
-Version: 1.1-dev
+Version: 1.1
 
 Author: Marc "vanHauser" Heuse
 
