@@ -20,7 +20,8 @@ ANALYZER     := $(CURDIR)/analyzer/build/reachability-analyzer
 
 help:
 	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | sed 's/:.*##/\t/'
-	@printf 'compdb\tgenerate analyzer/compile_commands.json for clangd\n'
+	@printf 'The following commands are for debugging fuzz-reachability itself:\n'
+	@printf 'compdb\t\tgenerate compile_commands.json for clangd\n'
 	@printf 'cppcheck\trun cppcheck on the analyzer\n'
 	@printf 'scan-build\trun Clang Static Analyzer on the analyzer\n'
 	@printf 'static-analysis\trun all analyzer static checks\n'
