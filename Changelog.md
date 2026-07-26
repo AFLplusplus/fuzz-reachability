@@ -1,4 +1,7 @@
 ### v1.2-dev
+- The driver now requires Python >= 3.10 instead of >= 3.12. On 3.10 the
+  `tomli` backport supplies `tomllib`; it is not installed on 3.11+. CI runs the
+  LLVM 21 job on Python 3.10.
 - ...
 
 

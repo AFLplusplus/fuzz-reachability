@@ -143,7 +143,7 @@ Two components, joined by merged bitcode:
   than M. See [`docs/llvm-support.md`](docs/llvm-support.md).
   **NOTE!** especially as a Rust user, we recommend to install LLVM via
   https://apt.llvm.org/llvm.sh instead of the distribution, as those will be outdated!
-- **Go** (to install `gllvm`), **Python ≥ 3.12**, and a **C++17** compiler. Rust
+- **Go** (to install `gllvm`), **Python ≥ 3.10**, and a **C++17** compiler. Rust
   targets also need **rustc / cargo** (nightly, using the same or older version of LLVM you are using).
 - [AFL++](https://github.com/AFLplusplus/AFLplusplus) compiled from commit 01a83a3d7098e605f0c7fd69381fcf4fc97144fe onwards (24 June 2026)
 - [cov-analysis](https://github.com/AFLplusplus/cov-analysis) from commit 07e7afc63a54f593a377556b8f6f6144f1f7dc08 onwards (8 July 2026)

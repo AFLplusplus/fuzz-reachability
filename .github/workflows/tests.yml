@@ -15,12 +15,18 @@ permissions:
 
 jobs:
   test:
-    name: build analyzer + pytest (LLVM ${{ matrix.llvm }})
+    name: build analyzer + pytest (LLVM ${{ matrix.llvm }}, Python ${{ matrix.python }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
-        llvm: ["21", "22", "23"]
+        include:
+          - llvm: "21"
+            python: "3.10"
+          - llvm: "22"
+            python: "3.12"
+          - llvm: "23"
+            python: "3.12"
     env:
       LLVM_MAJOR: ${{ matrix.llvm }}
     steps:
@@ -28,7 +34,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       - uses: actions/setup-go@v5
         with:

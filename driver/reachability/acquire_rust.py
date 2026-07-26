@@ -40,7 +40,11 @@ import subprocess
 import sys
 import tempfile
 import time
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 from .errors import build_looks_cached, decode, tail
 
