@@ -73,6 +73,12 @@ def _parse_llvm_major(text: str) -> int:
     return int(m.group(1))
 
 
+def rustc_available() -> bool:
+    """Whether a rustc is on PATH at all -- the Rust coherence checks only apply
+    when one is installed; a C/C++-only host is not misconfigured for lacking it."""
+    return shutil.which("rustc") is not None
+
+
 def rustc_llvm_major() -> int:
     """Pinned LLVM major == the LLVM that rustc bundles."""
     out = _run_version(["rustc", "-vV"], "rustc -vV")

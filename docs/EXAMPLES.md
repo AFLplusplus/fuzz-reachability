@@ -372,13 +372,18 @@ RUSTFLAGS="--emit=llvm-bc -Cembed-bitcode=yes -Ccodegen-units=1" \
 
 The link fails with `undefined symbol: __afl_manual_init` (and
 `__afl_persistent_loop`, `__afl_fuzz_len`) — AFL runtime symbols injected only by
-`cargo afl build`. That is expected under `--emit=llvm-bc`; the per-crate `.bc` in
-`target/debug/deps/` are already written.
+`cargo afl build`. That is expected under `--emit=llvm-bc`; the per-crate `.bc`
+are already written — in `target/debug/deps/` up to cargo 1.99, or in
+`target/debug/build/<pkg>/<hash>/out/` from cargo 1.100, which gives every unit
+its own output directory.
 
 ### Step 3 — Link and analyze
 
 ```bash
-llvm-link-22 target/debug/deps/*.bc -o merged.bc     # every fresh crate version/CGU; clean deps/ first
+# Every fresh crate version/CGU, under either cargo layout; clean the target
+# directory first so no stale .bc from an earlier build is picked up.
+llvm-link-22 $(find target/debug \( -path '*/deps/*' -o -path '*/out/*' \) \
+  -name '*.bc' -not -name 'build_script_*') -o merged.bc
 reachability-analyzer merged.bc --entry main \
   --out cpp_demangle.json --reached-out reached.txt --not-reached-out not_reached.txt
 ```
@@ -505,18 +510,23 @@ RUSTFLAGS="--emit=llvm-bc -Cembed-bitcode=yes -Ccodegen-units=1" \
 
 The final link fails (`undefined reference to __afl_manual_init` — AFL runtime
 symbols added only by `cargo afl build`); that is expected under `--emit=llvm-bc`.
-Only the per-crate `.bc` in `target/debug/deps/` matter, and they are now there.
+Only the per-crate `.bc` matter, and they are now there — under
+`target/debug/deps/` up to cargo 1.99, or under
+`target/debug/build/<pkg>/<hash>/out/` from cargo 1.100.
 
 Match the profile and `-Ccodegen-units` here to the build that produces the
 instrumented binary (add `--release` and the matching codegen-units for a release
 fuzz build); they decide which monomorphizations are emitted. With
 `-Ccodegen-units` above 1, rustc splits each crate into several
-`deps/<crate>-<hash>.<cgu>.rcgu.bc` — pass all of them to `llvm-link`.
+`<crate>-<hash>.<cgu>.rcgu.bc` — pass all of them to `llvm-link`.
 
 ### Step 3 — Link and analyze
 
 ```bash
-llvm-link-22 target/debug/deps/*.bc -o merged.bc     # every fresh crate version/CGU; clean deps/ first
+# Every fresh crate version/CGU, under either cargo layout; clean the target
+# directory first so no stale .bc from an earlier build is picked up.
+llvm-link-22 $(find target/debug \( -path '*/deps/*' -o -path '*/out/*' \) \
+  -name '*.bc' -not -name 'build_script_*') -o merged.bc
 reachability-analyzer merged.bc --entry main \
   --out rustyknife.json --reached-out reached.txt --not-reached-out not_reached.txt
 ```

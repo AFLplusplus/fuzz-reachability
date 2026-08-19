@@ -375,14 +375,18 @@ def cmd_run(args):
                     include_process_lifecycle_roots=(
                         getattr(args, "include_process_lifecycle_roots", False)
                     ),
+                    no_name_roots=getattr(args, "no_name_roots", False),
                 )
                 transaction.publish()
     except OSError as exc:
         raise outputs.OutputError(f"pipeline temporary-file failure: {exc}") from exc
     report.print_summary(result)
-    advisory = report.external_advisory(result)
-    if advisory:
-        print(advisory)
+    for advisory in (report.external_advisory(result),
+                     report.optimization_advisory(
+                         result, lang_mode=TARGETS[args.lang][0],
+                         optimize=args.optimize)):
+        if advisory:
+            print(advisory)
     print(f"wrote {output_paths.json}")
     print(f"wrote {output_paths.reached}  (sancov allowlist of reachable functions)")
     print(f"wrote {output_paths.not_reached}  (sancov ignorelist of unreachable functions)")
@@ -390,9 +394,12 @@ def cmd_run(args):
 
 
 def cmd_check_toolchain(args):
-    tc = toolchain.check_coherence(default_analyzer(), require_rust=True)
+    rust = toolchain.rustc_available()
+    tc = toolchain.check_coherence(default_analyzer(), require_rust=rust)
+    rust_state = (f"rustc LLVM {tc.rustc_major}" if rust else
+                  "no rustc on PATH (Rust targets unavailable; C/C++ ready)")
     print(f"OK: analyzer toolchain on LLVM {tc.llvm_major} "
-          f"(min {toolchain.MIN_LLVM_MAJOR}); rustc LLVM {tc.rustc_major}")
+          f"(min {toolchain.MIN_LLVM_MAJOR}); {rust_state}")
     print(f"  clang     {tc.clang}")
     print(f"  clang++   {tc.clangxx}")
     print(f"  llvm-link {tc.llvm_link}")
@@ -447,6 +454,13 @@ def build_parser():
                    dest="include_process_lifecycle_roots",
                    help="also root constructors, destructors, ifunc resolvers, "
                         "and a defined LLVMFuzzerInitialize (default: off)")
+    r.add_argument("--no-name-roots", action="store_true", dest="no_name_roots",
+                   help="do not root a defined, externally-visible function whose "
+                        "symbol name appears as a string constant in a module that "
+                        "performs a runtime name lookup (dlsym/GetProcAddress). The "
+                        "heuristic is on by default; disabling it can under-report, "
+                        "and is mainly useful to measure how much of the reachable "
+                        "set it contributes")
     r.add_argument("--backend", default=None,
                    help="deprecated and ignored; the type-based backend is "
                         "always used")

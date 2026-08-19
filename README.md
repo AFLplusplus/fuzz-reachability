@@ -328,6 +328,12 @@ Resolves and validates the LLVM toolchain (analyzer, `clang`/`clang++`,
 first; it exits non-zero on any incoherence. See
 [`docs/llvm-support.md`](docs/llvm-support.md) for the policy.
 
+`rustc` is checked **only when it is installed**: on a host with no Rust
+toolchain the command reports `no rustc on PATH (Rust targets unavailable; C/C++
+ready)` and exits zero, since the Rust LLVM-coherence rule cannot apply to a
+C/C++ target. An installed `rustc` whose bundled LLVM is newer than the
+analyzer's is still a fatal incoherence.
+
 ### `reachability run`
 
 Builds a project, merges its bitcode, and computes the reachable set from the
@@ -346,7 +352,8 @@ entry point(s).
 | `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree. Exact archive manifests prevent linked objects from being dropped. Requested expansion fails closed if any archive cannot be listed or fully extracted, so an incomplete report is never published as complete. |
 | `--profile {debug,release}` | tool default | Build profile. `libfuzzer`/`ziggy`/`afl`: `release` adds `--release` to the native command (else the tool's default). Plain `--lang rust`: the cargo profile (default `debug`). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--codegen-units N` | auto | Plain `--lang rust` only (positive integer): rustc `-Ccodegen-units`, auto-detected from `Cargo.toml` else cargo's per-profile default. Ignored for `libfuzzer`/`ziggy`/`afl` (their build sets it). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
-| `--optimize` | off | Build the analysis at the target's real optimization (post-inline). By default the analysis build is **source-faithful**: C/C++ analysis bitcode is built with `-fno-inline -fno-inline-functions` (via `LLVM_BITCODE_GENERATION_FLAGS`); Rust with `-Copt-level=0` (via composed `RUSTFLAGS` for plain `--lang rust`/`mixed`, or via `RUSTC_WRAPPER` for native harnesses). Functions are not inlined away, so the reachable set matches what `llvm-cov` reports and is a safe allowlist superset. For native Rust harnesses (`libfuzzer`/`ziggy`/`afl`), `--optimize` also skips the post-analysis clean (otherwise their throwaway opt-0 build is discarded). Pass `--optimize` when you want the set and per-function metrics to mirror a specific `-O3` instrumented binary. Controls inlining only — LTO is still stripped. |
+| `--optimize` | off | Build the analysis at the target's real optimization (post-inline). By default the analysis build is **source-faithful**: C/C++ analysis bitcode is built with `-O0 -fno-inline -fno-inline-functions` (via `LLVM_BITCODE_GENERATION_FLAGS`, which gllvm applies to the bitcode compile only — the native object keeps the project's own `-Ox`); Rust with `-Copt-level=0` (via composed `RUSTFLAGS` for plain `--lang rust`/`mixed`, or via `RUSTC_WRAPPER` for native harnesses). No function the source defines is optimized away, so the reachable set matches what `llvm-cov` reports and is a safe allowlist superset. An inherited `LLVM_BITCODE_GENERATION_FLAGS` that already sets an `-O` level keeps it — the escape hatch for a unit that only compiles optimized; only the no-inlining flags are then added. For native Rust harnesses (`libfuzzer`/`ziggy`/`afl`), `--optimize` also skips the post-analysis clean (otherwise their throwaway opt-0 build is discarded). Pass `--optimize` when you want the set and per-function metrics to mirror a specific `-O3` instrumented binary. LTO is stripped either way. |
+| `--no-name-roots` | off | Do not root a defined, externally-visible function whose symbol name appears as a string constant in a module that performs a runtime name lookup. The heuristic is on by default and disabling it **can under-report**; its use is measuring how much of the reachable set it contributes. See [Reachability through runtime symbol lookup](#reachability-through-runtime-symbol-lookup). |
 | `--build-std` | off | Rust only: build the standard library from source with Cargo's `-Zbuild-std` option and rustc's detected host target, so std functions appear in the graph instead of as external declarations. |
 | `--clean` | off | Validate every selected output first, then remove those files and tool-owned build state before rebuilding. Rust uses `cargo clean` (also in `fuzz/` for cargo-fuzz). C/C++ runs configured build-system clean targets and removes only artifacts recorded in `.reachability-cache/owned-c-artifacts.json`; unrelated `.o`, `.bc`, and manifest files are not swept recursively. |
 | `--dot FILE` | *(none)* | Also write the deterministic reachable-defined subgraph as Graphviz DOT (indirect edges dashed/red; bodyless declarations remain in the JSON `external_declarations` list rather than as DOT nodes). |
@@ -411,11 +418,20 @@ instrument: the optimization level, `cfg(fuzzing)`, feature flags, and
 which wildcard `fun:` patterns cannot recover.
 
 **For `c`/`cpp` targets**, reachability is **optimization-independent by
-default**: gllvm emits the analyzed bitcode with heuristic inlining suppressed
-(`-fno-inline -fno-inline-functions`), so the reachable set does not depend on
-the project's `-Ox` level and inlined-away functions are still reported —
-matching what `llvm-cov` sees, and a safe allowlist superset. Pass
-**`--optimize`** to instead analyze at the build's real optimization, so the
+default**: gllvm emits the analyzed bitcode at `-O0` with inlining suppressed
+(`-O0 -fno-inline -fno-inline-functions`, via `LLVM_BITCODE_GENERATION_FLAGS`,
+which gllvm applies to the bitcode compile only — the native object still gets
+the project's own `-Ox`). So the reachable set does not depend on the project's
+`-Ox` level, and functions the optimizer would remove are still reported —
+matching what `llvm-cov` sees, and a safe allowlist superset. Suppressing
+inlining alone is **not** enough for that: at `-O3` the optimizer also deletes
+source functions through dead-code elimination, devirtualization of constant
+function-pointer tables, and `always_inline` (which `-fno-inline` does not
+override), which is why the whole bitcode compile is forced to `-O0`. The cost is
+size: `-O0` bitcode is larger, so merging and analysis use more time and memory
+than an optimized build of the same project.
+
+Pass **`--optimize`** to instead analyze at the build's real optimization, so the
 reachable set and per-function metrics mirror a specific instrumented binary;
 inlining then governs both, and when a callee is inlined its basic blocks,
 loops, locals (`C11`) and `dangerous_calls` fold into the caller (see
@@ -424,6 +440,21 @@ default to `-O3`**; sancov-based harnesses (libFuzzer, honggfuzz) use whatever
 `-Ox` you give their compiler. So under `--optimize`, when the fuzz binary is a
 default AFL++ build, analyze at `-O3` too — e.g.
 `CFLAGS=-O3 CXXFLAGS=-O3 reachability run --optimize …`.
+
+**The source-faithful build only applies where this tool drives the compiler.**
+Bitcode that reaches the analysis some other way — a prebuilt `--artifact`, a
+build command that recompiles nothing, a project already built with
+`gclang`/`gclang++` before the run — keeps whatever optimization it was compiled
+with, and then the report is a *post-optimizer* function set: names for the
+deleted functions appear in neither `reached.txt` nor `not_reached.txt`, so
+`llvm-cov`/cov-analysis rows for them silently fail to join and the annotated
+result looks plausible but is useless. The run detects this and prints a warning
+— `DICompileUnit isOptimized` in the bitcode's debug info, or (with no debug
+info) definitions that carry no `noinline`/`optnone` — reported as
+`summary.compile_units`, `summary.optimized_compile_units`, and
+`summary.no_inline_definitions` in the JSON. The fix is to let the tool build
+(add `--clean` if a stale build would be reused); pass `--optimize` when the
+post-inline view is what you actually want.
 
 **For `libfuzzer`/`ziggy`/`afl`, Rust reachability is now source-faithful by
 default**: the native harness build is forced to `-Copt-level=0` (the
@@ -490,8 +521,9 @@ at a stock cargo build.
   `.bc` per crate). Many fuzzing setups pin `codegen-units = 1`; if your
   `Cargo.toml` does, auto-detect already picks it up, so you rarely need the flag.
   With `N` > 1 rustc splits each crate into several
-  `target/<profile>/deps/<crate>-<hash>.<cgu>.rcgu.bc` files; the driver collects
-  all of them.
+  `<crate>-<hash>.<cgu>.rcgu.bc` files; the driver collects all of them, from
+  `target/<profile>/deps/` (cargo up to 1.99) or from the per-unit
+  `target/<profile>/build/<pkg>/<hash>/out/` (cargo 1.100 and newer).
 
 **How to choose.** Usually you do not have to: set `--profile` to your fuzz
 build's profile and codegen-units auto-detects the rest from `Cargo.toml`.
@@ -533,8 +565,11 @@ cannot recover a function that one build inlined away and the other did not.
 
 - **`<out>.json`** — a top-level `mangling` field (`"legacy"` or `"v0"`, detected
   from the analyzed bitcode's Rust symbols — see `--mangling` above), `summary`
-  counts (including `low_confidence` and
-  `external_declarations`), a `reachable`
+  counts (including `low_confidence`, `external_declarations`, and the
+  build-optimization evidence behind the post-optimizer warning:
+  `compile_units` / `optimized_compile_units` from `DICompileUnit isOptimized`,
+  and `no_inline_definitions`, the definitions carrying `noinline`/`optnone` —
+  see [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)), a `reachable`
   array (mangled and demangled name, a `key` (the mangled name with the Rust
   `17h<hash>` disambiguator stripped — the build-independent join key
   cov-analysis uses), source file/line when debug info is present,
@@ -654,7 +689,10 @@ as a string constant is added as a reachability **root**. External visibility is
 required because `dlsym` only resolves symbols in the dynamic symbol table, which
 excludes `internal` functions; gating on the presence of a lookup keeps the
 heuristic inert for programs that never resolve by name. Like every root, this
-only widens the sound over-approximation. The `--no-name-roots` flag disables it.
+only widens the sound over-approximation. `--no-name-roots` disables it, on both
+`reachability run` and the analyzer binary. Disabling it can under-report, so it
+is a measurement switch (how much does this heuristic contribute?), not a
+precision setting.
 
 (`fixtures/rust_indirect` exercises this with a `dlsym`-resolved `#[no_mangle]`
 target; see also `driver/tests/test_analyzer_core.py`.)
@@ -788,6 +826,35 @@ docs/       worked examples (EXAMPLES.md), LLVM support
 This is a static over-approximation, not dynamic coverage. Its precision is
 bounded by indirect-call resolution and by any missing bitcode — precompiled
 libraries, or the Rust standard library without `--build-std`.
+
+**On codebases built around method tables the over-approximation can swallow the
+tree, and scoping is the recovery.** Where dispatch runs through registries of
+function pointers, provider/vtable structs, or pervasive trait objects — OpenSSL-
+and assimp-style designs — the type-based resolver has to assume every
+address-taken function of a matching type is a candidate, so most of the tree
+comes back reachable. A whole-tree run then carries almost no triage signal: in a
+coverage annotation, nearly everything uncovered is amber ("reachable but not
+reached") and nothing is grey ("statically dead"), which is the shape that makes
+a report look informative while distinguishing nothing.
+
+Two things recover it, in this order:
+
+- **Scope the analysis to one subsystem or one harness.** Analyze the subsystem's
+  own bitcode with its own entry (`--artifact` on the library or object that
+  contains it, `--entry` on the harness), and read the amber/grey split inside
+  that scope only. The ratio is what carries information, and it only becomes
+  meaningful once the denominator is a set of functions the harness could
+  plausibly exercise. A focused harness over a single parser yields a focused
+  report (see [`docs/EXAMPLES.md`](docs/EXAMPLES.md)); the same analysis rooted at
+  a whole provider-style tree does not.
+- **Read the confidence counts, not the flag differentials.** `summary.indirect_only`
+  and `summary.low_confidence` measure how much of the reachable set exists only
+  because of indirect resolution, and per-function `confidence` grades it (see
+  [Confidence](#confidence)) — that is the direct measurement of how much the
+  backend widened. Root heuristics are a much smaller contributor by comparison:
+  on a tree where runtime name lookup is present, `--no-name-roots` typically
+  moves the reachable set by a few percent, so a differential against it measures
+  that heuristic, not the over-approximation as a whole.
 
 **Callbacks that escape to external code.** A function pointer is treated as
 reachable when it is handed to an external/indirect call as an argument, or

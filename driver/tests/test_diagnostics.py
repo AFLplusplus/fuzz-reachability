@@ -47,3 +47,19 @@ def test_lto_precedes_ccache_and_afl():
            "generation because we are doing link time optimization.")
     cause, _ = diagnose_build(log, ["Error reading the .llvm_bc section"])
     assert "link-time optimization" in cause
+
+
+def test_bitcode_compile_failure_detected():
+    log = ("t.c:2:2: error: bitcode compile only\n"
+           "ERROR:Failed to build bitcode file for t.c because: exit status 1")
+    cause, remedy = diagnose_build(log, [])
+    assert "bitcode compile failed" in cause
+    assert "LLVM_BITCODE_GENERATION_FLAGS" in remedy
+    assert "--optimize" in remedy
+
+
+def test_bitcode_compile_failure_outranks_empty_section():
+    log = "ERROR:Failed to build bitcode file for t.c because: exit status 1"
+    cause, _ = diagnose_build(
+        log, ["ERROR:Error reading the .llvm_bc section of ELF file bin"])
+    assert "bitcode compile failed" in cause

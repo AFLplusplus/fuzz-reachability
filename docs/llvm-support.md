@@ -17,7 +17,10 @@ analyzer.** The rules enforced by `reachability check-toolchain`
    (enforced by `rust_bitcode_readable` / `assert_rust_bitcode_readable`). A
    same-major distro LLVM that is an *older patch release* than rustc's cannot
    read rustc's bitcode (`llvm-link: Invalid record`) — this is the common gotcha
-   when a distro ships, say, LLVM 21.0.0 while rustc bundles 21.1.1.
+   when a distro ships, say, LLVM 21.0.0 while rustc bundles 21.1.1. This rule is
+   checked only when a `rustc` is installed: it cannot apply to a C/C++ target on
+   a host with no Rust toolchain, where `check-toolchain` reports `no rustc on
+   PATH (Rust targets unavailable; C/C++ ready)` and exits zero.
 
 The default build LLVM is chosen by `scripts/select_llvm.sh`: the newest
 installed `llvm-config-N` with `N ≥ 21`. Newer tools read older bitcode but not

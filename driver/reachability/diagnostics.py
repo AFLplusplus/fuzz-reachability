@@ -18,6 +18,7 @@ _FLTO = re.compile(r"-flto\b")
 _ASM_OR_NOINPUT = re.compile(
     r"skipping bitcode generation because.*(assembly|did not see any input)", re.I)
 _CCACHE = re.compile(r"\b(s?ccache)\b")
+_BC_COMPILE_FAIL = re.compile(r"Failed to build bitcode file for", re.I)
 
 _LTO_REMEDY = (
     "The build enables link-time optimization (-flto); gllvm skips embedding "
@@ -39,6 +40,18 @@ _CCACHE_REMEDY = (
     "without re-running the gllvm wrapper, so no bitcode is embedded. Clear it "
     "(ccache -C) or disable it, then rebuild."
 )
+_BC_COMPILE_REMEDY = (
+    "gllvm produced the native object but its separate bitcode compile failed for "
+    "at least one translation unit, so that unit carries no bitcode -- and gclang "
+    "still exits 0, so the build looked successful. The analysis build appends "
+    "'-O0 -fno-inline -fno-inline-functions' to LLVM_BITCODE_GENERATION_FLAGS (the "
+    "bitcode compile only, never the native object) so no function the source "
+    "defines is optimized away; a unit that only compiles optimized fails under "
+    "it. Set LLVM_BITCODE_GENERATION_FLAGS to an explicit -O level (an inherited "
+    "-O level is preserved), or pass --optimize to analyze at the project's own "
+    "optimization. If the compile error above is unrelated to optimization, it is "
+    "a genuine failure in that unit."
+)
 _ASM_REMEDY = (
     "gllvm skipped some translation units because they are assembly-only or had "
     "no input files; those carry no bitcode. Expected, and only a problem if the "
@@ -58,6 +71,9 @@ def diagnose_build(build_log: str, getbc_stderrs) -> Optional[Tuple[str, str]]:
 
     if _LTO_SKIP.search(log) or (no_section and _FLTO.search(log)):
         return ("link-time optimization strips gllvm bitcode", _LTO_REMEDY)
+    if _BC_COMPILE_FAIL.search(log):
+        return ("gllvm's bitcode compile failed for some translation units",
+                _BC_COMPILE_REMEDY)
     if no_section:
         return ("the artifact has an empty/name-only .llvm_bc section", _AFL_CC_REMEDY)
     if _CCACHE.search(log):

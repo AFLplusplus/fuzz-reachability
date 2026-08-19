@@ -61,7 +61,8 @@ def test_json_schema_contract(run_analyzer):
     }
     assert set(report["summary"]) == {
         "defined", "reachable", "indirect_only", "low_confidence",
-        "unreachable", "external_declarations",
+        "unreachable", "external_declarations", "compile_units",
+        "optimized_compile_units", "no_inline_definitions",
     }
     assert set(report["reachable"][0]) == {
         "mangled", "demangled", "key", "file", "line", "via",
@@ -121,6 +122,32 @@ def test_local_vars_from_debug_info(run_analyzer):
     assert m["process"]["C11"] == 3
     assert m["process"]["dangerous_calls"] == 1
     assert m["process"]["loops"] == 1
+
+
+def test_build_optimization_evidence_optimized(run_analyzer):
+    r = run_analyzer([ll("optimized_dbg.ll"), "--entry", "entry"])
+    assert r.returncode == 0, r.stderr
+    s = json.loads(r.stdout)["summary"]
+    assert s["compile_units"] == 1
+    assert s["optimized_compile_units"] == 1
+    assert s["no_inline_definitions"] == 0
+
+
+def test_build_optimization_evidence_source_faithful(run_analyzer):
+    r = run_analyzer([ll("metrics_dbg.ll"), "--entry", "process"])
+    assert r.returncode == 0, r.stderr
+    s = json.loads(r.stdout)["summary"]
+    assert s["compile_units"] == 1
+    assert s["optimized_compile_units"] == 0
+    assert s["no_inline_definitions"] == s["defined"]
+
+
+def test_build_optimization_evidence_without_debug_info(run_analyzer):
+    r = run_analyzer([TWO(), "--entry", "caller"])
+    assert r.returncode == 0, r.stderr
+    s = json.loads(r.stdout)["summary"]
+    assert s["compile_units"] == 0
+    assert s["optimized_compile_units"] == 0
 
 
 def test_interesting_pointer_path(run_analyzer):

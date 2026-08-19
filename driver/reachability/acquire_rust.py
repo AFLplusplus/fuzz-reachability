@@ -1,8 +1,12 @@
 """Rust bitcode acquisition via rustc --emit=llvm-bc.
 
-rustc emits bitcode into target/<profile>/deps/: one .bc per crate at
-codegen-units=1, or several (deps/<crate>-<hash>.<cgu>.rcgu.bc) when the build
-splits a crate across codegen units. Collection handles both. profile and
+rustc emits one .bc per crate at codegen-units=1, or several
+(<crate>-<hash>.<cgu>.rcgu.bc) when the build splits a crate across codegen
+units. Collection handles both. Where cargo puts them depends on its version: up
+to 1.99 every unit writes into target/<profile>/deps/, while from 1.100 each unit
+gets its own <build-dir>/<profile>/build/<pkg>/<hash>/out/ directory and only the
+final artifact is uplifted into target/<profile>/. Both layouts are searched, so
+the driver works either side of that change. profile and
 codegen_units should mirror the fuzz binary's build: opt level governs generic
 sharing and codegen-units governs inlining, both of which decide which
 monomorphizations are emitted -- a mismatch yields a reachable set that does not
@@ -16,11 +20,12 @@ because the collected .bc set would be silently incomplete and yield a misleadin
 reachable set; it is detected and raised.
 
 The .bc set is taken from the crates this build actually produced (parsed from
-cargo's --message-format=json artifact stream), not from a blind glob of
-target/<profile>/deps/*.bc. A glob also picks up stale .bc left by earlier builds
--- cargo never deletes old artifacts -- and linking several .bc of the same crate
-fails with "symbol multiply defined". Restricting to this build's artifacts
-preserves every current codegen unit and genuinely distinct crate version.
+cargo's --message-format=json artifact stream), not from a blind glob of every
+.bc under the build directory. A glob also picks up stale .bc left by earlier
+builds -- cargo never deletes old artifacts -- and linking several .bc of the
+same crate fails with "symbol multiply defined". Restricting to this build's
+artifacts preserves every current codegen unit and genuinely distinct crate
+version.
 
 RUSTFLAGS is composed so the project's own flags survive: rustc's bitcode-emit
 flags are merged with the caller's RUSTFLAGS / CARGO_ENCODED_RUSTFLAGS, or with
@@ -54,7 +59,9 @@ class AcquireError(RuntimeError):
 
 
 _HASH_RE = re.compile(r"-([0-9a-f]{16})\.")
-_BASE_RE = re.compile(r"-[0-9a-f]{16}.*\.bc$")
+_STEM_SPLIT_RE = re.compile(r"[.-]")
+_UNIT_BUILD_DIR = "build"
+_UNIT_OUT_GLOB = ("*", "*", "out")
 _build_looks_cached = build_looks_cached
 
 
@@ -323,52 +330,89 @@ def _rustc_host():
 _NAMED_KINDS = ("bin", "cdylib", "staticlib", "dylib")
 
 
-def _named_bc_paths(msg, files, newer_than=None):
+def _bc_crate_name(basename):
+    """The crate a .bc filename belongs to: the part before cargo's build hash
+    (<crate>-<hash>.bc, from -Cextra-filename) or before the first codegen-unit
+    component (<crate>.<cgu>.<hash>.rcgu.bc, which cargo 1.100 emits without an
+    extra-filename because each unit already has its own output directory). A
+    crate name is a Rust identifier, so it holds neither '-' nor '.'."""
+    return _STEM_SPLIT_RE.split(basename, maxsplit=1)[0]
+
+
+def _unit_bc_dirs(artifact_path, out_dirs=()):
+    """The directories that can hold a unit's raw rustc output, derived from its
+    uplifted artifact path (target/<profile>/<name>): <profile>/deps for cargo up
+    to 1.99, and every per-unit <profile>/build/<pkg>/<hash>/out for 1.100 and
+    newer. out_dirs are unit output directories seen elsewhere in this build's
+    artifact stream; their build roots are searched too, which is what finds the
+    bitcode when build.build-dir moves it out of the target directory."""
+    root = os.path.dirname(artifact_path)
+    dirs = [os.path.join(root, "deps")]
+    build_roots = [os.path.join(root, _UNIT_BUILD_DIR)]
+    build_roots.extend(
+        os.path.dirname(os.path.dirname(os.path.dirname(d))) for d in out_dirs)
+    for build_root in dict.fromkeys(build_roots):
+        dirs.extend(sorted(glob.glob(os.path.join(build_root, *_UNIT_OUT_GLOB))))
+    return list(dict.fromkeys(dirs))
+
+
+def _warn_multiple_builds(count, stem):
+    if count > 1:
+        print(f"warning: found bitcode from {count} builds of crate "
+              f"'{stem}'; picking the newest by mtime, which can be stale if this "
+              f"crate was cached. Re-run with --clean for a fresh build.")
+
+
+def _named_bc_paths(msg, files, newer_than=None, out_dirs=()):
     """The .bc files for a link-product artifact (bin/cdylib/staticlib/dylib),
     whose cargo message carries only the bare or uplifted output path
     (target/<profile>/<name>, no build hash) -- so the hash-based collection
     below cannot match it and the crate body would be dropped. rustc emits the
-    unit's bitcode as deps/<name with '-' -> '_'>-<hash>.bc (or several
-    .<cgu>.rcgu.bc under codegen-units > 1); take every .bc of the newest build's
-    hash (a rebuild rewrites them, so newest is this build's). Returns [] for
-    other targets or when no matching .bc exists."""
+    unit's bitcode as <name with '-' -> '_'>-<hash>.bc (or several
+    .<cgu>.rcgu.bc under codegen-units > 1) into one of the directories
+    _unit_bc_dirs lists. Take every .bc of the newest build (a rebuild rewrites
+    them, so newest is this build's), identified by the build hash in the name or,
+    when cargo emitted the unit without one, by the output directory the newest
+    .bc sits in. Returns [] for other targets or when no matching .bc exists."""
     kind = msg.get("target", {}).get("kind") or []
     if not any(k in _NAMED_KINDS for k in kind):
         return []
     name = msg.get("target", {}).get("name")
     if not name or not files:
         return []
-    deps = os.path.join(os.path.dirname(files[0]), "deps")
     stem = name.replace("-", "_")
     cands = [
-        p for p in glob.glob(os.path.join(deps, f"{stem}-*.bc"))
-        if _BASE_RE.sub("", os.path.basename(p)) == stem
+        p for d in _unit_bc_dirs(files[0], out_dirs)
+        for p in glob.glob(os.path.join(d, f"{stem}*.bc"))
+        if _bc_crate_name(os.path.basename(p)) == stem
         and (newer_than is None or os.path.getmtime(p) >= newer_than - 2)
     ]
     if not cands:
         return []
-    hashes = {mm.group(1) for p in cands
-              if (mm := _HASH_RE.search(os.path.basename(p)))}
-    if len(hashes) > 1:
-        print(f"warning: deps/ holds bitcode from {len(hashes)} builds of crate "
-              f"'{stem}'; picking the newest by mtime, which can be stale if this "
-              f"crate was cached. Re-run with --clean for a fresh build.")
     newest = max(cands, key=os.path.getmtime)
     m = _HASH_RE.search(os.path.basename(newest))
-    if not m:
-        return [newest]
-    return sorted(p for p in cands if f"-{m.group(1)}." in os.path.basename(p))
+    if m:
+        hashes = {mm.group(1) for p in cands
+                  if (mm := _HASH_RE.search(os.path.basename(p)))}
+        _warn_multiple_builds(len(hashes), stem)
+        return sorted(p for p in cands if f"-{m.group(1)}." in os.path.basename(p))
+    unit = os.path.dirname(newest)
+    _warn_multiple_builds(len({os.path.dirname(p) for p in cands}), stem)
+    return sorted(p for p in cands if os.path.dirname(p) == unit)
 
 
 def _build_bc_paths_lines(lines, newer_than=None):
     """The .bc files this build produced, from cargo's json compiler-artifact
     messages: a library (rlib) unit carries the build hash in its output
-    filenames, and the matching deps/*-<hash>.bc lives beside them. A
+    filenames, and the matching *-<hash>.bc lives beside them. A
     bin/staticlib/cdylib/dylib unit carries only the bare or uplifted output path
-    (no hash), so its bitcode is resolved by name via _named_bc_paths. One or more
-    .bc per built crate; stale .bc from other builds (different or absent hash)
-    are not included."""
+    (no hash), so its bitcode is resolved by name via _named_bc_paths -- once the
+    whole stream is read, so the unit output directories the hashed units reveal
+    are known by then. One or more .bc per built crate; stale .bc from other builds
+    (different or absent hash) are not included."""
     bcs = set()
+    named = []
+    out_dirs = []
     for line in lines:
         line = decode(line).strip()
         if not line.startswith("{"):
@@ -391,11 +435,16 @@ def _build_bc_paths_lines(lines, newer_than=None):
         for f in files:
             m = _HASH_RE.search(os.path.basename(f))
             if m:
-                bcs.update(glob.glob(os.path.join(os.path.dirname(f), f"*-{m.group(1)}*.bc")))
+                unit = os.path.dirname(f)
+                bcs.update(glob.glob(os.path.join(unit, f"*-{m.group(1)}*.bc")))
+                if os.path.basename(unit) == "out":
+                    out_dirs.append(unit)
                 matched = True
         if not matched:
-            cutoff = None if msg.get("fresh") else newer_than
-            bcs.update(_named_bc_paths(msg, files, newer_than=cutoff))
+            named.append((msg, files, None if msg.get("fresh") else newer_than))
+    out_dirs = list(dict.fromkeys(out_dirs))
+    for msg, files, cutoff in named:
+        bcs.update(_named_bc_paths(msg, files, newer_than=cutoff, out_dirs=out_dirs))
     return sorted(bcs)
 
 
@@ -530,9 +579,14 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
         print(f"  profile={profile}, codegen-units={codegen_units}")
         print("  " + " ".join(cmd))
     target_dir = _target_dir(project_dir)
-    patterns = [os.path.join(target_dir, profile, "deps", "*.bc")]
+    patterns = [
+        os.path.join(target_dir, profile, "deps", "*.bc"),
+        os.path.join(target_dir, profile, _UNIT_BUILD_DIR, *_UNIT_OUT_GLOB, "*.bc"),
+    ]
     if build_std:
         patterns.append(os.path.join(target_dir, "*", profile, "deps", "*.bc"))
+        patterns.append(os.path.join(
+            target_dir, "*", profile, _UNIT_BUILD_DIR, *_UNIT_OUT_GLOB, "*.bc"))
     before_bitcode = _snapshot_bitcode(patterns)
     started = time.time()
     try:
@@ -575,14 +629,15 @@ def acquire_rust_bitcode(project_dir, profile="debug", build_std=False,
     if not bcs and r.returncode == 0:
         globbed = []
         for pat in patterns:
-            globbed.extend(glob.glob(pat))
+            globbed.extend(p for p in glob.glob(pat)
+                           if not os.path.basename(p).startswith("build_script_"))
         bcs = _dedup_newest_per_crate(_changed_bitcode(globbed, before_bitcode))
         if bcs:
             print(f"warning: fallback bitcode collection: cargo emitted no artifact "
                   f"stream; selected {len(bcs)} of {len(globbed)} invocation-fresh "
                   ".bc files")
     if not bcs:
-        raise AcquireError(f"no invocation-fresh .bc produced under {_target_dir(project_dir)}")
+        raise AcquireError(f"no invocation-fresh .bc produced under {target_dir}")
     _validate_bitcode_paths(bcs)
     print(f"rust bitcode: {len(bcs)} crate modules")
     return bcs
@@ -622,7 +677,7 @@ case "$ctype" in *proc-macro*) rm -f "$marker"; exit $status ;; esac
 if [ -n "$extra" ]; then
   find "$outdir" -maxdepth 1 -type f -name "$cname$extra*.bc" -exec cp -f {} "$REACH_BC_DIR/" ';' 2>/dev/null
 else
-  find "$outdir" -maxdepth 1 -type f -newer "$marker" '(' -name "$cname.bc" -o -name "$cname-*.bc" ')' -exec cp -f {} "$REACH_BC_DIR/" ';' 2>/dev/null
+  find "$outdir" -maxdepth 1 -type f -newer "$marker" '(' -name "$cname.bc" -o -name "$cname-*.bc" -o -name "$cname.*.bc" ')' -exec cp -f {} "$REACH_BC_DIR/" ';' 2>/dev/null
 fi
 rm -f "$marker"
 exit $status

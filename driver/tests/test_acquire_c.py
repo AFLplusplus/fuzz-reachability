@@ -69,6 +69,21 @@ def test_build_env_injects_no_inline_by_default(monkeypatch):
     assert "-fno-inline-functions" in flags
 
 
+def test_build_env_injects_opt0_by_default(monkeypatch):
+    monkeypatch.delenv("LLVM_BITCODE_GENERATION_FLAGS", raising=False)
+    env = acquire_c._build_env("/usr/lib/llvm-21/bin")
+    assert "-O0" in env["LLVM_BITCODE_GENERATION_FLAGS"].split()
+
+
+def test_build_env_keeps_inherited_opt_level(monkeypatch):
+    monkeypatch.setenv("LLVM_BITCODE_GENERATION_FLAGS", "-O1")
+    flags = acquire_c._build_env("/usr/lib/llvm-21/bin")[
+        "LLVM_BITCODE_GENERATION_FLAGS"].split()
+    assert "-O0" not in flags
+    assert flags[0] == "-O1"
+    assert "-fno-inline" in flags
+
+
 def test_build_env_optimize_omits_injection(monkeypatch):
     monkeypatch.delenv("LLVM_BITCODE_GENERATION_FLAGS", raising=False)
     env = acquire_c._build_env("/usr/lib/llvm-21/bin", optimize=True)

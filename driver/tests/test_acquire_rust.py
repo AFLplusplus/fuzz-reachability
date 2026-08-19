@@ -12,11 +12,12 @@ def test_emit_flags_codegen_units():
     assert "-Ccodegen-units=8" in acquire_rust._emit_flags(8)
 
 
-def test_base_re_strips_codegen_unit_split():
-    assert acquire_rust._BASE_RE.sub(
-        "", "cgutest-35522b9e3b1fcb3e.bc") == "cgutest"
-    assert acquire_rust._BASE_RE.sub(
-        "", "bintest-210615be512f3a47.0hz4fx5p6ud5e1erzexk3zjx4.0e3d7bm.rcgu.bc") == "bintest"
+def test_bc_crate_name_strips_hash_and_codegen_unit_split():
+    assert acquire_rust._bc_crate_name("cgutest-35522b9e3b1fcb3e.bc") == "cgutest"
+    assert acquire_rust._bc_crate_name(
+        "bintest-210615be512f3a47.0hz4fx5p6ud5e1erzexk3zjx4.0e3d7bm.rcgu.bc") == "bintest"
+    assert acquire_rust._bc_crate_name(
+        "bin_test.0hz4fx5p6ud5e1erzexk3zjx4.0e3d7bm.rcgu.bc") == "bin_test"
 
 
 def test_resolve_codegen_units_explicit_wins(tmp_path):
@@ -427,6 +428,100 @@ def test_named_bc_paths_warns_on_multiple_build_hashes(tmp_path, capsys):
     assert "2 builds of crate 'harness'" in capsys.readouterr().out
 
 
+def test_build_bc_paths_finds_per_unit_output_directory(tmp_path):
+    debug = tmp_path / "target" / "debug"
+    out = debug / "build" / "rust-dyn" / "abcdef0123456789" / "out"
+    stale_out = debug / "build" / "rust-dyn" / "0000000000000000" / "out"
+    out.mkdir(parents=True)
+    stale_out.mkdir(parents=True)
+    cgus = [out / f"rust_dyn-abcdef0123456789.cgu{i}.rcgu.bc" for i in range(3)]
+    stale = stale_out / "rust_dyn-0000000000000000.cgu0.rcgu.bc"
+    for p in (*cgus, stale):
+        p.write_text("x")
+    for p in cgus:
+        os.utime(p, (10, 10))
+    os.utime(stale, (1, 1))
+    msg = json.dumps({
+        "reason": "compiler-artifact",
+        "target": {"name": "rust-dyn", "kind": ["staticlib"]},
+        "filenames": [str(debug / "librust_dyn.a")],
+        "executable": None,
+    })
+    assert acquire_rust._build_bc_paths(msg) == sorted(str(p) for p in cgus)
+
+
+def test_build_bc_paths_bin_without_extra_filename(tmp_path):
+    debug = tmp_path / "target" / "debug"
+    out = debug / "build" / "harness" / "1111111111111111" / "out"
+    stale_out = debug / "build" / "harness" / "2222222222222222" / "out"
+    out.mkdir(parents=True)
+    stale_out.mkdir(parents=True)
+    cgus = [out / f"harness.cgu{i}.0e3d7bm.rcgu.bc" for i in range(2)]
+    stale = stale_out / "harness.cgu0.0e3d7bm.rcgu.bc"
+    other_crate = out / "harness_helper.cgu0.0e3d7bm.rcgu.bc"
+    for p in (*cgus, stale, other_crate):
+        p.write_text("x")
+    for p in (*cgus, other_crate):
+        os.utime(p, (10, 10))
+    os.utime(stale, (1, 1))
+    msg = json.dumps({
+        "reason": "compiler-artifact",
+        "target": {"name": "harness", "kind": ["bin"]},
+        "filenames": [str(debug / "harness")],
+        "executable": str(debug / "harness"),
+    })
+    assert acquire_rust._build_bc_paths(msg) == sorted(str(p) for p in cgus)
+
+
+def test_build_bc_paths_follows_build_dir_seen_in_stream(tmp_path):
+    debug = tmp_path / "target" / "debug"
+    debug.mkdir(parents=True)
+    build_root = tmp_path / "elsewhere" / "debug" / "build"
+    lib_out = build_root / "dep-lib" / "abcdef0123456789" / "out"
+    bin_out = build_root / "harness" / "1111111111111111" / "out"
+    lib_out.mkdir(parents=True)
+    bin_out.mkdir(parents=True)
+    lib_bc = lib_out / "dep_lib-abcdef0123456789.bc"
+    bin_bc = bin_out / "harness.cgu0.0e3d7bm.rcgu.bc"
+    for p in (lib_bc, bin_bc):
+        p.write_text("x")
+    lib = json.dumps({
+        "reason": "compiler-artifact",
+        "target": {"name": "dep_lib", "kind": ["lib"]},
+        "filenames": [str(lib_out / "libdep_lib-abcdef0123456789.rlib")],
+        "executable": None,
+    })
+    binmsg = json.dumps({
+        "reason": "compiler-artifact",
+        "target": {"name": "harness", "kind": ["bin"]},
+        "filenames": [str(debug / "harness")],
+        "executable": str(debug / "harness"),
+    })
+    assert acquire_rust._build_bc_paths(binmsg + "\n" + lib) == sorted(
+        [str(lib_bc), str(bin_bc)])
+
+
+def test_fallback_skips_build_script_bitcode(tmp_path, monkeypatch):
+    out = tmp_path / "target" / "debug" / "build" / "crate" / "1111111111111111" / "out"
+    out.mkdir(parents=True)
+    crate_bc = out / "crate-1111111111111111.bc"
+    script_bc = out / "build_script_build.cgu0.0e3d7bm.rcgu.bc"
+
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = "   Compiling crate v0.1.0\n    Finished\n"
+
+    def run(cmd, **kwargs):
+        if cmd[:2] == ["cargo", "build"]:
+            for path in (crate_bc, script_bc):
+                path.write_text("x")
+        return R()
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", run)
+    assert acquire_rust.acquire_rust_bitcode(str(tmp_path)) == [str(crate_bc)]
+
+
 def test_compose_rustflags_appends_opt0_by_default(tmp_path, monkeypatch):
     monkeypatch.delenv("RUSTFLAGS", raising=False)
     monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
@@ -597,6 +692,40 @@ def test_bc_wrapper_collects_only_current_build_identity(tmp_path):
     assert result.returncode == 0
     assert sorted(path.name for path in collect.glob("*.bc")) == [
         "crate-2222222222222222.bc",
+    ]
+
+
+def test_bc_wrapper_collects_codegen_units_without_extra_filename(tmp_path):
+    output = tmp_path / "output"
+    output.mkdir()
+    collect = tmp_path / "collect"
+    collect.mkdir()
+    compiler = tmp_path / "rustc"
+    compiler.write_text(
+        "#!/bin/sh\n"
+        "for cgu in harness.cgu0 harness.cgu1 other.cgu0; do\n"
+        "  printf x > \"$FAKE_OUT/$cgu.0e3d7bm.rcgu.bc\"\n"
+        "  touch -t 209901010000 \"$FAKE_OUT/$cgu.0e3d7bm.rcgu.bc\"\n"
+        "done\n"
+    )
+    compiler.chmod(0o755)
+    wrapper = tmp_path / "wrapper"
+    wrapper.write_text(acquire_rust._BC_WRAPPER)
+    wrapper.chmod(0o755)
+    env = dict(os.environ)
+    env.update({
+        "FAKE_OUT": str(output),
+        "REACH_BC_DIR": str(collect),
+        "REACH_EXTRA_RUSTFLAGS": "",
+    })
+    result = subprocess.run([
+        str(wrapper), str(compiler), "--out-dir", str(output),
+        "--crate-name", "harness", "--crate-type", "bin",
+    ], env=env)
+    assert result.returncode == 0
+    assert sorted(path.name for path in collect.glob("*.bc")) == [
+        "harness.cgu0.0e3d7bm.rcgu.bc",
+        "harness.cgu1.0e3d7bm.rcgu.bc",
     ]
 
 

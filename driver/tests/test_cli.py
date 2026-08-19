@@ -204,6 +204,17 @@ def test_check_toolchain_ok(analyzer, monkeypatch):
     assert cli.main(["check-toolchain"]) == 0
 
 
+def test_check_toolchain_without_rustc_is_ok(analyzer, monkeypatch, capsys):
+    monkeypatch.setenv("REACHABILITY_ANALYZER", analyzer)
+    monkeypatch.setattr(toolchain, "rustc_available", lambda: False)
+    monkeypatch.setattr(
+        toolchain, "rustc_llvm_major",
+        lambda: (_ for _ in ()).throw(AssertionError("rustc must not be probed")),
+    )
+    assert cli.main(["check-toolchain"]) == 0
+    assert "no rustc on PATH" in capsys.readouterr().out
+
+
 def test_run_parser_optimize_defaults_false():
     parser = cli.build_parser()
     args = parser.parse_args(["run", "--lang", "c", "--project", "."])

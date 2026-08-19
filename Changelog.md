@@ -1,8 +1,26 @@
 ### v1.2-dev
+- Support cargo 1.100's new build layout
+- C/C++ analysis bitcode is now compiled at `-O0` in addition to
+  `-fno-inline -fno-inline-functions` (bitcode compile only, via
+  `LLVM_BITCODE_GENERATION_FLAGS`; the native object keeps the project's `-Ox`).
+- New post-optimizer warning: when the analyzed bitcode was built with
+  optimization and `--optimize` was not requested — a prebuilt `--artifact`, or a
+  build that recompiled nothing. The run says so instead of silently reporting a
+  function set that cannot be joined to coverage.
+- Failure diagnosis recognizes a failed gllvm bitcode compile
+  (`Failed to build bitcode file for …`), which `gclang` reports while still
+  exiting zero, and names the injected flags and the escape hatch.
+- `reachability check-toolchain` no longer fails on a host with no Rust toolchain
+- `reachability run --no-name-roots` exposes the analyzer's flag of the same name,
+  so the contribution of the runtime-name-lookup root heuristic can be measured
+  without invoking the analyzer by hand.
+- Documentation: the C/C++ optimization-independence claim is corrected and the
+  prebuilt-bitcode trap documented; `Limitations` now covers method-table-heavy
+  codebases where the over-approximation swallows the tree, with per-subsystem
+  scoping and the `indirect_only`/`low_confidence` counts as the recovery.
 - The driver now requires Python >= 3.10 instead of >= 3.12. On 3.10 the
   `tomli` backport supplies `tomllib`; it is not installed on 3.11+. CI runs the
   LLVM 21 job on Python 3.10.
-- ...
 
 
 ### v1.1

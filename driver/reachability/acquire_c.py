@@ -28,6 +28,7 @@ from collections import deque
 import hashlib
 import mmap
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -54,14 +55,20 @@ _build_looks_cached = build_looks_cached
 
 
 _BITCODE_NO_INLINE_FLAGS = "-fno-inline -fno-inline-functions"
+_BITCODE_SOURCE_FAITHFUL_FLAGS = "-O0 " + _BITCODE_NO_INLINE_FLAGS
+_OPT_LEVEL_FLAG = re.compile(r"(?:\A|\s)-O")
 
 
 def _build_env(clang_bindir: str, optimize: bool = False) -> dict:
     """Environment for the gllvm build. By default (optimize=False) it asks gllvm
     to emit source-faithful bitcode via LLVM_BITCODE_GENERATION_FLAGS, which gllvm
-    applies only to the bitcode compile (never the native object), so functions
-    are not inlined away in what the analyzer reads. optimize=True leaves inlining
-    to the build's own flags."""
+    applies only to the bitcode compile (never the native object), so the analyzer
+    reads the functions the source defines: -O0 keeps the project's own -Ox from
+    deleting them through inlining, dead-code elimination or devirtualization, and
+    -fno-inline covers what -O0 still honours (always_inline). An inherited
+    LLVM_BITCODE_GENERATION_FLAGS that already carries an -O level keeps it -- the
+    escape hatch for a unit that only compiles optimized -- and only the
+    no-inlining flags are added. optimize=True leaves the build's own flags alone."""
     env = dict(os.environ)
     env["CC"] = "gclang"
     env["CXX"] = "gclang++"
@@ -69,9 +76,9 @@ def _build_env(clang_bindir: str, optimize: bool = False) -> dict:
     env["LC_ALL"] = "C"
     if not optimize:
         inherited = env.get("LLVM_BITCODE_GENERATION_FLAGS", "")
-        env["LLVM_BITCODE_GENERATION_FLAGS"] = (
-            (inherited + " " + _BITCODE_NO_INLINE_FLAGS).strip()
-        )
+        injected = (_BITCODE_NO_INLINE_FLAGS if _OPT_LEVEL_FLAG.search(inherited)
+                    else _BITCODE_SOURCE_FAITHFUL_FLAGS)
+        env["LLVM_BITCODE_GENERATION_FLAGS"] = (inherited + " " + injected).strip()
     return env
 
 
@@ -533,9 +540,10 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     the target links; "none" keeps only the linker's view; "all" pulls in every
     bitcode archive in the tree (see the module docstring).
     verbose: stream the build's output live instead of capturing it silently.
-    optimize: when False (default) emit source-faithful bitcode (functions not
-    inlined away, via LLVM_BITCODE_GENERATION_FLAGS); when True leave inlining to
-    the build's flags.
+    optimize: when False (default) emit source-faithful bitcode (-O0 plus
+    -fno-inline in the bitcode compile only, via LLVM_BITCODE_GENERATION_FLAGS, so
+    no function the source defines is optimized away); when True leave the build's
+    own optimization in place.
 
     Returns a list of absolute .bc paths to be linked together.
     """

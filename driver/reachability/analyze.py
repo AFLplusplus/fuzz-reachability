@@ -13,10 +13,11 @@ class AnalyzeError(RuntimeError):
 
 def analyze(merged_bc, tc, entries, dot=None,
             reached_out=None, not_reached_out=None, out_path=None, verbose=False,
-            include_process_lifecycle_roots=False):
+            include_process_lifecycle_roots=False, no_name_roots=False):
     """Run the analyzer on `merged_bc`; return the parsed JSON report.
 
     reached_out / not_reached_out: paths for the sancov allowlist / ignorelist.
+    no_name_roots: disable the runtime-name-lookup root heuristic (can under-report).
     verbose: echo the exact analyzer command. Analyzer warnings are always shown.
     """
     cmd = [tc.analyzer, merged_bc]
@@ -32,6 +33,8 @@ def analyze(merged_bc, tc, entries, dot=None,
         cmd += ["--out", out_path]
     if include_process_lifecycle_roots:
         cmd.append("--include-process-lifecycle-roots")
+    if no_name_roots:
+        cmd.append("--no-name-roots")
     if verbose:
         print("  " + " ".join(cmd))
     try:

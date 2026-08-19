@@ -32,3 +32,51 @@ def test_external_advisory_silent_when_few():
                      "indirect_only": 0, "low_confidence": 0, "unreachable": 0},
          "backend": "type-based"}
     assert report.external_advisory(r) is None
+
+
+def _summary(**kw):
+    s = {"reachable": 10, "defined": 10, "indirect_only": 0, "low_confidence": 0,
+         "unreachable": 0, "external_declarations": 0, "compile_units": 0,
+         "optimized_compile_units": 0, "no_inline_definitions": 10}
+    s.update(kw)
+    return {"summary": s, "backend": "type-based"}
+
+
+def test_optimization_advisory_fires_on_optimized_debug_info():
+    msg = report.optimization_advisory(
+        _summary(compile_units=8, optimized_compile_units=8), lang_mode="c")
+    assert msg and "8 of 8 compile units" in msg
+    assert "--optimize" in msg and "not_reached.txt" in msg
+
+
+def test_optimization_advisory_silent_on_source_faithful_build():
+    assert report.optimization_advisory(
+        _summary(compile_units=8, optimized_compile_units=0), lang_mode="c") is None
+
+
+def test_optimization_advisory_silent_under_optimize_flag():
+    assert report.optimization_advisory(
+        _summary(compile_units=8, optimized_compile_units=8), lang_mode="c",
+        optimize=True) is None
+
+
+def test_optimization_advisory_no_inline_fallback_without_debug_info():
+    msg = report.optimization_advisory(
+        _summary(no_inline_definitions=1), lang_mode="cpp")
+    assert msg and "1 of 10 definitions" in msg
+
+
+def test_optimization_advisory_fallback_skips_rust_and_mixed():
+    for mode in ("rust", "mixed", None):
+        assert report.optimization_advisory(
+            _summary(no_inline_definitions=0), lang_mode=mode) is None
+
+
+def test_optimization_advisory_fallback_silent_when_flags_applied():
+    assert report.optimization_advisory(
+        _summary(no_inline_definitions=10), lang_mode="c") is None
+
+
+def test_optimization_advisory_tolerates_older_report():
+    assert report.optimization_advisory(
+        {"summary": {"reachable": 4, "defined": 4}}, lang_mode="c") is None

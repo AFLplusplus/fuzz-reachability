@@ -63,3 +63,29 @@ def test_analyzer_nonzero_is_bounded_domain_error(monkeypatch):
         analyze.analyze("input.bc", _tc("analyzer"), ["entry"])
     assert "failure-tail" in str(exc.value)
     assert len(str(exc.value)) < 70000
+
+
+def test_no_name_roots_reaches_analyzer_argv(monkeypatch):
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return types.SimpleNamespace(returncode=0, stdout=b"{}", stderr=b"")
+
+    monkeypatch.setattr(analyze.subprocess, "run", fake_run)
+    analyze.analyze("input.bc", _tc("analyzer"), ["entry"])
+    assert "--no-name-roots" not in seen["cmd"]
+    analyze.analyze("input.bc", _tc("analyzer"), ["entry"], no_name_roots=True)
+    assert "--no-name-roots" in seen["cmd"]
+
+
+def test_name_roots_flag_changes_reachable_set(analyzer, tmp_path):
+    default = analyze.analyze(
+        ll("dlsym_byname.ll"), _tc(analyzer), ["entry"],
+        out_path=str(tmp_path / "on.json"),
+    )
+    disabled = analyze.analyze(
+        ll("dlsym_byname.ll"), _tc(analyzer), ["entry"],
+        out_path=str(tmp_path / "off.json"), no_name_roots=True,
+    )
+    assert disabled["summary"]["reachable"] < default["summary"]["reachable"]

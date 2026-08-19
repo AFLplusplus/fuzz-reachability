@@ -41,6 +41,29 @@ const char *confidenceStr(Via via, bool hasFlow) {
   return hasFlow ? "medium" : "low";
 }
 
+struct BuildOptEvidence {
+  int64_t units = 0;
+  int64_t optimizedUnits = 0;
+  int64_t noInlineDefs = 0;
+};
+
+BuildOptEvidence collectBuildOptEvidence(Module &m) {
+  BuildOptEvidence e;
+  for (DICompileUnit *cu : m.debug_compile_units()) {
+    ++e.units;
+    if (cu->isOptimized())
+      ++e.optimizedUnits;
+  }
+  for (Function &f : m) {
+    if (f.isDeclaration())
+      continue;
+    if (f.hasFnAttribute(Attribute::NoInline) ||
+        f.hasFnAttribute(Attribute::OptimizeNone))
+      ++e.noInlineDefs;
+  }
+  return e;
+}
+
 const char *manglingStr(Module &m) {
   for (Function &f : m)
     if (!f.isDeclaration() && f.getName().starts_with("_R"))
@@ -125,6 +148,8 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
         externalCallees.insert(sanitizeUtf8(to->getName()));
   }
 
+  BuildOptEvidence optEvidence = collectBuildOptEvidence(m);
+
   json::OStream J(os, 2);
   J.object([&] {
     J.attribute("llvm_version", std::to_string(linkedLLVMMajor()));
@@ -141,6 +166,9 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
       J.attribute("low_confidence", lowConfidence);
       J.attribute("unreachable", (int64_t)unreachable.size());
       J.attribute("external_declarations", (int64_t)externalCallees.size());
+      J.attribute("compile_units", optEvidence.units);
+      J.attribute("optimized_compile_units", optEvidence.optimizedUnits);
+      J.attribute("no_inline_definitions", optEvidence.noInlineDefs);
     });
     J.attributeArray("reachable", [&] {
       for (auto &[f, via] : reachable)
