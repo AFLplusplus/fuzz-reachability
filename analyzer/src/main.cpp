@@ -21,6 +21,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -302,6 +303,29 @@ std::vector<std::string> collectConstructorEscapeRoots(
   return added;
 }
 
+std::vector<Function *> collectEscapesFromUnreached(Module &m,
+                                                   const reach::CallGraph &graph,
+                                                   const reach::ReachResult &res) {
+  DenseSet<Function *> seen;
+  std::vector<Function *> out;
+  for (Function &f : m) {
+    if (f.isDeclaration() || res.reached.count(&f))
+      continue;
+    auto it = graph.escapeSets().find(&f);
+    if (it == graph.escapeSets().end())
+      continue;
+    for (reach::SetId id : it->second)
+      for (Function *target : graph.sets().get(id))
+        if (!target->isDeclaration() && !res.reached.count(target) &&
+            seen.insert(target).second)
+          out.push_back(target);
+  }
+  std::sort(out.begin(), out.end(), [](Function *a, Function *b) {
+    return a->getName() < b->getName();
+  });
+  return out;
+}
+
 std::vector<std::string> collectProcessLifecycleRoots(
     Module &m, std::set<std::string> &have, std::vector<std::string> &roots) {
   std::vector<std::string> added;
@@ -479,7 +503,21 @@ int main(int argc, char **argv) {
     return 1;
   }
 
-  auto flowTargets = reach::computeAddressFlowTargets(*mod, escapeIdx, res);
+  std::vector<Function *> escapedFromUnreached =
+      collectEscapesFromUnreached(*mod, graph, res);
+  if (!escapedFromUnreached.empty()) {
+    errs() << "note: " << escapedFromUnreached.size()
+           << " function(s) stay unreachable because only unreached code hands "
+              "them to external code:";
+    for (size_t i = 0; i < escapedFromUnreached.size() && i < 5; ++i)
+      errs() << " " << escapedFromUnreached[i]->getName();
+    if (escapedFromUnreached.size() > 5)
+      errs() << " ...";
+    errs() << "\n";
+  }
+
+  auto flowTargets = reach::computeAddressFlowTargets(
+      *mod, escapeIdx, res, graph.externallyCalled());
   for (Function *f : reach::computeSlotTargets(*mod, res))
     flowTargets.insert(f);
   auto metrics = reach::computeMetrics(*mod, graph, res, roots, localVars);
@@ -512,7 +550,8 @@ int main(int argc, char **argv) {
   const char *backendName = IndirectAny ? "indirect-any" : "type-based";
   if (OutFile.empty()) {
     reach::writeJson(outs(), *mod, graph, res, backendName, roots, flowTargets,
-                     metrics, runInfo ? &*runInfo : nullptr, !NoEdges);
+                     metrics, escapedFromUnreached, runInfo ? &*runInfo : nullptr,
+                     !NoEdges);
   } else {
     std::error_code ec;
     raw_fd_ostream out(OutFile, ec, sys::fs::OF_Text);
@@ -522,7 +561,8 @@ int main(int argc, char **argv) {
       return 1;
     }
     reach::writeJson(out, *mod, graph, res, backendName, roots, flowTargets,
-                     metrics, runInfo ? &*runInfo : nullptr, !NoEdges);
+                     metrics, escapedFromUnreached, runInfo ? &*runInfo : nullptr,
+                     !NoEdges);
   }
   return 0;
 }

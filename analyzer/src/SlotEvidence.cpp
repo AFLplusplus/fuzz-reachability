@@ -16,10 +16,6 @@ using namespace llvm;
 
 namespace reach {
 
-namespace {
-
-using SlotKey = std::pair<Type *, std::vector<uint64_t>>;
-
 std::optional<SlotKey> fieldKey(Value *pointer) {
   auto *gep = dyn_cast<GEPOperator>(pointer);
   if (!gep || !gep->getSourceElementType()->isStructTy() ||
@@ -52,6 +48,14 @@ std::optional<SlotKey> fieldKey(Value *pointer) {
     return std::nullopt;
   return SlotKey{owner, std::move(path)};
 }
+
+bool isDispatchTable(const GlobalVariable &g) {
+  StringRef name = g.getName();
+  return name.starts_with("_ZTV") || name.starts_with("_ZTC") ||
+         name.starts_with("_ZTT") || name.starts_with("vtable.");
+}
+
+namespace {
 
 void recordInitializer(Constant *c, Type *owner, std::vector<uint64_t> path,
                        std::map<SlotKey, std::vector<Function *>> &stored) {
@@ -147,6 +151,35 @@ std::optional<SlotKey> dispatchKey(Value *pointer, const DataLayout &dl) {
 
 } // namespace
 
+std::set<SlotKey> collectCallableFields(Module &m) {
+  std::map<SlotKey, std::vector<Function *>> stored;
+  for (GlobalVariable &g : m.globals())
+    if (g.hasInitializer())
+      recordInitializer(g.getInitializer(), nullptr, {}, stored);
+  std::set<SlotKey> out;
+  for (const auto &kv : stored)
+    out.insert(kv.first);
+  for (Function &f : m) {
+    if (f.isDeclaration())
+      continue;
+    for (Instruction &i : instructions(f)) {
+      if (auto write = memoryWrite(i)) {
+        if (resolveCallableValue(write->value))
+          if (auto key = fieldKey(write->pointer))
+            out.insert(std::move(*key));
+        continue;
+      }
+      auto *cb = dyn_cast<CallBase>(&i);
+      if (!cb || !isIndirectCall(*cb))
+        continue;
+      if (auto *load = dyn_cast<LoadInst>(cb->getCalledOperand()->stripPointerCasts()))
+        if (auto key = fieldKey(load->getPointerOperand()))
+          out.insert(std::move(*key));
+    }
+  }
+  return out;
+}
+
 DenseSet<Function *> computeSlotTargets(Module &m, const ReachResult &res) {
   const DataLayout &dl = m.getDataLayout();
   std::map<SlotKey, std::vector<Function *>> stored;
@@ -163,9 +196,9 @@ DenseSet<Function *> computeSlotTargets(Module &m, const ReachResult &res) {
     if (f.isDeclaration() || !res.reached.count(&f))
       continue;
     for (Instruction &i : instructions(f)) {
-      if (auto *store = dyn_cast<StoreInst>(&i)) {
-        if (Function *target = resolveCallableValue(store->getValueOperand()))
-          if (auto key = fieldKey(store->getPointerOperand()))
+      if (auto write = memoryWrite(i)) {
+        if (Function *target = resolveCallableValue(write->value))
+          if (auto key = fieldKey(write->pointer))
             stored[*key].push_back(target);
         continue;
       }
@@ -176,10 +209,10 @@ DenseSet<Function *> computeSlotTargets(Module &m, const ReachResult &res) {
       if (!load)
         continue;
       Value *slot = load->getPointerOperand();
-      if (auto key = fieldKey(slot))
-        called.insert(*key);
-      else if (auto key = dispatchKey(slot, dl))
-        called.insert(*key);
+      if (auto field = fieldKey(slot))
+        called.insert(*field);
+      else if (auto dispatch = dispatchKey(slot, dl))
+        called.insert(*dispatch);
     }
   }
 

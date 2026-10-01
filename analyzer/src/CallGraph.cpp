@@ -1,13 +1,18 @@
 #include "CallGraph.h"
 #include "IndirectResolver.h"
 #include "Reachability.h"
+#include "SlotEvidence.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/Analysis/MemoryBuiltins.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/IntrinsicInst.h"
+#include <set>
 #include <utility>
 #include <vector>
 
@@ -75,6 +80,17 @@ void buildDirectEdges(Module &m, CallGraph &g) {
   }
 }
 
+std::optional<MemoryWrite> memoryWrite(Instruction &i) {
+  if (auto *store = dyn_cast<StoreInst>(&i))
+    return MemoryWrite{store->getPointerOperand(), store->getValueOperand()};
+  if (auto *rmw = dyn_cast<AtomicRMWInst>(&i))
+    if (rmw->getOperation() == AtomicRMWInst::Xchg)
+      return MemoryWrite{rmw->getPointerOperand(), rmw->getValOperand()};
+  if (auto *cmpxchg = dyn_cast<AtomicCmpXchgInst>(&i))
+    return MemoryWrite{cmpxchg->getPointerOperand(), cmpxchg->getNewValOperand()};
+  return std::nullopt;
+}
+
 bool isIndirectCall(CallBase &cb) {
   if (cb.isInlineAsm())
     return false;
@@ -99,13 +115,92 @@ void buildIndirectEdges(Module &m, CallGraph &g, IndirectResolver &r,
   }
 }
 
-static bool isCallbackValue(Value *value) {
-  if (!value->getType()->isPointerTy())
-    return false;
-  return resolveCallableValue(value) || isa<Argument>(value->stripPointerCasts());
-}
+namespace {
 
-static void propagateArgumentStores(EscapeIndex &idx) {
+class CallbackValues {
+public:
+  CallbackValues(const EscapeIndex &idx, const std::set<SlotKey> &callableFields)
+      : Idx(idx), CallableFields(callableFields) {}
+
+  bool carries(Value *value) {
+    SmallPtrSet<Value *, 8> visited;
+    return carries(value, 0, visited);
+  }
+
+private:
+  bool carries(Value *value, unsigned depth, SmallPtrSetImpl<Value *> &visited) {
+    if (!value->getType()->isPointerTy())
+      return false;
+    if (resolveCallableValue(value))
+      return true;
+    Value *v = value->stripPointerCasts();
+    if (isa<Argument>(v))
+      return true;
+    if (depth >= 4 || !visited.insert(v).second)
+      return false;
+    if (auto *select = dyn_cast<SelectInst>(v))
+      return carries(select->getTrueValue(), depth + 1, visited) ||
+             carries(select->getFalseValue(), depth + 1, visited);
+    if (auto *phi = dyn_cast<PHINode>(v)) {
+      for (Value *incoming : phi->incoming_values())
+        if (carries(incoming, depth + 1, visited))
+          return true;
+      return false;
+    }
+    if (auto *load = dyn_cast<LoadInst>(v)) {
+      auto key = fieldKey(load->getPointerOperand());
+      return key && CallableFields.count(*key);
+    }
+    return holdsCallable(getUnderlyingObject(v));
+  }
+
+  bool holdsCallable(Value *object) {
+    auto cached = Holds.find(object);
+    if (cached != Holds.end())
+      return cached->second;
+    bool holds = false;
+    if (auto *global = dyn_cast<GlobalVariable>(object)) {
+      if (isDispatchTable(*global)) {
+        Holds[object] = false;
+        return false;
+      }
+      if (global->hasInitializer())
+        holds = constantHoldsCallable(global->getInitializer());
+    }
+    if (!holds) {
+      auto it = Idx.storedTo.find(object);
+      if (it != Idx.storedTo.end())
+        for (Value *stored : it->second)
+          if (resolveCallableValue(stored)) {
+            holds = true;
+            break;
+          }
+    }
+    Holds[object] = holds;
+    return holds;
+  }
+
+  static bool constantHoldsCallable(Constant *c) {
+    if (resolveCallableValue(c))
+      return true;
+    if (!isa<ConstantAggregate>(c))
+      return false;
+    for (Use &op : c->operands())
+      if (constantHoldsCallable(cast<Constant>(op.get())))
+        return true;
+    return false;
+  }
+
+  const EscapeIndex &Idx;
+  const std::set<SlotKey> &CallableFields;
+  DenseMap<Value *, bool> Holds;
+};
+
+} // namespace
+
+static void propagateArgumentStores(EscapeIndex &idx,
+                                    const std::set<SlotKey> &callableFields) {
+  CallbackValues callbacks(idx, callableFields);
   DenseMap<Argument *, SmallVector<Value *, 2>> callerObjects;
   for (auto &kv : idx.callSites) {
     Function *callee = kv.first;
@@ -170,7 +265,7 @@ static void propagateArgumentStores(EscapeIndex &idx) {
         have.insert(existing.begin(), existing.end());
       }
       for (Value *value : delta)
-        if (isCallbackValue(value) && have.insert(value).second) {
+        if (callbacks.carries(value) && have.insert(value).second) {
           idx.parameterStores[object].push_back(value);
           grew = true;
         }
@@ -189,13 +284,15 @@ void buildEscapeIndex(Module &m, EscapeIndex &idx) {
       if (auto *cb = dyn_cast<CallBase>(&i)) {
         if (Function *callee = directCallee(*cb))
           idx.callSites[callee].push_back(cb);
-      } else if (auto *store = dyn_cast<StoreInst>(&i)) {
-        Value *base = getUnderlyingObject(store->getPointerOperand());
-        idx.storedTo[base].push_back(store->getValueOperand());
+        if (auto *copy = dyn_cast<AnyMemTransferInst>(cb))
+          idx.storedTo[getUnderlyingObject(copy->getRawDest())].push_back(
+              copy->getRawSource());
+      } else if (auto write = memoryWrite(i)) {
+        idx.storedTo[getUnderlyingObject(write->pointer)].push_back(write->value);
       }
     }
   }
-  propagateArgumentStores(idx);
+  propagateArgumentStores(idx, collectCallableFields(m));
 }
 
 static Value *stripEscape(Value *v) {
@@ -246,10 +343,16 @@ static void escapeSuccessors(Value *v, const EscapeIndex &idx,
           out.push_back(cb->getArgOperand(arg->getArgNo()));
     return;
   }
-  if (auto *load = dyn_cast<LoadInst>(v)) {
-    Value *base = getUnderlyingObject(load->getPointerOperand());
-    out.push_back(base);
-    appendStoredValues(load->getPointerOperand(), idx, out, parameterStores);
+  Value *readFrom = nullptr;
+  if (auto *load = dyn_cast<LoadInst>(v))
+    readFrom = load->getPointerOperand();
+  else if (auto *rmw = dyn_cast<AtomicRMWInst>(v))
+    readFrom = rmw->getPointerOperand();
+  else if (auto *cmpxchg = dyn_cast<AtomicCmpXchgInst>(v))
+    readFrom = cmpxchg->getPointerOperand();
+  if (readFrom) {
+    out.push_back(getUnderlyingObject(readFrom));
+    appendStoredValues(readFrom, idx, out, parameterStores);
     return;
   }
   if (auto *call = dyn_cast<CallBase>(v)) {
@@ -473,11 +576,76 @@ static void appendOperandBundleRoots(CallBase &cb, std::vector<Value *> &roots,
     }
 }
 
-static bool storesIntoExternalMemory(Value *pointer) {
+static bool isExternalMemory(Value *pointer,
+                             const DenseSet<Function *> &externallyCalled,
+                             const TargetLibraryInfo &tli, unsigned budget = 8);
+
+static bool returnsFreshMemory(CallBase &call, Function &callee,
+                               const TargetLibraryInfo &tli) {
+  if (call.hasRetAttr(Attribute::NoAlias) || isAllocationFn(&call, &tli))
+    return true;
+  StringRef name = callee.getName();
+  if (name.starts_with("_Znw") || name.starts_with("_Zna"))
+    return true;
+  LibFunc lib;
+  if (!tli.getLibFunc(callee, lib))
+    return false;
+  switch (lib) {
+  case LibFunc_malloc:
+  case LibFunc_calloc:
+  case LibFunc_realloc:
+  case LibFunc_reallocf:
+  case LibFunc_reallocarray:
+  case LibFunc_valloc:
+  case LibFunc_pvalloc:
+  case LibFunc_aligned_alloc:
+  case LibFunc_memalign:
+  case LibFunc_vec_malloc:
+  case LibFunc_vec_calloc:
+  case LibFunc_vec_realloc:
+  case LibFunc_strdup:
+  case LibFunc_strndup:
+  case LibFunc_dunder_strdup:
+  case LibFunc_dunder_strndup:
+    return true;
+  default:
+    return false;
+  }
+}
+
+static bool returnsExternalMemory(CallBase &call,
+                                  const DenseSet<Function *> &externallyCalled,
+                                  const TargetLibraryInfo &tli, unsigned budget) {
+  Function *callee = directCallee(call);
+  if (!callee || callee->isIntrinsic())
+    return false;
+  if (callee->isDeclaration())
+    return !returnsFreshMemory(call, *callee, tli);
+  for (Instruction &i : instructions(*callee)) {
+    auto *ret = dyn_cast<ReturnInst>(&i);
+    if (!ret || !ret->getReturnValue())
+      continue;
+    Value *source = getUnderlyingObject(ret->getReturnValue());
+    if (auto *arg = dyn_cast<Argument>(source))
+      if (arg->getParent() == callee && arg->getArgNo() < call.arg_size())
+        source = call.getArgOperand(arg->getArgNo());
+    if (isExternalMemory(source, externallyCalled, tli, budget))
+      return true;
+  }
+  return false;
+}
+
+static bool isExternalMemory(Value *pointer,
+                             const DenseSet<Function *> &externallyCalled,
+                             const TargetLibraryInfo &tli, unsigned budget) {
   Value *base = getUnderlyingObject(pointer);
-  for (unsigned depth = 0; depth < 8; ++depth) {
+  while (budget-- > 0) {
     if (auto *global = dyn_cast<GlobalVariable>(base))
       return global->isDeclaration();
+    if (auto *arg = dyn_cast<Argument>(base))
+      return externallyCalled.count(arg->getParent());
+    if (auto *call = dyn_cast<CallBase>(base))
+      return returnsExternalMemory(*call, externallyCalled, tli, budget);
     auto *load = dyn_cast<LoadInst>(base);
     if (!load)
       return false;
@@ -486,9 +654,30 @@ static bool storesIntoExternalMemory(Value *pointer) {
   return false;
 }
 
+static bool isDispatchTablePointer(Value *value) {
+  auto *global = dyn_cast<GlobalVariable>(getUnderlyingObject(value));
+  return global && isDispatchTable(*global);
+}
+
 void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
+  TargetLibraryInfoImpl tlii(m.getTargetTriple());
+  TargetLibraryInfo tli(tlii);
+  DenseSet<Function *> external;
+  std::vector<Function *> externalOrder;
   std::vector<EscapeSite> sites;
   std::vector<Value *> roots;
+  DenseSet<Instruction *> storeSites;
+  auto addStoreSites = [&](Function &f) {
+    for (Instruction &i : instructions(f)) {
+      auto write = memoryWrite(i);
+      if (!write || storeSites.count(&i) || isDispatchTablePointer(write->value) ||
+          !isExternalMemory(write->pointer, external, tli))
+        continue;
+      storeSites.insert(&i);
+      sites.push_back({&f, write->value, true});
+      roots.push_back(write->value);
+    }
+  };
   for (Function &f : m) {
     if (f.isDeclaration())
       continue;
@@ -496,17 +685,14 @@ void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
       if (auto *cb = dyn_cast<CallBase>(&i)) {
         if (callsAnalyzableCallee(*cb))
           continue;
-        bool handedOut = !registersExitHandler(*cb);
+        Function *callee = cb->getCalledFunction();
+        bool handedOut =
+            !registersExitHandler(*cb) && !(callee && callee->isIntrinsic());
         for (const Use &argU : cb->args()) {
           sites.push_back({&f, argU.get(), handedOut});
           roots.push_back(argU.get());
         }
         appendOperandBundleRoots(*cb, roots, &sites, &f, handedOut);
-      } else if (auto *store = dyn_cast<StoreInst>(&i)) {
-        if (storesIntoExternalMemory(store->getPointerOperand())) {
-          sites.push_back({&f, store->getValueOperand(), true});
-          roots.push_back(store->getValueOperand());
-        }
       } else if (auto *ret = dyn_cast<ReturnInst>(&i)) {
         if (Value *rv = ret->getReturnValue()) {
           sites.push_back({&f, rv, false});
@@ -514,6 +700,31 @@ void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
         }
       }
     }
+    addStoreSites(f);
+  }
+
+  for (;;) {
+    FunctionSets scratch;
+    ValueFlow flow;
+    computeValueFlow(roots, idx, scratch, flow, false, true);
+    bool grew = false;
+    for (const EscapeSite &site : sites) {
+      if (!site.handedOut)
+        continue;
+      Value *r = stripEscape(site.value);
+      auto it = r ? flow.sccOf.find(r) : flow.sccOf.end();
+      if (it == flow.sccOf.end() || flow.sccSet[it->second] == NoSet)
+        continue;
+      for (Function *f : scratch.get(flow.sccSet[it->second]))
+        if (!f->isDeclaration() && external.insert(f).second) {
+          externalOrder.push_back(f);
+          grew = true;
+        }
+    }
+    if (!grew)
+      break;
+    for (Function *f : externalOrder)
+      addStoreSites(*f);
   }
 
   ValueFlow flow;
@@ -531,20 +742,26 @@ void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
     else
       g.addSetEdge(site.from, flow.sccSet[it->second]);
   }
+  for (Function *f : externalOrder)
+    g.markExternallyCalled(f);
 }
 
-DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx,
-                                               const ReachResult &res) {
+DenseSet<Function *> computeAddressFlowTargets(
+    Module &m, const EscapeIndex &idx, const ReachResult &res,
+    const DenseSet<Function *> &externallyCalled) {
   // Root the value-flow at every place an address could be consumed as a
-  // callable: an indirect call's callee operand, and the arguments/returns that
-  // reach unanalyzable *code* that might call them. Inline asm and intrinsics
-  // are excluded: an asm operand (e.g. `std::hint::black_box`, lowered to empty
-  // `asm sideeffect ""`) and intrinsics (`llvm.lifetime`, `memcpy`, `dbg`, ...)
+  // callable: an indirect call's callee operand, the arguments/returns that
+  // reach unanalyzable *code* that might call them, and stores into memory that
+  // such code owns. Inline asm and intrinsics are excluded: an asm operand
+  // (e.g. `std::hint::black_box`, lowered to empty `asm sideeffect ""`) and
+  // intrinsics (`llvm.lifetime`, `memcpy`, `dbg`, ...)
   // observe or move a value but cannot invoke an arbitrary function, so an
   // address handed only to them is not evidence of being callable. A function
   // carried to a remaining root has concrete flow evidence, not just a type
   // match. (Confidence-only; reachability/escape edges are unaffected and stay
   // sound.)
+  TargetLibraryInfoImpl tlii(m.getTargetTriple());
+  TargetLibraryInfo tli(tlii);
   std::vector<Value *> roots;
   for (Function &f : m) {
     if (f.isDeclaration() || !res.reached.count(&f))
@@ -563,9 +780,10 @@ DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx
             roots.push_back(argU.get());
         if (!callsAnalyzableCallee(*cb))
           appendOperandBundleRoots(*cb, roots, nullptr, nullptr, false);
-      } else if (auto *store = dyn_cast<StoreInst>(&i)) {
-        if (storesIntoExternalMemory(store->getPointerOperand()))
-          roots.push_back(store->getValueOperand());
+      } else if (auto write = memoryWrite(i)) {
+        if (!isDispatchTablePointer(write->value) &&
+            isExternalMemory(write->pointer, externallyCalled, tli))
+          roots.push_back(write->value);
       } else if (auto *ret = dyn_cast<ReturnInst>(&i)) {
         if (Value *rv = ret->getReturnValue())
           roots.push_back(rv);

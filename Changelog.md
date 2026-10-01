@@ -72,6 +72,25 @@
   `fixtures/cpp_complex2`, and `fixtures/rust_indirect`.
 - The ziggy fixture test skips instead of failing when cargo-afl's AFL++
   plugins are not installed for the current rustc.
+- Soundness: a callback stored into memory that a function without a body
+  returns (`ext_get_hooks()->on_error = my_error`), directly, through a defined
+  wrapper, or through loaded pointers, counts as an escape. Allocator results
+  (`malloc`, `operator new`, `noalias` returns, …) stay the program's own.
+- Soundness: a callback that external code calls may receive memory the library
+  owns. Stores it makes through its pointer parameters
+  (`my_init(struct ops *o) { o->cb = my_cb; }`) now count as escapes. The set
+  of such callbacks is grown to a fixed point.
+- Soundness: setters that copy a callback out of another struct
+  (`o->cb = t->cb`), pick one with `?:` or a PHI, or copy a struct with
+  `memcpy` now propagate it to the caller's object. `memcpy`/`memmove` copies,
+  atomic exchanges and compare-exchanges count as stores in the value flow, so
+  callbacks published with `atomic_exchange` are no longer missed.
+- Calls to LLVM intrinsics (`memcpy`, `lifetime`, …) no longer count as handing
+  a callback to external code, so they do not create constructor roots or
+  externally-called callbacks; their call edges are unchanged.
+- New JSON field `escaped_from_unreached` (and `summary.escaped_from_unreached`):
+  unreachable functions that only unreached code hands to external code. The
+  analyzer prints a note listing the first few.
 
 
 ### v1.1

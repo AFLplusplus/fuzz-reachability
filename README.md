@@ -133,11 +133,11 @@ Two components, joined by merged bitcode:
   pointers through `-O0` code, builds the call graph, resolves indirect calls (C
   function pointers, C++ virtual dispatch, Rust `dyn`/`fn` pointers), treats
   function pointers that escape to code outside the bitcode (handed to an
-  external/indirect call, returned, or stored into a global that external code
+  external/indirect call, returned, or stored into memory that external code
   owns — e.g. qsort/bsearch comparators, atexit/pthread/`std::call_once`
-  callbacks, error-hook variables) as reachable, computes reachability from the
-  entry, and emits a JSON report plus the two sancov lists. It demangles C++
-  (Itanium) and Rust names.
+  callbacks, error-hook variables, hook tables a library returns) as reachable,
+  computes reachability from the entry, and emits a JSON report plus the two
+  sancov lists. It demangles C++ (Itanium) and Rust names.
 
 ## Prerequisites
 
@@ -420,7 +420,8 @@ name-lookup roots, and two kinds of code a fuzzer runs before the first input:
   callable later. The callback becomes a root; the constructor body itself does
   not. Exit-time registrations (`atexit`, `__cxa_atexit` for static-object
   destructors, `at_quick_exit`, `on_exit`, `__cxa_thread_atexit`) are shutdown
-  code and are not rooted this way.
+  code and are not rooted this way, and LLVM intrinsics such as `memcpy` are not
+  external code.
 
 Both are added to the `entries` metadata and noted on stderr. Pass
 `--include-process-lifecycle-roots` when the analyzed execution model includes
@@ -605,12 +606,16 @@ cannot recover a function that one build inlined away and the other did not.
   an `unreachable_defined` array, a top-level `external_declarations` array
   (sorted mangled names of reachable functions with no body in the analyzed
   bitcode — precompiled libs, Rust std without `--build-std`, asm units;
-  `summary.external_declarations` is its count), and an `edges` array — the
+  `summary.external_declarations` is its count), an `escaped_from_unreached`
+  array (unreachable functions that only unreached code hands to external code
+  — see [Limitations](#limitations); `summary.escaped_from_unreached` is its
+  count), and an `edges` array — the
   reachable call graph as
   `{ "from", "to", "kind" }` objects (`kind` = `direct`/`indirect`), restricted to
-  edges whose endpoints are both reachable defined functions. Edges and
-  `entries` name functions by their IR name (`ir_name` when present, else
-  `mangled`), which is unique within the analyzed module. `--no-edges` omits the
+  edges whose endpoints are both reachable defined functions. Edges,
+  `entries`, and `escaped_from_unreached` name functions by their IR name
+  (`ir_name` when present, else `mangled`), which is unique within the analyzed
+  module. `--no-edges` omits the
   array. With `--dot FILE`, also the same reachable-defined subgraph in
   deterministic Graphviz form.
 - **`reached.txt`** — a SanitizerCoverage **allowlist** of reachable functions.
@@ -686,11 +691,15 @@ use the same policy.
 
 The address flow follows values through globals, aggregates, `select`/PHI,
 casts, call arguments and returns, and memory: a load sees what was stored into
-the same underlying object. When a callee stores a function, or a pointer it
-received as a parameter, through one of its pointer parameters (a setter such
-as `set_cb(obj, fn)`), that store also counts as a store into each object its
-callers pass there. Other values stored through parameters are not propagated,
-which keeps C++ `this`-passing from merging every object's fields. The analyzer
+the same underlying object, where a store is a plain store, an atomic exchange,
+the new value of a compare-exchange, or a `memcpy`/`memmove` of another object.
+When a callee stores a callback through one of its pointer parameters (a setter
+such as `set_cb(obj, fn)`), that store also counts as a store into each object
+its callers pass there. A callback here is a function, a pointer parameter, a
+`select`/PHI that picks one, a load from a struct field that some other store or
+initializer fills with a function, or a pointer to an object that holds one.
+Other values, and vtable pointers in particular, are not propagated, which keeps
+C++ `this`-passing from merging every object's fields. The analyzer
 promotes stack slots to SSA registers before the flow is built, so a `-O0`
 module, where every pointer is reloaded from its own stack slot, resolves like
 an optimized one. All sites share one flow computation, and each site points at shared
@@ -897,15 +906,23 @@ Two things recover it, in this order:
 
 **Callbacks that escape to external code.** A function pointer is treated as
 reachable when it is handed to an external/indirect call as an argument,
-returned, or stored into a global that is only declared in the bitcode (or into
-memory reached through such a global) — qsort/bsearch comparators,
-atexit/pthread/`std::call_once` callbacks, error-hook and allocator-hook
-variables. The escape analysis follows local loads/stores, callbacks stored
-through pointer parameters, globals, aggregates, select/PHI values, defined
-wrapper arguments, and defined functions that return callbacks. Escapes are taken from
-reached functions, `LLVMFuzzerInitialize`, and code reachable from constructors
-(see [Process-lifecycle roots](#process-lifecycle-roots)). A callback registered
-only from other unreached code stays unreachable.
+returned, or stored into memory that external code owns — qsort/bsearch
+comparators, atexit/pthread/`std::call_once` callbacks, error-hook and
+allocator-hook variables. Memory counts as externally owned when it is a global
+that is only declared in the bitcode, what a function without a body returns
+(directly or through a defined wrapper), or what a callback that external code
+calls receives as a pointer parameter, and also memory reached by loading
+pointers out of any of these. Memory from an allocator (`malloc`, `calloc`,
+`realloc`, `strdup`, `operator new`, and declarations whose result is
+`noalias` or marked as an allocation) is the program's own. The escape analysis
+follows local loads/stores, callbacks stored through pointer parameters,
+globals, aggregates, select/PHI values, defined wrapper arguments, and defined
+functions that return callbacks. Escapes are taken from reached functions,
+`LLVMFuzzerInitialize`, and code reachable from constructors (see
+[Process-lifecycle roots](#process-lifecycle-roots)). A callback registered only
+from other unreached code stays unreachable; the report lists it in
+`escaped_from_unreached` and the analyzer prints a note, since it usually means
+the harness skips an initialization path the real program runs.
 
 **v0 mangling is supported via scheme-matching, not via disambiguator
 normalization.** The build-independent `key` and the `fun:` pattern-list `*`

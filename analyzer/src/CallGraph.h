@@ -7,6 +7,7 @@
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -43,6 +44,10 @@ public:
   const SetMap &escapeSets() const { return EscapeSets; }
   FunctionSets &sets() { return Sets; }
   const FunctionSets &sets() const { return Sets; }
+  void markExternallyCalled(llvm::Function *f) { ExternallyCalled.insert(f); }
+  const llvm::DenseSet<llvm::Function *> &externallyCalled() const {
+    return ExternallyCalled;
+  }
 
   template <typename Fn> void forEachCallee(llvm::Function *from, Fn &&fn) const {
     auto it = Edges.find(from);
@@ -61,6 +66,7 @@ private:
   SetMap SetEdges;
   SetMap EscapeSets;
   FunctionSets Sets;
+  llvm::DenseSet<llvm::Function *> ExternallyCalled;
   llvm::DenseSet<std::pair<llvm::Function *, llvm::Function *>> SeenDirect;
   llvm::DenseSet<std::pair<llvm::Function *, llvm::Function *>> SeenIndirect;
   llvm::DenseSet<std::pair<llvm::Function *, SetId>> SeenSet;
@@ -77,6 +83,13 @@ llvm::Function *directCallee(llvm::CallBase &cb);
 llvm::Function *resolveCallableValue(llvm::Value *value);
 bool isIndirectCall(llvm::CallBase &cb);
 bool isEscapeCast(llvm::Value *v);
+
+struct MemoryWrite {
+  llvm::Value *pointer;
+  llvm::Value *value;
+};
+
+std::optional<MemoryWrite> memoryWrite(llvm::Instruction &i);
 
 // Add a Direct edge for every CallBase resolving to a concrete function.
 void buildDirectEdges(llvm::Module &m, CallGraph &g);
@@ -113,6 +126,7 @@ void computeValueFlow(const std::vector<llvm::Value *> &roots,
 // (sound) reachable set. A function reached purely by type matching but absent
 // here is a low-confidence (likely-spurious) indirect target.
 llvm::DenseSet<llvm::Function *> computeAddressFlowTargets(
-    llvm::Module &m, const EscapeIndex &idx, const ReachResult &res);
+    llvm::Module &m, const EscapeIndex &idx, const ReachResult &res,
+    const llvm::DenseSet<llvm::Function *> &externallyCalled);
 
 } // namespace reach

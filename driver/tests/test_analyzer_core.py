@@ -58,13 +58,13 @@ def test_json_schema_contract(run_analyzer):
     assert set(report) == {
         "schema_version", "llvm_version", "backend", "mangling", "entries",
         "summary", "reachable", "unreachable_defined", "external_declarations",
-        "edges",
+        "escaped_from_unreached", "edges",
     }
     assert report["schema_version"] == 2
     assert set(report["summary"]) == {
         "defined", "reachable", "indirect_only", "low_confidence",
-        "unreachable", "external_declarations", "compile_units",
-        "optimized_compile_units", "no_inline_definitions",
+        "unreachable", "external_declarations", "escaped_from_unreached",
+        "compile_units", "optimized_compile_units", "no_inline_definitions",
     }
     assert set(report["reachable"][0]) == {
         "mangled", "demangled", "key", "file", "line", "via",
@@ -699,6 +699,50 @@ def test_interesting_starts_at_clang_lambda_inside_entry(run_analyzer):
     assert m["_ZZ4mainENK3$_0clEPKhm"]["interesting"] is True
     assert m["_ZL5parsePKhm"]["interesting"] is True
     assert m["main"]["interesting"] is False
+
+
+def test_callbacks_in_memory_owned_by_external_code(run_analyzer, tmp_path):
+    ignored = tmp_path / "ignored.txt"
+    r = run_analyzer([
+        ll("external_hooks.ll"), "--entry", "LLVMFuzzerTestOneInput",
+        "--not-reached-out", str(ignored),
+    ])
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    names = {f["mangled"] for f in report["reachable"]}
+    handed_out = {"my_error", "wrapped_error", "deep_error", "my_cb",
+                  "xchg_cb", "cas_cb"}
+    assert handed_out <= names
+    assert not {f"fun:{n}" for n in handed_out} & set(ignored.read_text().split())
+    assert {"heap_only", "pool_only", "not_cb", "never_published",
+            "orphan_cb"}.isdisjoint(names)
+
+
+def test_callbacks_handed_out_only_by_unreached_code_are_reported(run_analyzer):
+    r = run_analyzer([ll("external_hooks.ll"), "--entry", "LLVMFuzzerTestOneInput"])
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    assert report["escaped_from_unreached"] == ["orphan_cb"]
+    assert report["summary"]["escaped_from_unreached"] == 1
+    assert "only unreached code hands them to external code: orphan_cb" in r.stderr
+
+
+def test_setters_that_copy_or_choose_a_callback(run_analyzer):
+    r = run_analyzer([ll("setter_shapes.ll"), "--entry", "LLVMFuzzerTestOneInput"])
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    names = {f["mangled"] for f in report["reachable"]}
+    assert {"via_copy", "via_select", "via_select_b", "via_phi", "via_phi_b",
+            "via_memcpy"} <= names
+    assert "never_installed" not in names
+
+
+def test_callback_in_object_passed_to_indirect_call(run_analyzer):
+    r = run_analyzer([ll("indirect_arg_escape.ll"), "--entry", "LLVMFuzzerTestOneInput"])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert "handler" in names
+    assert "other_arity" not in names
 
 
 def test_renamed_static_function_keeps_both_lists_safe(run_analyzer, tmp_path):

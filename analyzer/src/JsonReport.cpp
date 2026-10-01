@@ -113,6 +113,7 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
                StringRef backend, const std::vector<std::string> &entries,
                const DenseSet<Function *> &flowTargets,
                const DenseMap<Function *, FuncMetrics> &metrics,
+               const std::vector<Function *> &escapedFromUnreached,
                const json::Object *run, bool includeEdges) {
   // Defined functions, partitioned into reachable / unreachable, sorted by name.
   std::vector<std::pair<Function *, Via>> reachable;
@@ -185,6 +186,7 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
       J.attribute("low_confidence", lowConfidence);
       J.attribute("unreachable", (int64_t)unreachable.size());
       J.attribute("external_declarations", (int64_t)externalCallees.size());
+      J.attribute("escaped_from_unreached", (int64_t)escapedFromUnreached.size());
       J.attribute("compile_units", optEvidence.units);
       J.attribute("optimized_compile_units", optEvidence.optimizedUnits);
       J.attribute("no_inline_definitions", optEvidence.noInlineDefs);
@@ -200,6 +202,10 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
     J.attributeArray("external_declarations", [&] {
       for (const std::string &n : externalCallees)
         J.value(n);
+    });
+    J.attributeArray("escaped_from_unreached", [&] {
+      for (Function *f : escapedFromUnreached)
+        J.value(sanitizeUtf8(f->getName()));
     });
     if (includeEdges)
       J.attributeArray("edges", [&] {
