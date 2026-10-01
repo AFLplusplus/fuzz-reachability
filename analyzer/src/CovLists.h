@@ -10,9 +10,10 @@ namespace reach {
 // -fsanitize-coverage-allowlist= / -fsanitize-coverage-ignorelist= and by
 // AFL++'s AFL_LLVM_ALLOWLIST / AFL_LLVM_DENYLIST. Entries are the LLVM symbol
 // (mangled) names, which is what both match `fun:` against, except the Rust
-// '17h<hash>' mangling disambiguator is replaced by a '*' glob so an entry
-// matches the same instance across builds (the disambiguator is codegen
-// dependent and differs between the bitcode snapshot and the fuzz binary).
+// legacy '17h<hash>' disambiguator and the v0 instantiating-crate suffix are
+// replaced by a '*' glob so an entry matches the same instance across builds
+// (both are codegen dependent and can differ between the bitcode snapshot and
+// the fuzz binary).
 // A local function that llvm-link renamed on a name collision ('helper' ->
 // 'helper.1') is also listed under the name it has in its own object file.
 // Only defined functions are listed (declarations are external).

@@ -580,7 +580,8 @@ def test_compose_rustflags_mangling_legacy(tmp_path, monkeypatch):
     monkeypatch.delenv("RUSTFLAGS", raising=False)
     monkeypatch.delenv("CARGO_ENCODED_RUSTFLAGS", raising=False)
     flags = acquire_rust._compose_rustflags(str(tmp_path), mangling="legacy")
-    assert "-Csymbol-mangling-version=legacy" in flags
+    legacy = flags.index("-Csymbol-mangling-version=legacy")
+    assert flags[legacy - 1] == "-Zunstable-options"
 
 
 def test_compose_rustflags_mangling_auto_appends_nothing(tmp_path, monkeypatch):
@@ -612,6 +613,28 @@ def test_native_carries_mangling_v0(monkeypatch, tmp_path):
     acquire_rust.acquire_rust_bitcode_native(
         str(tmp_path), ["cargo", "afl", "build"], mangling="v0")
     assert "-Csymbol-mangling-version=v0" in seen["extra"]
+
+
+def test_native_carries_mangling_legacy_with_unstable_options(monkeypatch, tmp_path):
+    seen = {}
+
+    class R:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(argv, cwd=None, env=None, capture_output=False, text=False):
+        seen["extra"] = env.get("REACH_EXTRA_RUSTFLAGS")
+        return R()
+
+    monkeypatch.setattr(acquire_rust.subprocess, "run", fake_run)
+    bc = tmp_path / "a.bc"
+    bc.write_bytes(b"x")
+    monkeypatch.setattr(acquire_rust.glob, "glob", lambda p: [str(bc)])
+    monkeypatch.setattr(acquire_rust.tempfile, "mkdtemp", lambda prefix="": str(tmp_path))
+    acquire_rust.acquire_rust_bitcode_native(
+        str(tmp_path), ["cargo", "afl", "build"], mangling="legacy")
+    assert "-Zunstable-options -Csymbol-mangling-version=legacy" in seen["extra"]
 
 
 def test_native_mangling_auto_omits_flag(monkeypatch, tmp_path):

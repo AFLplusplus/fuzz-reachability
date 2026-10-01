@@ -604,6 +604,33 @@ def test_json_key_strips_rust_disambiguator(run_analyzer, tmp_path):
     assert "fun:_ZN3app4dead*" in notr.read_text()
 
 
+def test_json_key_strips_rust_v0_instantiating_crate(run_analyzer, tmp_path):
+    reached = tmp_path / "reached.txt"
+    notr = tmp_path / "not_reached.txt"
+    r = run_analyzer([ll("rust_key_v0.ll"), "--entry", "entry",
+                      "--reached-out", str(reached),
+                      "--not-reached-out", str(notr)])
+    assert r.returncode == 0, r.stderr
+    j = json.loads(r.stdout)
+    key = {f["mangled"]: f["key"] for f in j["reachable"] + j["unreachable_defined"]}
+    checksum_u8 = "_RINvCs5zheXYwTW8r_3dep8checksumhE"
+    assert key[checksum_u8 + "Cse69bWBSeLps_21rust_upstream_generic"] == checksum_u8
+    assert key[checksum_u8 + "B2_"] == checksum_u8
+    assert key["_RINvCs5zheXYwTW8r_3dep5scalemEB2_"] == "_RINvCs5zheXYwTW8r_3dep5scalemE"
+    for exact in ("_RNvCs5zheXYwTW8r_3dep12dep_checksum",
+                  "_RINvCs5zheXYwTW8r_3dep8checksumjEB2_.cold",
+                  "_Rprivate_helper"):
+        assert key[exact] == exact
+    allow = reached.read_text().splitlines()
+    assert {f"fun:{checksum_u8}*", "fun:_RINvCs5zheXYwTW8r_3dep5scalemE*",
+            "fun:_RNvCs5zheXYwTW8r_3dep12dep_checksum",
+            "fun:_Rprivate_helper"} <= set(allow)
+    ignore = notr.read_text().splitlines()
+    assert "fun:_RINvCs5zheXYwTW8r_3dep8checksumtE*" in ignore
+    assert "fun:_RINvCs5zheXYwTW8r_3dep8checksumjEB2_.cold" in ignore
+    assert not [line for line in ignore if line.startswith(f"fun:{checksum_u8}")]
+
+
 def test_run_info_and_edges_toggle(run_analyzer):
     r = run_analyzer([
         FNPTR(), "--entry", "entry", "--no-edges",

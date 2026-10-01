@@ -262,10 +262,10 @@ def _compose_rustflags(project_dir, codegen_units=1, optimize=False,
     to the profile's values, so forcing opt0 does not silently flip those cfgs
     (which would change which functions compile), giving source-faithful
     (un-inlined) bitcode that still matches the real profile. mangling
-    ("auto"/"legacy"/"v0") appends -Csymbol-mangling-version=<mangling> so the
-    analysis bitcode's Rust symbols match a target built with that scheme (e.g.
-    a -Cinstrument-coverage build, which is v0); "auto" appends nothing, leaving
-    rustc's own default (legacy on stable toolchains)."""
+    ("auto"/"legacy"/"v0") appends the _mangling_flags so the analysis
+    bitcode's Rust symbols match a target built with that scheme (e.g. a
+    -Cinstrument-coverage build, which is v0); "auto" appends nothing, leaving
+    rustc's own default (v0 on current toolchains, legacy on older ones)."""
     enc = os.environ.get("CARGO_ENCODED_RUSTFLAGS")
     env_rf = os.environ.get("RUSTFLAGS")
     if enc:
@@ -282,9 +282,18 @@ def _compose_rustflags(project_dir, codegen_units=1, optimize=False,
             f"-Cdebug-assertions={'on' if da else 'off'}",
             f"-Coverflow-checks={'on' if oc else 'off'}",
         ]
-    if mangling != "auto":
-        flags = flags + [f"-Csymbol-mangling-version={mangling}"]
-    return flags
+    return flags + _mangling_flags(mangling)
+
+
+def _mangling_flags(mangling):
+    """rustc flags that force the symbol-mangling scheme. rustc accepts an
+    explicit legacy only together with -Zunstable-options, so forcing legacy
+    needs a nightly toolchain."""
+    if mangling == "auto":
+        return []
+    if mangling == "legacy":
+        return ["-Zunstable-options", "-Csymbol-mangling-version=legacy"]
+    return [f"-Csymbol-mangling-version={mangling}"]
 
 
 def _build_env(project_dir, codegen_units=1, optimize=False, profile="debug",
@@ -706,9 +715,10 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
     responsible for cleaning the resulting throwaway opt-0 build. When True the
     build mirrors the real instrumented binary.
 
-    mangling: "auto" (default, the harness's own scheme -- legacy for
-    cargo-afl/ziggy/cargo-fuzz), "legacy", or "v0" -- forces the wrapper's
-    -Csymbol-mangling-version to match the target being joined against."""
+    mangling: "auto" (default, the harness's own scheme, which is rustc's
+    default for cargo-afl/ziggy/cargo-fuzz), "legacy", or "v0" -- forces the
+    wrapper's scheme to match the target being joined against (see
+    _mangling_flags)."""
     if work_dir is None:
         collect = tempfile.mkdtemp(prefix="reach-bc-")
         atexit.register(shutil.rmtree, collect, ignore_errors=True)
@@ -726,9 +736,7 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
     except OSError as exc:
         raise AcquireError(f"cannot create rustc bitcode wrapper: {exc}") from exc
 
-    extra = [] if optimize else ["-Copt-level=0"]
-    if mangling != "auto":
-        extra.append(f"-Csymbol-mangling-version={mangling}")
+    extra = ([] if optimize else ["-Copt-level=0"]) + _mangling_flags(mangling)
 
     env = dict(os.environ)
     env["RUSTC_WRAPPER"] = wrapper

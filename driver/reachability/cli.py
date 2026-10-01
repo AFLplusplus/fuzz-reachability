@@ -514,11 +514,14 @@ def build_parser():
     r.add_argument("--mangling", default="auto", choices=["auto", "legacy", "v0"],
                    help="Rust symbol-mangling scheme for the analysis build "
                         "(all Rust --lang values). 'auto' (default) uses "
-                        "rustc's own default (legacy on stable toolchains); "
-                        "'legacy'/'v0' force -Csymbol-mangling-version=<v> so "
-                        "the analysis bitcode's Rust symbols match the target "
-                        "you join against (e.g. pass 'v0' to match a "
-                        "-Cinstrument-coverage coverage build, which is v0)")
+                        "rustc's own default (v0 on current toolchains, legacy "
+                        "on older ones); 'legacy'/'v0' force "
+                        "-Csymbol-mangling-version=<v> so the analysis "
+                        "bitcode's Rust symbols match the target you join "
+                        "against (e.g. pass 'v0' to match a "
+                        "-Cinstrument-coverage coverage build, which is v0). "
+                        "'legacy' also passes -Zunstable-options, so it needs "
+                        "a nightly rustc")
     r.add_argument(
         "--optimize", action="store_true", dest="optimize",
         help="build at the target's real optimization (post-inline). By default "

@@ -1,10 +1,11 @@
 """Verifies the JSON `key` stays stable across opt levels. For legacy Rust
 mangling it must strip the trailing `17h<hash>` disambiguator; for v0 mangling
-the full mangled name is already the key. The precise distinct-hash legacy
-strip is proven separately, on a synthetic hand-crafted disambiguator, by
-test_json_key_strips_rust_disambiguator in test_analyzer_core.py.
+the trailing instantiating crate. The precise strips are proven separately, on
+hand-crafted names, by test_json_key_strips_rust_disambiguator and
+test_json_key_strips_rust_v0_instantiating_crate in test_analyzer_core.py.
 """
 
+import fnmatch
 import os
 import re
 import shutil
@@ -30,8 +31,8 @@ def _require_rust_readable(tc):
 @pytest.mark.skipif(not shutil.which("cargo"), reason="cargo not installed")
 def test_rust_key_stable_across_opt(analyzer, tmp_path):
     # Build the same fixture at opt-0 and optimized. Legacy symbols must prove
-    # canonicalKey stripped their hash; v0 symbols have no legacy hash to strip
-    # and must remain intact. Both schemes must be stable across opt levels.
+    # canonicalKey stripped their hash, v0 symbols their instantiating crate.
+    # Both schemes must be stable across opt levels.
     tc = toolchain.check_coherence(analyzer)
     _require_rust_readable(tc)
 
@@ -52,8 +53,9 @@ def test_rust_key_stable_across_opt(analyzer, tmp_path):
     for fns in (noopt, opt):
         for mangled, key in fns.items():
             if mangled.startswith("_R"):
-                assert key == mangled, \
-                    f"v0 key {key!r} differs from mangled name {mangled!r}"
+                assert mangled == key + "B2_", \
+                    f"v0 key {key!r} is not {mangled!r} without its " \
+                    f"instantiating crate"
                 continue
             assert disambig.search(mangled), \
                 f"expected a legacy 17h<hash> disambiguator in {mangled}"
@@ -61,3 +63,42 @@ def test_rust_key_stable_across_opt(analyzer, tmp_path):
                 f"key {key!r} is not a strict prefix of mangled {mangled!r}; " \
                 f"canonicalKey did not strip the disambiguator"
     assert set(noopt.values()) == set(opt.values())
+
+
+@pytest.mark.skipif(not shutil.which("cargo"), reason="cargo not installed")
+@pytest.mark.parametrize("mangling", ["legacy", "v0"])
+def test_upstream_generic_key_survives_instantiating_crate_change(
+        analyzer, tmp_path, mangling):
+    tc = toolchain.check_coherence(analyzer)
+    _require_rust_readable(tc)
+
+    def build(optimize):
+        work = tmp_path / f"{mangling}-{'opt' if optimize else 'noopt'}"
+        shutil.copytree(os.path.join(FIXTURES, "rust_upstream_generic"), work,
+                        ignore=shutil.ignore_patterns("target"))
+        try:
+            bcs = acquire_rust.acquire_rust_bitcode(
+                str(work), optimize=optimize, mangling=mangling)
+        except acquire_rust.AcquireError as exc:
+            if "only accepted on the nightly compiler" not in str(exc):
+                raise
+            pytest.skip(f"forcing {mangling} mangling needs a nightly rustc")
+        merged = link.link_bitcode(bcs, str(work / "merged.bc"), tc)
+        reached = work / "reached.txt"
+        j = analyze.analyze(merged, tc, ["LLVMFuzzerTestOneInput"],
+                            reached_out=str(reached))
+        keys = {f["mangled"]: f["key"] for f in j["reachable"]
+                if "8checksum" in f["mangled"]}
+        patterns = [line[4:] for line in reached.read_text().splitlines()
+                    if line.startswith("fun:") and "8checksum" in line]
+        return keys, patterns
+
+    analysis, patterns = build(False)
+    fuzz, _ = build(True)
+    assert analysis and set(fuzz) - set(analysis), (
+        f"expected the optimized build to name checksum::<u8> differently:\n"
+        f"  opt-0: {sorted(analysis)}\n  optimized: {sorted(fuzz)}")
+    assert set(fuzz.values()) == set(analysis.values())
+    for name in fuzz:
+        assert any(fnmatch.fnmatchcase(name, p) for p in patterns), \
+            f"no opt-0 allowlist entry {patterns} matches {name!r}"

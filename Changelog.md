@@ -112,6 +112,17 @@
 - `--dump-edges` lists each function's callees sorted, and setter
   propagation no longer depends on pointer order, so repeated runs print
   identical output.
+- Rust v0 mangling: the JSON `key` strips a v0 name's instantiating crate, and
+  the `fun:` lists replace it with `*`, as both already did for the legacy
+  `17h<hash>` disambiguator. rustc 1.99 (stable and nightly) defaults to v0, and
+  a generic that a dependency instantiates is reused from it at opt-level 0
+  but compiled into the calling crate under another name in an optimized
+  build, so the snapshot's exact name missed the instance the fuzz binary runs
+  (`fixtures/rust_upstream_generic`). Names with a vendor suffix (`.llvm.<n>`,
+  `.cold`) stay exact. cov-analysis derives its keys the same way.
+- `--mangling legacy` passes `-Zunstable-options`, without which rustc rejects
+  an explicit legacy scheme, so it now builds on a nightly rustc; stable rustc
+  cannot force legacy.
 
 
 ### v1.1

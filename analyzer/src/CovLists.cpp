@@ -37,10 +37,11 @@ void writeAllowlist(raw_ostream &os, Module &m, const ReachResult &res) {
         "-fsanitize-coverage-allowlist=reached.txt\n"
      << "# A coverage allowlist matches a function only when BOTH a src: and a\n"
      << "# fun: entry match, hence the src:* line below.\n"
-     << "# Rust generic instances carry a codegen-dependent '17h<hash>' mangling\n"
-     << "# disambiguator; it is replaced by '*' so an entry matches the same\n"
-     << "# instance regardless of which build emitted it (clang sancov and AFL++\n"
-     << "# both treat '*' as a glob in fun: entries).\n"
+     << "# Rust generic instances carry a codegen-dependent part: the legacy\n"
+     << "# '17h<hash>' disambiguator or the v0 instantiating crate. It is\n"
+     << "# replaced by '*' so an entry matches the same instance regardless of\n"
+     << "# which build emitted it (clang sancov and AFL++ both treat '*' as a\n"
+     << "# glob in fun: entries).\n"
      << "src:*\n";
   for (const std::string &p : reachedPatterns(m, res))
     os << "fun:" << p << "\n";
@@ -73,7 +74,7 @@ void writeIgnorelist(raw_ostream &os, Module &m, const ReachResult &res) {
   os << "# SanitizerCoverage ignorelist: statically-unreachable functions.\n"
      << "# Use with: clang -fsanitize-coverage=<...> "
         "-fsanitize-coverage-ignorelist=not_reached.txt\n"
-     << "# The Rust '17h<hash>' mangling disambiguator is replaced by '*' (see\n"
+     << "# The codegen-dependent part of a Rust name is replaced by '*' (see\n"
      << "# the allowlist header). A pattern that also matches a reachable\n"
      << "# function's name as a glob is omitted, so excluding an unreachable\n"
      << "# instance never excludes a reachable one that shares its name or prefix.\n";

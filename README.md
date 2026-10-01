@@ -358,7 +358,7 @@ entry point(s).
 | `--optimize` | off | Build the analysis at the target's real optimization (post-inline). By default the analysis build is **source-faithful**: C/C++ analysis bitcode is built with `-O0 -fno-inline -fno-inline-functions` (via `LLVM_BITCODE_GENERATION_FLAGS`, which gllvm applies to the bitcode compile only — the native object keeps the project's own `-Ox`); Rust with `-Copt-level=0` (via composed `RUSTFLAGS` for plain `--lang rust`/`mixed`, or via `RUSTC_WRAPPER` for native harnesses). No function the source defines is optimized away, so the reachable set matches what `llvm-cov` reports and is a safe allowlist superset. An inherited `LLVM_BITCODE_GENERATION_FLAGS` that already sets an `-O` level keeps it — the escape hatch for a unit that only compiles optimized; only the no-inlining flags are then added. For native Rust harnesses (`libfuzzer`/`ziggy`/`afl`), `--optimize` also skips the post-analysis clean (otherwise their throwaway opt-0 build is discarded). Pass `--optimize` when you want the set and per-function metrics to mirror a specific `-O3` instrumented binary. LTO is stripped either way. |
 | `--no-name-roots` | off | Do not root a defined, externally-visible function whose symbol name appears as a string constant in a module that performs a runtime name lookup. The heuristic is on by default and disabling it **can under-report**; its use is measuring how much of the reachable set it contributes. See [Reachability through runtime symbol lookup](#reachability-through-runtime-symbol-lookup). |
 | `--build-std` | off | Rust only: build the standard library from source with Cargo's `-Zbuild-std` option and rustc's detected host target, so std functions appear in the graph instead of as external declarations. |
-| `--mangling {auto,legacy,v0}` | `auto` | Rust only: the symbol-mangling scheme of the analysis build; `legacy`/`v0` append `-Csymbol-mangling-version=<v>`. Pass `v0` to join against a `-Cinstrument-coverage` build. See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
+| `--mangling {auto,legacy,v0}` | `auto` | Rust only: the symbol-mangling scheme of the analysis build; `legacy`/`v0` append `-Csymbol-mangling-version=<v>` (`legacy` needs a nightly rustc). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--clean` | off | Validate every selected output first, then remove those files and tool-owned build state before rebuilding. Rust uses `cargo clean` (also in `fuzz/` for cargo-fuzz). C/C++ removes the tool-owned `build-reachability/` directory, runs configured build-system clean targets, and removes only artifacts recorded in `.reachability-cache/owned-c-artifacts.json`; unrelated `.o`, `.bc`, and manifest files are not swept recursively. |
 | `--dot FILE` | *(none)* | Also write the deterministic reachable-defined subgraph as Graphviz DOT (indirect edges dashed/red; bodyless declarations remain in the JSON `external_declarations` list rather than as DOT nodes). |
 | `--no-edges` | off | Omit the `edges` array from the JSON report. Its size grows with call sites × indirect targets, so on code with large dispatch tables it dominates both the report size and the run time. |
@@ -553,22 +553,27 @@ forced via `-Ccodegen-units` in `RUSTFLAGS`). `-v` prints the resolved
 
 - **`--mangling {auto,legacy,v0}`** (default `auto`, all Rust `--lang` values) —
   the Rust symbol-mangling scheme rustc uses for the analysis build. `auto`
-  appends nothing, so rustc's own default applies (legacy, on stable
-  toolchains); `legacy`/`v0` append `-Csymbol-mangling-version=<v>` to force it.
-  Set this to match the scheme of whatever build you join this report against
-  by mangled name/`key`: a `-Cinstrument-coverage` coverage build is always
-  **v0** (`-Cinstrument-coverage` implies `-Csymbol-mangling-version=v0`,
-  regardless of the crate's own default), so pass `--mangling v0` to make the
-  analysis build's symbols byte-identical to it; `cargo-afl`/`ziggy`/cargo-fuzz
-  fuzz binaries are legacy by default, so leave `--mangling auto` (or pass
-  `legacy` explicitly) for those. The scheme actually used is echoed back in
-  the JSON report's top-level `mangling` field.
+  appends nothing, so rustc's own default applies: v0 on current toolchains
+  (rustc 1.99, stable and nightly), legacy on older ones (rustc 1.88).
+  `legacy`/`v0` append `-Csymbol-mangling-version=<v>` to force it; rustc
+  accepts an explicit `legacy` only with `-Zunstable-options`, which the driver
+  adds, so `--mangling legacy` needs a nightly rustc. Set this to match the
+  scheme of whatever build you join this report against by mangled name/`key`,
+  because legacy and v0 names of the same function share nothing. A
+  `-Cinstrument-coverage` coverage build is always **v0**
+  (`-Cinstrument-coverage` implies `-Csymbol-mangling-version=v0`, regardless
+  of the toolchain's default), so pass `--mangling v0` to join against it.
+  `cargo-afl`/`ziggy`/cargo-fuzz fuzz binaries use the toolchain's default, so
+  `--mangling auto` matches them when the analysis uses the same toolchain. The
+  scheme actually used is echoed back in the JSON report's top-level `mangling`
+  field.
 
-The `fun:` patterns in the lists already tolerate the Rust mangling
-*disambiguator* (`17h<hash>`) drifting between builds (see [Output](#output)), but
-that only covers the *naming* of a given instance. Matching `--profile` /
-`--codegen-units` is what aligns the *set* of emitted functions; a wildcard
-cannot recover a function that one build inlined away and the other did not.
+The `fun:` patterns in the lists already tolerate the codegen-dependent part of
+a Rust name (the legacy `17h<hash>` disambiguator or the v0 instantiating
+crate) drifting between builds (see [Output](#output)), but that only covers
+the *naming* of a given instance. Matching `--profile` / `--codegen-units` is
+what aligns the *set* of emitted functions; a wildcard cannot recover a
+function that one build inlined away and the other did not.
 
 #### Environment variables
 
@@ -594,8 +599,8 @@ cannot recover a function that one build inlined away and the other did not.
   and `no_inline_definitions`, the definitions carrying `noinline`/`optnone` —
   see [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)), a `reachable`
   array (mangled and demangled name, a `key` (the mangled name with the Rust
-  `17h<hash>` disambiguator stripped — the build-independent join key
-  cov-analysis uses), an `ir_name` when it differs from `mangled` (see
+  legacy `17h<hash>` disambiguator or v0 instantiating crate stripped — the
+  build-independent join key cov-analysis uses), an `ir_name` when it differs from `mangled` (see
   [Static functions with the same name](#static-functions-with-the-same-name)),
   source file/line when debug info is present,
   `via` = `direct`/`indirect`/`both`, an `indirect_only` flag, a `confidence`
@@ -638,30 +643,32 @@ clang -fsanitize-coverage=trace-pc-guard -fsanitize-coverage-ignorelist=not_reac
 > has no such requirement, so `not_reached.txt` is pure `fun:` lines. (Verified
 > against clang in `driver/tests/test_covlists.py`.)
 
-> **Rust mangling disambiguator.** A Rust generic instance is mangled with a
-> trailing `17h<hash>` disambiguator that is not guaranteed stable across builds
-> (e.g. when a generic is instantiated from a different crate). rustc documents
-> no such guarantee, so the exact value can differ between this bitcode snapshot
-> and the instrumented fuzz binary, and an exact-name entry could miss.
-> `driver/tests/test_rust_hash_stability.py` builds one crate at two opt levels
-> and checks that the JSON `key` (the disambiguator stripped) stays identical,
-> even where the raw disambiguator does not. The build-independent `key` in the JSON report
-> (see above) is therefore the sanctioned join across builds; each `fun:` entry
-> in the text lists gets the same tolerance by replacing the disambiguator with
-> a `*` glob,
-> which both clang sancov and AFL++ honour, so an entry matches the instance in
-> any build. An ignorelist pattern that would also match a *reachable* instance
-> is dropped, so excluding unreachable code never excludes reachable code.
-> The `*` only tolerates the disambiguator, not a different function *set*, so
-> still build the snapshot like the fuzz binary — automatic for
+> **Rust mangling disambiguator.** Part of a Rust generic instance's name
+> depends on the build rather than the source: the trailing `17h<hash>`
+> disambiguator under legacy mangling, and the trailing *instantiating crate*
+> (`Cs<hash>_<len><crate>`, or a `B<n>_` back-reference to a crate named
+> earlier) under v0. Both change when a different crate instantiates the
+> generic. For example, at opt-level 0 a crate reuses a dependency's copy of
+> `dep::checksum::<u8>` (`…8checksumhEB2_`, instantiated in `dep`), while an
+> optimized build compiles its own (`…8checksumhECs…_21rust_upstream_generic`),
+> so an exact-name entry from this bitcode snapshot can miss the instance the
+> fuzz binary runs. The JSON `key` strips that part, and each `fun:` entry in
+> the text lists replaces it with a `*` glob, which both clang sancov and AFL++
+> honour, so an entry matches the instance in any build. A v0 path is
+> self-delimiting, so `<path>*` matches only instances of that one function,
+> never a different function whose name starts the same. Names with a vendor
+> suffix after the
+> instantiating crate (`.llvm.<n>`, `.cold`) are kept exact. An ignorelist
+> pattern that would also match a *reachable* instance is dropped, so excluding
+> unreachable code never excludes reachable code.
+> `driver/tests/test_rust_hash_stability.py` builds
+> `fixtures/rust_upstream_generic` at two opt levels under both schemes and
+> checks that the keys agree and the opt-0 entry matches the optimized name.
+> The `*` only tolerates this part of the name, not a different function *set*,
+> so still build the snapshot like the fuzz binary — automatic for
 > `libfuzzer`/`ziggy`/`afl`, or matched via `--profile`/`--codegen-units` for
 > plain `--lang rust` (see
 > [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)).
->
-> **This normalization only covers legacy mangling.** Under the v0 scheme
-> (`_R…`) the disambiguator has another shape, so `key` equals the mangled name
-> and list entries keep their exact names. See [Limitations](#limitations) for
-> when that matters and how `--mangling v0` avoids it.
 
 ### Static functions with the same name
 
@@ -944,20 +951,24 @@ from other unreached code stays unreachable; the report lists it in
 `escaped_from_unreached` and the analyzer prints a note, since it usually means
 the harness skips an initialization path the real program runs.
 
-**v0 mangling is supported via scheme-matching, not via disambiguator
-normalization.** The build-independent `key` and the `fun:` pattern-list `*`
-glob (see [Output](#output)) only recognize the *legacy* Rust mangling scheme's
-`17h<hash>` disambiguator; under the **v0** scheme (`_R…`, forced by
-`-Cinstrument-coverage`) they are inert, so a name/key join against a
-v0-mangled build can miss instances whose disambiguator differs between builds.
-Legacy-mangled sancov builds are unaffected: the instrumentation build is not
-`-Cinstrument-coverage`, so it is legacy-mangled and the `*` glob applies.
-**Run the analysis with `--mangling v0`** when the target is v0-mangled: the
-mangled names then match verbatim (for a crate-local generic no disambiguator
-drift was observed — see `driver/tests/test_v0_mangling_probe.py`), which closes
-the gap for every case measured so far. Consumers that also have source
-location can work around a residual mismatch with a `file`/`line` fallback, as
-[cov-analysis](https://github.com/AFLplusplus/cov-analysis)'s JSON mode does. A
-v0-aware disambiguator stripper, for the untested case of an upstream or std
-generic whose defining crate flips under `-Zshare-generics`, is not
-implemented.
+**Rust names join only within one mangling scheme, and v0 names only between
+builds with the same cargo profile, features and `--target`.** The `key` and the
+`fun:` `*` glob (see [Output](#output)) tolerate only the build-dependent tail
+of a Rust name: the legacy `17h<hash>` disambiguator or the v0 instantiating
+crate. Legacy and v0 names of the same function share nothing, so analyze with
+the scheme of the build you join against (`--mangling`; a
+`-Cinstrument-coverage` build is always v0). A v0 path also names every crate
+with its disambiguator (`Cs<hash>_`), which rustc derives from cargo's
+`-C metadata`; the profile, the features and whether cargo gets `--target`
+change it (verified: `dep::dep_checksum` is `_RNvCs5zheXYwTW8r_3dep…` in a dev
+build, `_RNvCsiqyxleFSJ0j_3dep…` with `--release` and `_RNvCs8ybOMRUuePv_3dep…`
+with `--target x86_64-unknown-linux-gnu`), while extra `RUSTFLAGS` do not.
+Legacy folds the same value into the stripped hash, so a legacy join tolerates
+these mismatches and a v0 join does not. The native harness routes reuse the
+harness's own build, so this is automatic for `libfuzzer`/`ziggy`/`afl`. Plain
+`--lang rust` builds without `--target` unless `--build-std` adds it, so pass
+the fuzz build's `--profile`, and analyze a fuzz binary whose build passes
+`--target` (cargo-fuzz always does) through its native route. Consumers that
+also have source location can work around a residual mismatch with a
+`file`/`line` fallback, as
+[cov-analysis](https://github.com/AFLplusplus/cov-analysis)'s JSON mode does.
