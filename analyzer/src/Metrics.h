@@ -17,6 +17,8 @@ struct FuncMetrics {
   unsigned cyclomatic = 0;
   unsigned loops = 0;
   bool ptrArg = false;
+  bool objectArg = false;
+  bool onChain = false;
   bool interesting = false;
   bool bottleneck = false;
   bool deadEnd = false;

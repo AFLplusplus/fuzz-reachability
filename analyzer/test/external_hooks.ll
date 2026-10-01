@@ -1,14 +1,21 @@
 target triple = "x86_64-unknown-linux-gnu"
 
 @slot_x = internal global ptr null
+@hook_template = internal constant { ptr } { ptr @copied_hook }
 @slot_c = internal global ptr null
 
 declare ptr @ext_get_hooks()
+declare ptr @ext_get_table()
+declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
 declare ptr @ext_get_ctx()
 declare void @ext_register_init(ptr)
 declare void @ext_register(ptr)
 declare ptr @malloc(i64)
 declare noalias ptr @pool_alloc(i64)
+
+define internal void @copied_hook(i32 %code) {
+  ret void
+}
 
 define internal void @my_error(i32 %code) {
   ret void
@@ -77,6 +84,8 @@ define internal void @unused_registration() {
 define i32 @LLVMFuzzerTestOneInput(ptr %d, i64 %n) {
   %h = call ptr @ext_get_hooks()
   store ptr @my_error, ptr %h
+  %table = call ptr @ext_get_table()
+  call void @llvm.memcpy.p0.p0.i64(ptr %table, ptr @hook_template, i64 8, i1 false)
   %w = call ptr @get_hooks()
   %wf = getelementptr inbounds ptr, ptr %w, i64 1
   store ptr @wrapped_error, ptr %wf

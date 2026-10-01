@@ -201,7 +201,7 @@ private:
 static void propagateArgumentStores(EscapeIndex &idx,
                                     const std::set<SlotKey> &callableFields) {
   CallbackValues callbacks(idx, callableFields);
-  DenseMap<Argument *, SmallVector<Value *, 2>> callerObjects;
+  MapVector<Argument *, SmallVector<Value *, 2>> callerObjects;
   for (auto &kv : idx.callSites) {
     Function *callee = kv.first;
     if (callee->isDeclaration())
@@ -654,6 +654,19 @@ static bool isExternalMemory(Value *pointer,
   return false;
 }
 
+static bool passesFunction(CallBase &cb) {
+  for (const Use &argU : cb.args())
+    if (resolveCallableValue(argU.get()))
+      return true;
+  return false;
+}
+
+static std::optional<MemoryWrite> externalCopy(Instruction &i) {
+  if (auto *copy = dyn_cast<AnyMemTransferInst>(&i))
+    return MemoryWrite{copy->getRawDest(), copy->getRawSource()};
+  return std::nullopt;
+}
+
 static bool isDispatchTablePointer(Value *value) {
   auto *global = dyn_cast<GlobalVariable>(getUnderlyingObject(value));
   return global && isDispatchTable(*global);
@@ -670,6 +683,8 @@ void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
   auto addStoreSites = [&](Function &f) {
     for (Instruction &i : instructions(f)) {
       auto write = memoryWrite(i);
+      if (!write)
+        write = externalCopy(i);
       if (!write || storeSites.count(&i) || isDispatchTablePointer(write->value) ||
           !isExternalMemory(write->pointer, external, tli))
         continue;
@@ -686,8 +701,10 @@ void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
         if (callsAnalyzableCallee(*cb))
           continue;
         Function *callee = cb->getCalledFunction();
-        bool handedOut =
-            !registersExitHandler(*cb) && !(callee && callee->isIntrinsic());
+        bool intrinsic = callee && callee->isIntrinsic();
+        if (intrinsic && !passesFunction(*cb))
+          continue;
+        bool handedOut = !registersExitHandler(*cb) && !intrinsic;
         for (const Use &argU : cb->args()) {
           sites.push_back({&f, argU.get(), handedOut});
           roots.push_back(argU.get());
@@ -751,15 +768,15 @@ DenseSet<Function *> computeAddressFlowTargets(
     const DenseSet<Function *> &externallyCalled) {
   // Root the value-flow at every place an address could be consumed as a
   // callable: an indirect call's callee operand, the arguments/returns that
-  // reach unanalyzable *code* that might call them, and stores into memory that
-  // such code owns. Inline asm and intrinsics are excluded: an asm operand
-  // (e.g. `std::hint::black_box`, lowered to empty `asm sideeffect ""`) and
-  // intrinsics (`llvm.lifetime`, `memcpy`, `dbg`, ...)
-  // observe or move a value but cannot invoke an arbitrary function, so an
-  // address handed only to them is not evidence of being callable. A function
-  // carried to a remaining root has concrete flow evidence, not just a type
-  // match. (Confidence-only; reachability/escape edges are unaffected and stay
-  // sound.)
+  // reach unanalyzable *code* that might call them, and stores or `memcpy`
+  // copies into memory that such code owns. Inline asm and intrinsics are
+  // otherwise excluded: an asm operand (e.g. `std::hint::black_box`, lowered
+  // to empty `asm sideeffect ""`) and intrinsics (`llvm.lifetime`, `memcpy`,
+  // `dbg`, ...) observe or move a value but cannot invoke an arbitrary
+  // function, so an address handed only to them is not evidence of being
+  // callable. A function carried to a remaining root has concrete flow
+  // evidence, not just a type match. (Confidence-only; reachability/escape
+  // edges are unaffected and stay sound.)
   TargetLibraryInfoImpl tlii(m.getTargetTriple());
   TargetLibraryInfo tli(tlii);
   std::vector<Value *> roots;
@@ -770,6 +787,9 @@ DenseSet<Function *> computeAddressFlowTargets(
       if (auto *cb = dyn_cast<CallBase>(&i)) {
         if (cb->isInlineAsm())
           continue;
+        if (auto copy = externalCopy(i))
+          if (isExternalMemory(copy->pointer, externallyCalled, tli))
+            roots.push_back(copy->value);
         Function *callee = cb->getCalledFunction();
         if (callee && callee->isIntrinsic())
           continue;

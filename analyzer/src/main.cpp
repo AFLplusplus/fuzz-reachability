@@ -427,15 +427,15 @@ int main(int argc, char **argv) {
   reach::buildIndirectEdges(*mod, graph, *resolver, escapeIdx);
 
   if (DumpEdges) {
-    DenseSet<std::pair<Function *, unsigned>> seen;
+    std::set<std::pair<std::string, reach::EdgeKind>> targets;
     for (Function &f : *mod) {
-      seen.clear();
+      targets.clear();
       graph.forEachCallee(&f, [&](Function *to, reach::EdgeKind kind) {
-        if (!seen.insert({to, (unsigned)kind}).second)
-          return;
-        outs() << f.getName() << " -> " << to->getName() << " ["
-               << (kind == reach::EdgeKind::Direct ? "direct" : "indirect") << "]\n";
+        targets.insert({to->getName().str(), kind});
       });
+      for (const auto &[to, kind] : targets)
+        outs() << f.getName() << " -> " << to << " ["
+               << (kind == reach::EdgeKind::Direct ? "direct" : "indirect") << "]\n";
     }
     return 0;
   }

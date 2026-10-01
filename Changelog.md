@@ -87,10 +87,31 @@
   callbacks published with `atomic_exchange` are no longer missed.
 - Calls to LLVM intrinsics (`memcpy`, `lifetime`, …) no longer count as handing
   a callback to external code, so they do not create constructor roots or
-  externally-called callbacks; their call edges are unchanged.
+  externally-called callbacks.
 - New JSON field `escaped_from_unreached` (and `summary.escaped_from_unreached`):
   unreachable functions that only unreached code hands to external code. The
   analyzer prints a note listing the first few.
+- `interesting`: the implicit `this` of a C++ method no longer makes the method
+  `interesting` on its own; the pointer chain still passes through it, and
+  `dead_end` treats such a method as part of the chain. `this` is recognized
+  from full debug info, or without it (including `-gline-tables-only`) from
+  constructors/destructors, qualified methods, Itanium vtable entries, and
+  methods whose mangled signature has no parameters. Internal-linkage
+  functions in optimized bitcode keep counting `this`, since dead-argument
+  elimination may have removed it.
+- Confidence: vtable-slot evidence is split by kind. A C++ slot matches only a
+  call that loads the vtable pointer out of the object it passes as `this`, in
+  C++ code or code of unknown language; a Rust slot matches only a call in Rust
+  code. Previously a C call through a function-pointer pointer rated every
+  class's first virtual function and every Rust `drop_in_place` `medium`.
+- Calls to LLVM intrinsics no longer add escape edges unless a function is
+  passed to them directly (`llvm.init.trampoline`); `memcpy`/`memmove` are
+  modelled as copies, and a copy into externally owned memory is an escape. On
+  libxml2 at `-O2` this drops 5,572 spurious indirect edges (for example 129
+  from the integer helper `compute_minrun`) with the reachable set unchanged.
+- `--dump-edges` lists each function's callees sorted, and setter
+  propagation no longer depends on pointer order, so repeated runs print
+  identical output.
 
 
 ### v1.1

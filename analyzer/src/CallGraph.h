@@ -3,6 +3,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
@@ -99,7 +100,7 @@ void buildIndirectEdges(llvm::Module &m, CallGraph &g, IndirectResolver &r,
                         const EscapeIndex &idx);
 
 struct EscapeIndex {
-  llvm::DenseMap<llvm::Function *, llvm::SmallVector<llvm::CallBase *, 4>> callSites;
+  llvm::MapVector<llvm::Function *, llvm::SmallVector<llvm::CallBase *, 4>> callSites;
   llvm::DenseMap<llvm::Value *, llvm::SmallVector<llvm::Value *, 4>> storedTo;
   llvm::DenseMap<llvm::Value *, llvm::SmallVector<llvm::Value *, 4>> parameterStores;
 };

@@ -3,6 +3,7 @@
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DebugProgramInstruction.h"
@@ -11,6 +12,7 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
 #include <cstdint>
+#include <cstdlib>
 #include <queue>
 #include <vector>
 
@@ -59,13 +61,83 @@ unsigned countLocals(Function &f) {
   return allocas;
 }
 
-void computeLocal(Function &f, FuncMetrics &fm) {
-  fm.basicBlocks = f.size();
+bool hasImplicitObject(Function &f, const DenseSet<Function *> &virtuals) {
+  if (f.hasLocalLinkage() && !f.hasFnAttribute(Attribute::OptimizeNone))
+    return false;
+  DISubprogram *sp = f.getSubprogram();
+  DISubroutineType *type = sp ? sp->getType() : nullptr;
+  if (type && type->getTypeArray().size() > 0) {
+    auto types = type->getTypeArray();
+    if (types.size() < 2)
+      return false;
+    auto *first = dyn_cast_or_null<DIType>(types[1]);
+    return first && first->isObjectPointer();
+  }
+  if (virtuals.count(&f))
+    return true;
+  ItaniumPartialDemangler demangler;
+  if (demangler.partialDemangle(f.getName().str().c_str()) || !demangler.isFunction())
+    return false;
+  if (demangler.isCtorOrDtor() || demangler.hasFunctionQualifiers())
+    return true;
+  unsigned pointers = 0;
   for (Argument &a : f.args())
-    if (a.getType()->isPointerTy()) {
-      fm.ptrArg = true;
-      break;
+    if (!a.hasStructRetAttr()) {
+      if (!a.getType()->isPointerTy())
+        return false;
+      ++pointers;
     }
+  if (pointers != 1)
+    return false;
+  size_t size = 0;
+  char *params = demangler.getFunctionParameters(nullptr, &size);
+  bool none = params && StringRef(params) == "()";
+  std::free(params);
+  return none;
+}
+
+Argument *implicitObjectArgument(Function &f, const DenseSet<Function *> &virtuals) {
+  if (!hasImplicitObject(f, virtuals))
+    return nullptr;
+  for (Argument &a : f.args())
+    if (!a.hasStructRetAttr())
+      return a.getType()->isPointerTy() ? &a : nullptr;
+  return nullptr;
+}
+
+DenseSet<Function *> itaniumVirtualFunctions(Module &m) {
+  DenseSet<Function *> out;
+  std::vector<Constant *> work;
+  for (GlobalVariable &g : m.globals()) {
+    StringRef name = g.getName();
+    if (g.hasInitializer() && (name.starts_with("_ZTV") || name.starts_with("_ZTC")))
+      work.push_back(g.getInitializer());
+  }
+  while (!work.empty()) {
+    Constant *c = work.back();
+    work.pop_back();
+    if (Function *f = resolveCallableValue(c)) {
+      out.insert(f);
+      continue;
+    }
+    if (isa<ConstantAggregate>(c))
+      for (Use &op : c->operands())
+        work.push_back(cast<Constant>(op.get()));
+  }
+  return out;
+}
+
+void computeLocal(Function &f, FuncMetrics &fm, const DenseSet<Function *> &virtuals) {
+  fm.basicBlocks = f.size();
+  Argument *self = implicitObjectArgument(f, virtuals);
+  for (Argument &a : f.args()) {
+    if (!a.getType()->isPointerTy())
+      continue;
+    if (&a == self)
+      fm.objectArg = true;
+    else
+      fm.ptrArg = true;
+  }
 
   unsigned edges = 0;
   for (BasicBlock &bb : f)
@@ -89,12 +161,15 @@ void computeInteresting(Module &m, const CallGraph &g,
                         DenseMap<Function *, FuncMetrics> &out) {
   std::queue<Function *> work;
   std::vector<std::string> scopes;
+  auto carriesPointer = [](const FuncMetrics &fm) { return fm.ptrArg || fm.objectArg; };
   auto mark = [&](Function *f) {
     auto it = out.find(f);
-    if (it != out.end() && it->second.ptrArg && !it->second.interesting) {
+    if (it == out.end() || !carriesPointer(it->second) || it->second.onChain)
+      return;
+    it->second.onChain = true;
+    if (it->second.ptrArg)
       it->second.interesting = true;
-      work.push(f);
-    }
+    work.push(f);
   };
   for (const std::string &name : roots) {
     Function *f = m.getFunction(name);
@@ -104,7 +179,7 @@ void computeInteresting(Module &m, const CallGraph &g,
     scopes.push_back(demangleWithoutHash(f->getName()) + "::");
   }
   for (auto &kv : out) {
-    if (!kv.second.ptrArg || kv.second.interesting)
+    if (!carriesPointer(kv.second) || kv.second.onChain)
       continue;
     std::string name = demangleWithoutHash(kv.first->getName());
     for (const std::string &scope : scopes) {
@@ -146,37 +221,37 @@ void computeDeadEnd(const CallGraph &g,
                     DenseMap<Function *, FuncMetrics> &out) {
   const auto &E = g.edges();
   const auto &S = g.setEdges();
-  auto interesting = [&](Function *to) {
+  auto onChain = [&](Function *to) {
     auto mi = out.find(to);
-    return mi != out.end() && mi->second.interesting;
+    return mi != out.end() && mi->second.onChain;
   };
-  std::vector<int8_t> setInteresting(g.sets().size(), -1);
+  std::vector<int8_t> setOnChain(g.sets().size(), -1);
   for (auto &kv : out) {
-    bool leadsToInteresting = false;
+    bool continuesChain = false;
     auto it = E.find(kv.first);
     if (it != E.end())
       for (const auto &[to, kind] : it->second)
-        if (interesting(to)) {
-          leadsToInteresting = true;
+        if (onChain(to)) {
+          continuesChain = true;
           break;
         }
     auto st = S.find(kv.first);
-    if (!leadsToInteresting && st != S.end())
+    if (!continuesChain && st != S.end())
       for (SetId id : st->second) {
-        if (setInteresting[id] < 0) {
-          setInteresting[id] = 0;
+        if (setOnChain[id] < 0) {
+          setOnChain[id] = 0;
           for (Function *to : g.sets().get(id))
-            if (interesting(to)) {
-              setInteresting[id] = 1;
+            if (onChain(to)) {
+              setOnChain[id] = 1;
               break;
             }
         }
-        if (setInteresting[id] == 1) {
-          leadsToInteresting = true;
+        if (setOnChain[id] == 1) {
+          continuesChain = true;
           break;
         }
       }
-    kv.second.deadEnd = !leadsToInteresting;
+    kv.second.deadEnd = !continuesChain;
   }
 }
 
@@ -327,11 +402,12 @@ computeMetrics(Module &m, const CallGraph &g, const ReachResult &res,
                const std::vector<std::string> &roots,
                const DenseMap<Function *, unsigned> &localVars) {
   DenseMap<Function *, FuncMetrics> out;
+  DenseSet<Function *> virtuals = itaniumVirtualFunctions(m);
   for (Function &f : m) {
     if (f.isDeclaration() || !res.reached.count(&f))
       continue;
     FuncMetrics fm;
-    computeLocal(f, fm);
+    computeLocal(f, fm, virtuals);
     fm.localVars = localVars.lookup(&f);
     out[&f] = fm;
   }

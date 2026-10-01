@@ -1,8 +1,11 @@
 #include "SlotEvidence.h"
 #include "CallGraph.h"
-#include "llvm/ADT/SmallVector.h"
+#include "SymbolKey.h"
+#include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/Config/llvm-config.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Operator.h"
@@ -56,6 +59,50 @@ bool isDispatchTable(const GlobalVariable &g) {
 }
 
 namespace {
+
+enum class Language { Unknown, Cxx, Rust, Other };
+
+enum DispatchKind : uint64_t { ItaniumTable, RustTable };
+
+Language languageOfUnit(const DICompileUnit &cu) {
+#if LLVM_VERSION_MAJOR >= 22
+  DISourceLanguageName lang = cu.getSourceLanguage();
+  unsigned name = lang.getName();
+  if (lang.hasVersionedName()) {
+    if (name == dwarf::DW_LNAME_C_plus_plus || name == dwarf::DW_LNAME_ObjC_plus_plus)
+      return Language::Cxx;
+    return name == dwarf::DW_LNAME_Rust ? Language::Rust : Language::Other;
+  }
+#else
+  unsigned name = cu.getSourceLanguage();
+#endif
+  switch (name) {
+  case dwarf::DW_LANG_C_plus_plus:
+  case dwarf::DW_LANG_C_plus_plus_03:
+  case dwarf::DW_LANG_C_plus_plus_11:
+  case dwarf::DW_LANG_C_plus_plus_14:
+  case dwarf::DW_LANG_C_plus_plus_17:
+  case dwarf::DW_LANG_C_plus_plus_20:
+  case dwarf::DW_LANG_ObjC_plus_plus:
+    return Language::Cxx;
+  case dwarf::DW_LANG_Rust:
+    return Language::Rust;
+  default:
+    return Language::Other;
+  }
+}
+
+Language languageOf(const Function &f) {
+  if (DISubprogram *sp = f.getSubprogram())
+    if (DICompileUnit *cu = sp->getUnit())
+      return languageOfUnit(*cu);
+  StringRef name = f.getName();
+  if (name.starts_with("_R") || canonicalKey(name) != name)
+    return Language::Rust;
+  if (name.starts_with("_Z"))
+    return Language::Cxx;
+  return Language::Unknown;
+}
 
 void recordInitializer(Constant *c, Type *owner, std::vector<uint64_t> path,
                        std::map<SlotKey, std::vector<Function *>> &stored) {
@@ -114,6 +161,7 @@ void recordDispatchTable(GlobalVariable &g, const DataLayout &dl,
   StringRef name = g.getName();
   std::set<uint64_t> addressPoints;
   bool itanium = name.starts_with("_ZTV") || name.starts_with("_ZTC");
+  DispatchKind kind = itanium ? ItaniumTable : RustTable;
   if (itanium) {
     for (User *user : g.users()) {
       auto *gep = dyn_cast<GEPOperator>(user);
@@ -136,17 +184,31 @@ void recordDispatchTable(GlobalVariable &g, const DataLayout &dl,
         continue;
       if (itanium && topLevelElement(g, point, dl) != topLevelElement(g, offset, dl))
         continue;
-      stored[{nullptr, {offset - point}}].push_back(f);
+      stored[{nullptr, {kind, offset - point}}].push_back(f);
     }
 }
 
-std::optional<SlotKey> dispatchKey(Value *pointer, const DataLayout &dl) {
+Value *objectArgument(CallBase &call) {
+  for (unsigned i = 0; i < call.arg_size(); ++i)
+    if (!call.paramHasAttr(i, Attribute::StructRet))
+      return call.getArgOperand(i)->stripPointerCasts();
+  return nullptr;
+}
+
+std::optional<SlotKey> dispatchKey(Value *pointer, CallBase &call,
+                                   const DataLayout &dl, Language caller) {
   APInt offset(dl.getIndexTypeSizeInBits(pointer->getType()), 0);
   Value *base =
       pointer->stripAndAccumulateConstantOffsets(dl, offset, /*AllowNonInbounds=*/true);
   if (offset.isNegative() || isa<GlobalValue>(base) || isa<AllocaInst>(base))
     return std::nullopt;
-  return SlotKey{nullptr, {offset.getZExtValue()}};
+  if (caller == Language::Rust)
+    return SlotKey{nullptr, {RustTable, offset.getZExtValue()}};
+  auto *vptr = dyn_cast<LoadInst>(base);
+  if ((caller == Language::Cxx || caller == Language::Unknown) && vptr &&
+      vptr->getPointerOperand()->stripPointerCasts() == objectArgument(call))
+    return SlotKey{nullptr, {ItaniumTable, offset.getZExtValue()}};
+  return std::nullopt;
 }
 
 } // namespace
@@ -195,6 +257,7 @@ DenseSet<Function *> computeSlotTargets(Module &m, const ReachResult &res) {
   for (Function &f : m) {
     if (f.isDeclaration() || !res.reached.count(&f))
       continue;
+    Language language = languageOf(f);
     for (Instruction &i : instructions(f)) {
       if (auto write = memoryWrite(i)) {
         if (Function *target = resolveCallableValue(write->value))
@@ -211,7 +274,7 @@ DenseSet<Function *> computeSlotTargets(Module &m, const ReachResult &res) {
       Value *slot = load->getPointerOperand();
       if (auto field = fieldKey(slot))
         called.insert(*field);
-      else if (auto dispatch = dispatchKey(slot, dl))
+      else if (auto dispatch = dispatchKey(slot, *cb, dl, language))
         called.insert(*dispatch);
     }
   }

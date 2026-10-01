@@ -711,7 +711,7 @@ def test_callbacks_in_memory_owned_by_external_code(run_analyzer, tmp_path):
     report = json.loads(r.stdout)
     names = {f["mangled"] for f in report["reachable"]}
     handed_out = {"my_error", "wrapped_error", "deep_error", "my_cb",
-                  "xchg_cb", "cas_cb"}
+                  "xchg_cb", "cas_cb", "copied_hook"}
     assert handed_out <= names
     assert not {f"fun:{n}" for n in handed_out} & set(ignored.read_text().split())
     assert {"heap_only", "pool_only", "not_cb", "never_published",
@@ -734,7 +734,7 @@ def test_setters_that_copy_or_choose_a_callback(run_analyzer):
     names = {f["mangled"] for f in report["reachable"]}
     assert {"via_copy", "via_select", "via_select_b", "via_phi", "via_phi_b",
             "via_memcpy"} <= names
-    assert "never_installed" not in names
+    assert {"never_installed", "copied_never_called"}.isdisjoint(names)
 
 
 def test_callback_in_object_passed_to_indirect_call(run_analyzer):
@@ -743,6 +743,46 @@ def test_callback_in_object_passed_to_indirect_call(run_analyzer):
     names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
     assert "handler" in names
     assert "other_arity" not in names
+
+
+def test_implicit_this_does_not_make_a_method_interesting(run_analyzer):
+    r = run_analyzer([ll("cpp_this_pointer.ll"), "--entry", "LLVMFuzzerTestOneInput"])
+    assert r.returncode == 0, r.stderr
+    m = {f["mangled"]: f for f in json.loads(r.stdout)["reachable"]}
+    for name in ("_ZN6Parser3runEv", "_ZN6Parser4stepEv", "_ZNK6Parser5countEv",
+                 "_ZN7Counter4bumpEv", "_ZN6Parser4skipEv"):
+        assert m[name]["interesting"] is False, name
+    for name in ("_ZN6ParserC2EPKhm", "_ZN6Parser6headerEPKh", "_ZN2ns4peekEPKh",
+                 "_ZN12_GLOBAL__N_15Local4feedEPKhm"):
+        assert m[name]["interesting"] is True, name
+    assert m["_ZN6Parser3runEv"]["dead_end"] is False
+    assert m["_ZN6Parser4stepEv"]["dead_end"] is False
+    assert m["_ZN6Parser4skipEv"]["dead_end"] is True
+
+
+def test_vtable_slots_match_only_their_own_dispatch(run_analyzer):
+    r = run_analyzer([ll("slot_kinds.ll"), "--entry", "LLVMFuzzerTestOneInput"])
+    assert r.returncode == 0, r.stderr
+    conf = {f["mangled"]: f["confidence"] for f in json.loads(r.stdout)["reachable"]}
+    assert conf["_ZN4Used3runEPv"] == "medium"
+    assert conf["_ZN5thing6method17h2222222222222222E"] == "medium"
+    assert conf["target"] == "medium"
+    assert conf["_ZN4Used5firstEPv"] == "low"
+    assert conf["_ZN5Never9unrelatedEPv"] == "low"
+    assert conf["_ZN4core3ptr13drop_in_place17h0123456789abcdefE"] == "low"
+
+
+def test_dump_edges_is_sorted_and_stable(run_analyzer):
+    outputs = {run_analyzer([ll("setter_shapes.ll"), "--dump-edges"]).stdout
+               for _ in range(5)}
+    assert len(outputs) == 1
+    lines = outputs.pop().splitlines()
+    by_from = {}
+    for line in lines:
+        src, rest = line.split(" -> ", 1)
+        by_from.setdefault(src, []).append(rest)
+    for targets in by_from.values():
+        assert targets == sorted(targets)
 
 
 def test_renamed_static_function_keeps_both_lists_safe(run_analyzer, tmp_path):

@@ -749,20 +749,25 @@ call. Each reachable function in the JSON therefore carries a `confidence`:
   escapes as an argument, return, or external-hook store to code that may call
   it (`qsort`, `signal`, `pthread_create`, …), or it is stored into the same
   slot that a reached indirect call loads: the same struct field (struct type
-  and field path), or the same C++ or Rust vtable slot (byte offset from the
-  vtable's address point).
-- **`low`** — reached only by a *type match*, with no value-flow evidence the
-  address is ever used as a callable. This is the soft, likely-spurious surface
-  of the over-approximation (e.g. a function pointer that is only taken, cast to
-  an integer, and stored or XOR-ed but never called). `summary.low_confidence`
-  counts these.
+  and field path), or the same vtable slot (byte offset from the vtable's
+  address point). A C++ vtable slot matches only a call that loads the vtable
+  pointer out of the object it passes as `this`, in C++ code or code whose
+  language is unknown, and a Rust vtable slot only a call in Rust code. A C
+  call built without debug info still has that shape when it passes the object
+  it loaded a function table from, such as `o->fns[1](o, …)` or, in optimized
+  C, `o->ops->f(o, …)`, and then vouches for that slot of every C++ vtable.
+- **`low`** — reached only by a *type match*: no flow evidence was found that
+  the address is ever used as a callable (e.g. a function pointer that is only
+  taken, cast to an integer, and stored or XOR-ed but never called).
+  `summary.low_confidence` counts these.
 
 It is entry-relative: evidence is collected only inside functions reached from
 the selected roots, then escape value-flow is rooted at indirect callee operands
 and at non-asm, non-intrinsic escapes; inline asm (`std::hint::black_box`
 lowers to empty `asm sideeffect ""`) and intrinsics (`llvm.lifetime`, `memcpy`,
 `dbg`, …) observe or move a value but cannot invoke it, so they do not count as
-callable sinks.
+callable sinks. A `memcpy` into externally owned memory counts as a store
+there.
 
 **`confidence` is a triage hint, not a verdict.** It never changes the reachable
 set: `reached.txt` and `not_reached.txt` are unaffected, and a `low` function
@@ -771,8 +776,9 @@ whose address is laundered through integer arithmetic (`ptrtoint`→`inttoptr`),
 reached only via an inline-asm `call`, or invoked only as a startup constructor
 can rate `low`; conversely a true decoy whose address escapes to a real callable
 sink can rate `medium`. Treat `low` as "worth auditing", not "safe to remove".
-(See `driver/tests/test_analyzer_core.py::test_confidence_tiers` and
-`::test_slot_evidence_grades_confidence`.)
+(See `driver/tests/test_analyzer_core.py::test_confidence_tiers`,
+`::test_slot_evidence_grades_confidence`, and
+`::test_vtable_slots_match_only_their_own_dispatch`.)
 
 ## Function metrics
 
@@ -807,7 +813,17 @@ times the counts of its source.
   also takes a pointer argument. It flags code the fuzzer's input (a pointer) can
   plausibly be threaded into through an unbroken chain of pointer-passing calls. A
   function with a pointer argument whose only callers are non-pointer-taking is
-  `false`. The chain starts at every entry that takes a pointer and at every
+  `false`. The implicit `this` of a C++ method does not make the method
+  `interesting` by itself, but the chain continues through it, so input held in
+  a member still reaches the methods that take it as a pointer. `this` is
+  recognized from full debug info (`-g`); without it (no `-g`, or
+  `-gline-tables-only`), from constructors and destructors,
+  `const`/`volatile`/ref-qualified methods, functions in an Itanium vtable, and
+  methods whose mangled signature has no parameters but which take one pointer.
+  Other methods built without full debug info still count `this`, and so do
+  internal-linkage functions in optimized bitcode, where dead-argument
+  elimination can drop `this`. Rust's `self` is an ordinary parameter and
+  counts. The chain starts at every entry that takes a pointer and at every
   pointer-taking closure or lambda defined inside an entry (Rust `{{closure}}` /
   `{closure#N}`, C++ `{lambda…}` and clang's `$_N`). That covers ziggy and
   cargo-afl harnesses, whose Rust `main` takes no pointer and hands the input
@@ -817,14 +833,16 @@ times the counts of its source.
   every path from an entry to that other function passes through it. A bottleneck
   gates a region of the reachable graph, so leaving it uncovered leaves the whole
   region uncovered — a high-value target for seeds or harness fixes.
-- **`dead_end`** (boolean) — the function calls no `interesting` function: either
-  it makes no calls at all (a call-graph leaf), or every function it calls is
-  `interesting = false`. It marks where the pointer-carrying `interesting` chain
-  terminates — input flow goes no deeper past a dead end.
+- **`dead_end`** (boolean) — the function calls nothing the `interesting` chain
+  continues into: either it makes no calls at all (a call-graph leaf), or every
+  function it calls is off the chain (`interesting = false`, and not a method
+  the chain passes through by its `this`). It marks where the pointer-carrying
+  `interesting` chain terminates — input flow goes no deeper past a dead end.
 
 (See `driver/tests/test_analyzer_core.py::test_function_metrics_counts`,
 `::test_interesting_pointer_path`, `::test_interesting_starts_at_closure_inside_entry`,
 `::test_interesting_starts_at_clang_lambda_inside_entry`,
+`::test_implicit_this_does_not_make_a_method_interesting`,
 `::test_bottleneck_dominators`, and `::test_dead_end`.)
 
 ## Historical note: the removed SVF backend
@@ -908,7 +926,9 @@ Two things recover it, in this order:
 reachable when it is handed to an external/indirect call as an argument,
 returned, or stored into memory that external code owns — qsort/bsearch
 comparators, atexit/pthread/`std::call_once` callbacks, error-hook and
-allocator-hook variables. Memory counts as externally owned when it is a global
+allocator-hook variables. Calls to LLVM intrinsics (`memcpy`, lifetime markers,
+bit-counting, …) are not escapes; a `memcpy` into externally owned memory is.
+Memory counts as externally owned when it is a global
 that is only declared in the bitcode, what a function without a body returns
 (directly or through a defined wrapper), or what a callback that external code
 calls receives as a pointer parameter, and also memory reached by loading

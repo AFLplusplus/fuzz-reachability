@@ -31,6 +31,10 @@ define internal i32 @never_installed(i32 %x) {
   ret i32 %x
 }
 
+define internal i32 @copied_never_called(i32 %x) {
+  ret i32 %x
+}
+
 define internal void @copy_cb(ptr %o, ptr %t) {
   %src = getelementptr inbounds %struct.tmpl, ptr %t, i32 0, i32 0
   %f = load ptr, ptr %src
@@ -101,5 +105,10 @@ define i32 @LLVMFuzzerTestOneInput(ptr %d, i64 %n) {
   call void @invoke(ptr %e, ptr %d)
   %spare = alloca ptr
   store ptr @never_installed, ptr %spare
+  %t3 = alloca %struct.tmpl
+  %t3f = getelementptr inbounds %struct.tmpl, ptr %t3, i32 0, i32 0
+  store ptr @copied_never_called, ptr %t3f
+  %copy = alloca %struct.obj
+  call void @llvm.memcpy.p0.p0.i64(ptr %copy, ptr %t3, i64 16, i1 false)
   ret i32 0
 }
