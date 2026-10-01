@@ -9,14 +9,24 @@ using namespace llvm;
 
 namespace reach {
 
-static std::set<std::string> patterns(Module &m, const ReachResult &res,
-                                       bool reached) {
+static std::set<std::string> reachedPatterns(Module &m, const ReachResult &res) {
   std::set<std::string> out;
   for (Function &f : m) {
-    if (f.isDeclaration())
+    if (f.isDeclaration() || !res.reached.count(&f))
       continue;
-    if (static_cast<bool>(res.reached.count(&f)) == reached)
-      out.insert(toPattern(f.getName()));
+    for (const std::string &name : symbolVariants(f))
+      out.insert(toPattern(name));
+  }
+  return out;
+}
+
+static std::set<std::string> unreachedPatterns(Module &m, const ReachResult &res) {
+  std::set<std::string> out;
+  for (Function &f : m) {
+    if (f.isDeclaration() || res.reached.count(&f))
+      continue;
+    out.insert(toPattern(f.getName()));
+    out.insert(toPattern(symbolName(f)));
   }
   return out;
 }
@@ -32,7 +42,7 @@ void writeAllowlist(raw_ostream &os, Module &m, const ReachResult &res) {
      << "# instance regardless of which build emitted it (clang sancov and AFL++\n"
      << "# both treat '*' as a glob in fun: entries).\n"
      << "src:*\n";
-  for (const std::string &p : patterns(m, res, /*reached=*/true))
+  for (const std::string &p : reachedPatterns(m, res))
     os << "fun:" << p << "\n";
 }
 
@@ -42,7 +52,8 @@ static std::vector<std::string> reachedNames(Module &m, const ReachResult &res) 
     if (f.isDeclaration())
       continue;
     if (res.reached.count(&f))
-      out.push_back(f.getName().str());
+      for (std::string &name : symbolVariants(f))
+        out.push_back(std::move(name));
   }
   std::sort(out.begin(), out.end());
   return out;
@@ -67,7 +78,7 @@ void writeIgnorelist(raw_ostream &os, Module &m, const ReachResult &res) {
      << "# function's name as a glob is omitted, so excluding an unreachable\n"
      << "# instance never excludes a reachable one that shares its name or prefix.\n";
   std::vector<std::string> reached = reachedNames(m, res);
-  for (const std::string &p : patterns(m, res, /*reached=*/false))
+  for (const std::string &p : unreachedPatterns(m, res))
     if (!matchesReached(p, reached))
       os << "fun:" << p << "\n";
 }

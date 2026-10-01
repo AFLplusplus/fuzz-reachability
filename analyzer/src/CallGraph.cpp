@@ -15,10 +15,28 @@ using namespace llvm;
 
 namespace reach {
 
+SetId FunctionSets::add(std::vector<Function *> members) {
+  Sets.push_back(std::move(members));
+  return Sets.size() - 1;
+}
+
 void CallGraph::addEdge(Function *from, Function *to, EdgeKind kind) {
   auto &seen = kind == EdgeKind::Direct ? SeenDirect : SeenIndirect;
   if (seen.insert({from, to}).second)
     Edges[from].push_back({to, kind});
+}
+
+void CallGraph::addSetEdge(Function *from, SetId set) {
+  if (set != NoSet && SeenSet.insert({from, set}).second)
+    SetEdges[from].push_back(set);
+}
+
+void CallGraph::addEscapeSet(Function *from, SetId set) {
+  if (set == NoSet)
+    return;
+  if (SeenEscape.insert({from, set}).second)
+    EscapeSets[from].push_back(set);
+  addSetEdge(from, set);
 }
 
 Function *directCallee(CallBase &cb) {
@@ -57,7 +75,7 @@ void buildDirectEdges(Module &m, CallGraph &g) {
   }
 }
 
-static bool isIndirect(CallBase &cb) {
+bool isIndirectCall(CallBase &cb) {
   if (cb.isInlineAsm())
     return false;
   return directCallee(cb) == nullptr;
@@ -65,15 +83,101 @@ static bool isIndirect(CallBase &cb) {
 
 void buildIndirectEdges(Module &m, CallGraph &g, IndirectResolver &r,
                         const EscapeIndex &idx) {
-  r.prepare(m, idx);
+  r.prepare(m, idx, g.sets());
+  SmallVector<SetId, 4> targets;
   for (Function &f : m) {
     if (f.isDeclaration())
       continue;
     for (Instruction &i : instructions(f))
       if (auto *cb = dyn_cast<CallBase>(&i))
-        if (isIndirect(*cb))
-          for (Function *callee : r.resolve(*cb))
-            g.addEdge(&f, callee, EdgeKind::Indirect);
+        if (isIndirectCall(*cb)) {
+          targets.clear();
+          r.resolve(*cb, targets);
+          for (SetId id : targets)
+            g.addSetEdge(&f, id);
+        }
+  }
+}
+
+static bool isCallbackValue(Value *value) {
+  if (!value->getType()->isPointerTy())
+    return false;
+  return resolveCallableValue(value) || isa<Argument>(value->stripPointerCasts());
+}
+
+static void propagateArgumentStores(EscapeIndex &idx) {
+  DenseMap<Argument *, SmallVector<Value *, 2>> callerObjects;
+  for (auto &kv : idx.callSites) {
+    Function *callee = kv.first;
+    if (callee->isDeclaration())
+      continue;
+    for (CallBase *cb : kv.second)
+      for (unsigned k = 0; k < cb->arg_size() && k < callee->arg_size(); ++k) {
+        Value *operand = cb->getArgOperand(k);
+        if (!operand->getType()->isPointerTy())
+          continue;
+        Argument *param = callee->getArg(k);
+        Value *object = getUnderlyingObject(operand);
+        if (object == param)
+          continue;
+        if (auto *global = dyn_cast<GlobalVariable>(object)) {
+          if (global->isConstant())
+            continue;
+        } else if (isa<Constant>(object)) {
+          continue;
+        }
+        callerObjects[param].push_back(object);
+      }
+  }
+
+  auto storesThrough = [&](Value *object, SmallVectorImpl<Value *> &out,
+                           size_t from) {
+    size_t index = 0;
+    for (const auto *map : {&idx.storedTo, &idx.parameterStores}) {
+      auto it = map->find(object);
+      if (it == map->end())
+        continue;
+      for (Value *value : it->second)
+        if (index++ >= from)
+          out.push_back(value);
+    }
+    return index;
+  };
+
+  DenseMap<Value *, DenseSet<Value *>> present;
+  DenseMap<Argument *, size_t> propagated;
+  std::vector<Argument *> work;
+  DenseSet<Argument *> queued;
+  for (auto &kv : callerObjects)
+    if (idx.storedTo.count(kv.first) && queued.insert(kv.first).second)
+      work.push_back(kv.first);
+  SmallVector<Value *, 8> delta;
+  SmallVector<Value *, 8> existing;
+  while (!work.empty()) {
+    Argument *param = work.back();
+    work.pop_back();
+    queued.erase(param);
+    delta.clear();
+    size_t &done = propagated[param];
+    done = storesThrough(param, delta, done);
+    for (Value *object : callerObjects.lookup(param)) {
+      bool grew = false;
+      auto inserted = present.try_emplace(object);
+      DenseSet<Value *> &have = inserted.first->second;
+      if (inserted.second) {
+        existing.clear();
+        storesThrough(object, existing, 0);
+        have.insert(existing.begin(), existing.end());
+      }
+      for (Value *value : delta)
+        if (isCallbackValue(value) && have.insert(value).second) {
+          idx.parameterStores[object].push_back(value);
+          grew = true;
+        }
+      if (auto *caller = dyn_cast<Argument>(object))
+        if (grew && callerObjects.count(caller) && queued.insert(caller).second)
+          work.push_back(caller);
+    }
   }
 }
 
@@ -91,13 +195,14 @@ void buildEscapeIndex(Module &m, EscapeIndex &idx) {
       }
     }
   }
+  propagateArgumentStores(idx);
 }
 
 static Value *stripEscape(Value *v) {
   return v ? v->stripPointerCasts() : nullptr;
 }
 
-static bool isEscapeCast(Value *v) {
+bool isEscapeCast(Value *v) {
   if (isa<CastInst>(v))
     return true;
   auto *expr = dyn_cast_or_null<ConstantExpr>(v);
@@ -105,18 +210,25 @@ static bool isEscapeCast(Value *v) {
 }
 
 static void appendStoredValues(Value *value, const EscapeIndex &idx,
-                               SmallVectorImpl<Value *> &out) {
+                               SmallVectorImpl<Value *> &out,
+                               bool parameterStores) {
   if (!value)
     return;
   Value *base = getUnderlyingObject(value);
   auto it = idx.storedTo.find(base);
   if (it != idx.storedTo.end())
     out.append(it->second.begin(), it->second.end());
+  if (!parameterStores)
+    return;
+  auto passed = idx.parameterStores.find(base);
+  if (passed != idx.parameterStores.end())
+    out.append(passed->second.begin(), passed->second.end());
 }
 
 static void escapeSuccessors(Value *v, const EscapeIndex &idx,
-                             SmallVectorImpl<Value *> &out) {
-  appendStoredValues(v, idx, out);
+                             SmallVectorImpl<Value *> &out,
+                             bool parameterStores) {
+  appendStoredValues(v, idx, out, parameterStores);
   if (auto *ga = dyn_cast<GlobalAlias>(v)) {
     out.push_back(ga->getAliasee());
     return;
@@ -137,7 +249,7 @@ static void escapeSuccessors(Value *v, const EscapeIndex &idx,
   if (auto *load = dyn_cast<LoadInst>(v)) {
     Value *base = getUnderlyingObject(load->getPointerOperand());
     out.push_back(base);
-    appendStoredValues(load->getPointerOperand(), idx, out);
+    appendStoredValues(load->getPointerOperand(), idx, out, parameterStores);
     return;
   }
   if (auto *call = dyn_cast<CallBase>(v)) {
@@ -194,111 +306,132 @@ static void escapeSuccessors(Value *v, const EscapeIndex &idx,
     return;
 }
 
-static void computeEscapeSets(const std::vector<Value *> &roots,
-                              const EscapeIndex &idx,
-                              DenseMap<Value *, unsigned> &sccOf,
-                              std::vector<SmallVector<Function *, 4>> &sccSinks,
-                              std::vector<bool> *sccUnresolved = nullptr,
-                              std::vector<bool> *sccCasts = nullptr) {
+void computeValueFlow(const std::vector<Value *> &roots, const EscapeIndex &idx,
+                      FunctionSets &sets, ValueFlow &out, bool flags,
+                      bool parameterStores) {
   struct Frame {
-    Value *v;
-    SmallVector<Value *, 8> succ;
+    unsigned node;
     unsigned next;
   };
   DenseMap<Value *, unsigned> index;
-  DenseMap<Value *, unsigned> low;
-  DenseSet<Value *> onStack;
-  std::vector<Value *> comp;
+  std::vector<Value *> nodes;
+  std::vector<unsigned> low;
+  std::vector<SmallVector<Value *, 4>> succ;
+  std::vector<bool> onStack;
+  std::vector<unsigned> comp;
   std::vector<Frame> stack;
-  unsigned counter = 0;
+
+  auto visit = [&](Value *v) {
+    unsigned n = nodes.size();
+    index[v] = n;
+    nodes.push_back(v);
+    low.push_back(n);
+    onStack.push_back(true);
+    comp.push_back(n);
+    succ.emplace_back();
+    escapeSuccessors(v, idx, succ.back(), parameterStores);
+    stack.push_back({n, 0});
+  };
 
   for (Value *root : roots) {
     Value *r = stripEscape(root);
     if (!r || index.count(r))
       continue;
-    stack.push_back({r, {}, 0});
+    visit(r);
     while (!stack.empty()) {
-      Frame &fr = stack.back();
-      Value *v = fr.v;
-      if (fr.next == 0) {
-        ++counter;
-        index[v] = counter;
-        low[v] = counter;
-        comp.push_back(v);
-        onStack.insert(v);
-        escapeSuccessors(v, idx, fr.succ);
-      }
+      unsigned n = stack.back().node;
       bool descended = false;
-      while (fr.next < fr.succ.size()) {
-        Value *w = stripEscape(fr.succ[fr.next++]);
+      while (stack.back().next < succ[n].size()) {
+        Value *w = stripEscape(succ[n][stack.back().next++]);
         if (!w)
           continue;
         auto wi = index.find(w);
         if (wi == index.end()) {
-          stack.push_back({w, {}, 0});
+          visit(w);
           descended = true;
           break;
         }
-        if (onStack.count(w) && wi->second < low[v])
-          low[v] = wi->second;
+        if (onStack[wi->second] && wi->second < low[n])
+          low[n] = wi->second;
       }
       if (descended)
         continue;
-      if (low[v] == index[v]) {
-        unsigned id = sccSinks.size();
-        SmallVector<Value *, 8> members;
+      if (low[n] == n) {
+        unsigned id = out.sccSet.size();
+        SmallVector<unsigned, 8> members;
         for (;;) {
-          Value *w = comp.back();
+          unsigned w = comp.back();
           comp.pop_back();
-          onStack.erase(w);
+          onStack[w] = false;
           members.push_back(w);
-          if (w == v)
+          if (w == n)
             break;
         }
-        for (Value *w : members)
-          sccOf[w] = id;
-        DenseSet<Function *> funcs;
+        for (unsigned w : members)
+          out.sccOf[nodes[w]] = id;
+        std::vector<Function *> own;
+        DenseSet<Function *> ownSeen;
+        SmallVector<SetId, 4> inherited;
+        SmallDenseSet<SetId, 8> inheritedSeen;
         bool unresolved = false;
         bool hasCast = false;
-        SmallVector<Value *, 8> succ;
-        for (Value *w : members) {
-          if (auto *f = dyn_cast<Function>(w))
-            funcs.insert(f);
-          if (sccCasts && isEscapeCast(w))
+        for (unsigned w : members) {
+          Value *wv = nodes[w];
+          if (auto *f = dyn_cast<Function>(wv))
+            if (ownSeen.insert(f).second)
+              own.push_back(f);
+          if (flags && isEscapeCast(wv))
             hasCast = true;
-          succ.clear();
-          escapeSuccessors(w, idx, succ);
-          if (sccUnresolved && succ.empty() && !isa<Function>(w) &&
-              !(isa<Constant>(w) && !isa<GlobalValue>(w)) &&
-              !isa<AllocaInst>(w))
+          if (flags && succ[w].empty() && !isa<Function>(wv) &&
+              !(isa<Constant>(wv) && !isa<GlobalValue>(wv)) &&
+              !isa<AllocaInst>(wv))
             unresolved = true;
-          for (Value *s : succ) {
-            if (sccCasts && isEscapeCast(s))
+          for (Value *s : succ[w]) {
+            if (flags && isEscapeCast(s))
               hasCast = true;
             s = stripEscape(s);
             if (!s)
               continue;
-            auto si = sccOf.find(s);
-            if (si != sccOf.end() && si->second != id) {
-              for (Function *f : sccSinks[si->second])
-                funcs.insert(f);
-              if (sccUnresolved && (*sccUnresolved)[si->second])
-                unresolved = true;
-              if (sccCasts && (*sccCasts)[si->second])
-                hasCast = true;
+            if (auto *f = dyn_cast<Function>(s)) {
+              if (ownSeen.insert(f).second)
+                own.push_back(f);
+              continue;
             }
+            auto si = out.sccOf.find(s);
+            if (si == out.sccOf.end() || si->second == id)
+              continue;
+            SetId inheritedSet = out.sccSet[si->second];
+            if (inheritedSet != NoSet && inheritedSeen.insert(inheritedSet).second)
+              inherited.push_back(inheritedSet);
+            if (flags && out.sccUnresolved[si->second])
+              unresolved = true;
+            if (flags && out.sccCasts[si->second])
+              hasCast = true;
           }
         }
-        sccSinks.emplace_back(funcs.begin(), funcs.end());
-        if (sccUnresolved)
-          sccUnresolved->push_back(unresolved);
-        if (sccCasts)
-          sccCasts->push_back(hasCast);
+        SetId result = NoSet;
+        if (own.empty() && inherited.size() == 1) {
+          result = inherited.front();
+        } else if (inherited.empty()) {
+          if (!own.empty())
+            result = sets.add(std::move(own));
+        } else {
+          for (SetId sid : inherited)
+            for (Function *f : sets.get(sid))
+              if (ownSeen.insert(f).second)
+                own.push_back(f);
+          result = sets.add(std::move(own));
+        }
+        out.sccSet.push_back(result);
+        if (flags) {
+          out.sccUnresolved.push_back(unresolved);
+          out.sccCasts.push_back(hasCast);
+        }
       }
-      unsigned vlow = low[v];
+      unsigned vlow = low[n];
       stack.pop_back();
       if (!stack.empty()) {
-        Value *p = stack.back().v;
+        unsigned p = stack.back().node;
         if (vlow < low[p])
           low[p] = vlow;
       }
@@ -313,20 +446,48 @@ static bool callsAnalyzableCallee(CallBase &cb) {
   return callee && !callee->isDeclaration();
 }
 
-static void appendOperandBundleRoots(CallBase &cb,
-                                     std::vector<Value *> &roots,
-                                     std::vector<std::pair<Function *, Value *>> *sites,
-                                     Function *caller) {
+struct EscapeSite {
+  Function *from;
+  Value *value;
+  bool handedOut;
+};
+
+static bool registersExitHandler(CallBase &cb) {
+  Function *callee = directCallee(cb);
+  if (!callee)
+    return false;
+  StringRef name = callee->getName();
+  return name == "atexit" || name == "at_quick_exit" || name == "on_exit" ||
+         name == "__cxa_atexit" || name == "__cxa_thread_atexit" ||
+         name == "__cxa_thread_atexit_impl";
+}
+
+static void appendOperandBundleRoots(CallBase &cb, std::vector<Value *> &roots,
+                                     std::vector<EscapeSite> *sites,
+                                     Function *caller, bool handedOut) {
   for (unsigned i = 0; i < cb.getNumOperandBundles(); ++i)
     for (const Use &input : cb.getOperandBundleAt(i).Inputs) {
       roots.push_back(input.get());
       if (sites)
-        sites->push_back({caller, input.get()});
+        sites->push_back({caller, input.get(), handedOut});
     }
 }
 
+static bool storesIntoExternalMemory(Value *pointer) {
+  Value *base = getUnderlyingObject(pointer);
+  for (unsigned depth = 0; depth < 8; ++depth) {
+    if (auto *global = dyn_cast<GlobalVariable>(base))
+      return global->isDeclaration();
+    auto *load = dyn_cast<LoadInst>(base);
+    if (!load)
+      return false;
+    base = getUnderlyingObject(load->getPointerOperand());
+  }
+  return false;
+}
+
 void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
-  std::vector<std::pair<Function *, Value *>> sites;
+  std::vector<EscapeSite> sites;
   std::vector<Value *> roots;
   for (Function &f : m) {
     if (f.isDeclaration())
@@ -335,53 +496,41 @@ void buildEscapeEdges(Module &m, CallGraph &g, const EscapeIndex &idx) {
       if (auto *cb = dyn_cast<CallBase>(&i)) {
         if (callsAnalyzableCallee(*cb))
           continue;
+        bool handedOut = !registersExitHandler(*cb);
         for (const Use &argU : cb->args()) {
-          sites.push_back({&f, argU.get()});
+          sites.push_back({&f, argU.get(), handedOut});
           roots.push_back(argU.get());
         }
-        appendOperandBundleRoots(*cb, roots, &sites, &f);
+        appendOperandBundleRoots(*cb, roots, &sites, &f, handedOut);
+      } else if (auto *store = dyn_cast<StoreInst>(&i)) {
+        if (storesIntoExternalMemory(store->getPointerOperand())) {
+          sites.push_back({&f, store->getValueOperand(), true});
+          roots.push_back(store->getValueOperand());
+        }
       } else if (auto *ret = dyn_cast<ReturnInst>(&i)) {
         if (Value *rv = ret->getReturnValue()) {
-          sites.push_back({&f, rv});
+          sites.push_back({&f, rv, false});
           roots.push_back(rv);
         }
       }
     }
   }
 
-  DenseMap<Value *, unsigned> sccOf;
-  std::vector<SmallVector<Function *, 4>> sccSinks;
-  computeEscapeSets(roots, idx, sccOf, sccSinks);
+  ValueFlow flow;
+  computeValueFlow(roots, idx, g.sets(), flow, false, true);
 
-  for (const auto &site : sites) {
-    Value *r = stripEscape(site.second);
+  for (const EscapeSite &site : sites) {
+    Value *r = stripEscape(site.value);
     if (!r)
       continue;
-    auto it = sccOf.find(r);
-    if (it == sccOf.end())
+    auto it = flow.sccOf.find(r);
+    if (it == flow.sccOf.end())
       continue;
-    for (Function *callee : sccSinks[it->second])
-      g.addEdge(site.first, callee, EdgeKind::Indirect);
+    if (site.handedOut)
+      g.addEscapeSet(site.from, flow.sccSet[it->second]);
+    else
+      g.addSetEdge(site.from, flow.sccSet[it->second]);
   }
-}
-
-ValueFlowResult computeValueFlowTargets(Value *root, const EscapeIndex &idx) {
-  std::vector<Value *> roots = {root};
-  DenseMap<Value *, unsigned> sccOf;
-  std::vector<SmallVector<Function *, 4>> sccSinks;
-  std::vector<bool> sccUnresolved;
-  std::vector<bool> sccCasts;
-  computeEscapeSets(roots, idx, sccOf, sccSinks, &sccUnresolved, &sccCasts);
-  ValueFlowResult out;
-  Value *value = stripEscape(root);
-  auto it = sccOf.find(value);
-  if (it != sccOf.end()) {
-    for (Function *f : sccSinks[it->second])
-      out.targets.insert(f);
-    out.hasCast = isEscapeCast(root) || sccCasts[it->second];
-    out.unresolved = sccUnresolved[it->second];
-  }
-  return out;
 }
 
 DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx,
@@ -407,13 +556,16 @@ DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx
         Function *callee = cb->getCalledFunction();
         if (callee && callee->isIntrinsic())
           continue;
-        if (isIndirect(*cb))
+        if (isIndirectCall(*cb))
           roots.push_back(cb->getCalledOperand());
         if (!callsAnalyzableCallee(*cb))
           for (const Use &argU : cb->args())
             roots.push_back(argU.get());
         if (!callsAnalyzableCallee(*cb))
-          appendOperandBundleRoots(*cb, roots, nullptr, nullptr);
+          appendOperandBundleRoots(*cb, roots, nullptr, nullptr, false);
+      } else if (auto *store = dyn_cast<StoreInst>(&i)) {
+        if (storesIntoExternalMemory(store->getPointerOperand()))
+          roots.push_back(store->getValueOperand());
       } else if (auto *ret = dyn_cast<ReturnInst>(&i)) {
         if (Value *rv = ret->getReturnValue())
           roots.push_back(rv);
@@ -421,14 +573,16 @@ DenseSet<Function *> computeAddressFlowTargets(Module &m, const EscapeIndex &idx
     }
   }
 
-  DenseMap<Value *, unsigned> sccOf;
-  std::vector<SmallVector<Function *, 4>> sccSinks;
-  computeEscapeSets(roots, idx, sccOf, sccSinks);
+  FunctionSets sets;
+  ValueFlow flow;
+  computeValueFlow(roots, idx, sets, flow, false, false);
 
   DenseSet<Function *> out;
-  for (const auto &sink : sccSinks)
-    for (Function *f : sink)
-      out.insert(f);
+  DenseSet<SetId> seen;
+  for (SetId id : flow.sccSet)
+    if (id != NoSet && seen.insert(id).second)
+      for (Function *f : sets.get(id))
+        out.insert(f);
   return out;
 }
 

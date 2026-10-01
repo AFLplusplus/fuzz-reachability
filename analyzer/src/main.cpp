@@ -6,6 +6,7 @@
 #include "Metrics.h"
 #include "Module.h"
 #include "Reachability.h"
+#include "SlotEvidence.h"
 #include "Toolchain.h"
 #include "TypeBasedResolver.h"
 
@@ -18,10 +19,11 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/Support/JSON.h"
 #include "llvm/Support/raw_ostream.h"
-#include <cctype>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <set>
 #include <utility>
 #include <vector>
@@ -62,6 +64,11 @@ static cl::opt<bool> NoNameRoots("no-name-roots",
                                           "functions reached only by runtime name lookup "
                                           "(dlsym/dlopen-by-name); it is on by default and "
                                           "active only when the module performs such a lookup."));
+static cl::opt<bool> NoEdges("no-edges",
+                             cl::desc("omit the edges array from the JSON report"));
+static cl::opt<std::string> RunInfo(
+    "run-info", cl::init(""),
+    cl::desc("JSON object copied into the report's \"run\" field"));
 static cl::opt<bool> IncludeProcessLifecycleRoots(
     "include-process-lifecycle-roots",
     cl::desc("include constructors, destructors, ifunc resolvers, and a defined "
@@ -99,22 +106,6 @@ void suggestEntries(Module &m, const std::vector<std::string> &requested) {
   }
 }
 
-// Rust legacy mangling appends a ::h<hex> disambiguator to the demangled path
-// (e.g. "crate::main::hcc7e51cc..."). Strip it so demangled-name matching can use
-// the human-readable path ("crate::main").
-std::string stripLegacyHash(const std::string &s) {
-  std::string::size_type pos = s.rfind("::h");
-  if (pos == std::string::npos)
-    return s;
-  StringRef tail = StringRef(s).substr(pos + 3);
-  if (tail.empty())
-    return s;
-  for (char c : tail)
-    if (!std::isxdigit(static_cast<unsigned char>(c)))
-      return s;
-  return s.substr(0, pos);
-}
-
 // Resolve each requested entry token to the mangled names of defined functions,
 // so callers never have to spell out a mangled symbol. A token matches by, in
 // order and unioned: exact mangled symbol; exact demangled name; demangled
@@ -130,7 +121,7 @@ void resolveEntries(Module &m, const std::vector<std::string> &requested,
     if (f.isDeclaration())
       continue;
     std::string name = f.getName().str();
-    defs.emplace_back(name, stripLegacyHash(reach::demangle(name)));
+    defs.emplace_back(name, reach::demangleWithoutHash(name));
   }
   std::set<std::string> seen;
   for (const auto &req : requested) {
@@ -258,6 +249,59 @@ void collectLifecycleGlobal(Module &m, StringRef name, std::set<std::string> &ha
   }
 }
 
+std::vector<Function *> constructors(Module &m) {
+  std::vector<Function *> out;
+  GlobalVariable *global = m.getNamedGlobal("llvm.global_ctors");
+  auto *array = global && global->hasInitializer()
+                    ? dyn_cast<ConstantArray>(global->getInitializer())
+                    : nullptr;
+  if (!array)
+    return out;
+  for (unsigned i = 0; i < array->getNumOperands(); ++i) {
+    auto *record = dyn_cast<Constant>(array->getOperand(i));
+    Constant *target = record ? record->getAggregateElement(1u) : nullptr;
+    Function *function = reach::resolveCallableValue(target);
+    if (function && !function->isDeclaration())
+      out.push_back(function);
+  }
+  return out;
+}
+
+std::vector<std::string> collectConstructorEscapeRoots(
+    Module &m, const reach::CallGraph &graph, std::set<std::string> &have,
+    std::vector<std::string> &roots) {
+  std::vector<std::string> added;
+  DenseSet<Function *> seen;
+  std::vector<Function *> work;
+  for (Function *f : constructors(m))
+    if (seen.insert(f).second)
+      work.push_back(f);
+  while (!work.empty()) {
+    Function *cur = work.back();
+    work.pop_back();
+    graph.forEachCallee(cur, [&](Function *to, reach::EdgeKind) {
+      if (!to->isDeclaration() && seen.insert(to).second)
+        work.push_back(to);
+    });
+  }
+  std::set<std::string> escaped;
+  for (Function *f : seen) {
+    auto it = graph.escapeSets().find(f);
+    if (it == graph.escapeSets().end())
+      continue;
+    for (reach::SetId id : it->second)
+      for (Function *target : graph.sets().get(id))
+        if (!target->isDeclaration())
+          escaped.insert(target->getName().str());
+  }
+  for (const std::string &name : escaped)
+    if (have.insert(name).second) {
+      roots.push_back(name);
+      added.push_back(name);
+    }
+  return added;
+}
+
 std::vector<std::string> collectProcessLifecycleRoots(
     Module &m, std::set<std::string> &have, std::vector<std::string> &roots) {
   std::vector<std::string> added;
@@ -313,6 +357,21 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  std::optional<json::Object> runInfo;
+  if (!RunInfo.empty()) {
+    Expected<json::Value> parsed = json::parse(RunInfo);
+    if (!parsed) {
+      errs() << "error: --run-info is not valid JSON: "
+             << toString(parsed.takeError()) << "\n";
+      return 1;
+    }
+    if (!parsed->getAsObject()) {
+      errs() << "error: --run-info must be a JSON object\n";
+      return 1;
+    }
+    runInfo = std::move(*parsed->getAsObject());
+  }
+
   LLVMContext ctx;
   std::string err;
   auto mod = reach::loadModule(ctx, InputIR, err);
@@ -320,6 +379,9 @@ int main(int argc, char **argv) {
     errs() << "error: failed to load " << InputIR << ": " << err << "\n";
     return 1;
   }
+
+  auto localVars = reach::countLocalVariables(*mod);
+  reach::promoteMemoryToRegisters(*mod);
 
   std::vector<std::string> requested(EntryList.begin(), EntryList.end());
   if (requested.empty())
@@ -341,10 +403,16 @@ int main(int argc, char **argv) {
   reach::buildIndirectEdges(*mod, graph, *resolver, escapeIdx);
 
   if (DumpEdges) {
-    for (auto &kv : graph.edges())
-      for (auto &[to, kind] : kv.second)
-        outs() << kv.first->getName() << " -> " << to->getName() << " ["
+    DenseSet<std::pair<Function *, unsigned>> seen;
+    for (Function &f : *mod) {
+      seen.clear();
+      graph.forEachCallee(&f, [&](Function *to, reach::EdgeKind kind) {
+        if (!seen.insert({to, (unsigned)kind}).second)
+          return;
+        outs() << f.getName() << " -> " << to->getName() << " ["
                << (kind == reach::EdgeKind::Direct ? "direct" : "indirect") << "]\n";
+      });
+    }
     return 0;
   }
 
@@ -357,6 +425,13 @@ int main(int argc, char **argv) {
 
   std::vector<std::string> roots = entries;
   std::set<std::string> have(roots.begin(), roots.end());
+  if (have.count("LLVMFuzzerTestOneInput")) {
+    std::vector<std::string> added;
+    addLifecycleRoot(mod->getFunction("LLVMFuzzerInitialize"), have, roots, added);
+    if (!added.empty())
+      errs() << "note: added LLVMFuzzerInitialize as a harness root (libFuzzer "
+                "calls it once before the first input)\n";
+  }
   if (!NoNameRoots) {
     std::vector<std::string> added;
     for (const std::string &n : collectNameReferencedRoots(*mod))
@@ -382,6 +457,17 @@ int main(int argc, char **argv) {
       errs() << "\n";
     }
   }
+  if (!IncludeProcessLifecycleRoots && !roots.empty()) {
+    std::vector<std::string> added =
+        collectConstructorEscapeRoots(*mod, graph, have, roots);
+    if (!added.empty()) {
+      errs() << "note: added " << added.size()
+             << " root(s) for callbacks that constructors hand to external code:";
+      for (const std::string &n : added)
+        errs() << " " << n;
+      errs() << "\n";
+    }
+  }
   if (roots.empty()) {
     suggestEntries(*mod, requested);
     return 1;
@@ -394,7 +480,9 @@ int main(int argc, char **argv) {
   }
 
   auto flowTargets = reach::computeAddressFlowTargets(*mod, escapeIdx, res);
-  auto metrics = reach::computeMetrics(*mod, graph, res, roots);
+  for (Function *f : reach::computeSlotTargets(*mod, res))
+    flowTargets.insert(f);
+  auto metrics = reach::computeMetrics(*mod, graph, res, roots, localVars);
 
   auto writeFile = [&](const std::string &path, const char *what,
                        const std::function<void(raw_ostream &)> &fn) -> bool {
@@ -424,7 +512,7 @@ int main(int argc, char **argv) {
   const char *backendName = IndirectAny ? "indirect-any" : "type-based";
   if (OutFile.empty()) {
     reach::writeJson(outs(), *mod, graph, res, backendName, roots, flowTargets,
-                     metrics);
+                     metrics, runInfo ? &*runInfo : nullptr, !NoEdges);
   } else {
     std::error_code ec;
     raw_fd_ostream out(OutFile, ec, sys::fs::OF_Text);
@@ -434,7 +522,7 @@ int main(int argc, char **argv) {
       return 1;
     }
     reach::writeJson(out, *mod, graph, res, backendName, roots, flowTargets,
-                     metrics);
+                     metrics, runInfo ? &*runInfo : nullptr, !NoEdges);
   }
   return 0;
 }

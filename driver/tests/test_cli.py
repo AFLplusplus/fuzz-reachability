@@ -677,6 +677,15 @@ def test_run_cpp_end_to_end(analyzer, tmp_path, monkeypatch):
     assert "LLVMFuzzerTestOneInput" in names
 
 
+_COMPLEX_DEAD = {
+    "cpp_complex": {
+        "_Z16unreachable_leafv", "_Z15unreachable_midv", "_Z16unreachable_rootv",
+        "_Z22unreachable_calls_realv",
+    },
+    "cpp_complex2": {"ifunc_resolver_impl_b"},
+}
+
+
 @pytest.mark.parametrize("fixture", ["cpp_complex", "cpp_complex2"])
 @pytest.mark.skipif(not HAVE_GLLVM, reason="gllvm not installed")
 def test_run_complex_cpp_fixtures(analyzer, tmp_path, monkeypatch, fixture):
@@ -695,6 +704,11 @@ def test_run_complex_cpp_fixtures(analyzer, tmp_path, monkeypatch, fixture):
     assert report["summary"]["defined"] > 100
     assert (tmp_path / "reached.txt").is_file()
     assert (tmp_path / "not_reached.txt").is_file()
+    dead = _COMPLEX_DEAD[fixture]
+    unreachable = {f["mangled"] for f in report["unreachable_defined"]}
+    assert dead <= unreachable
+    ignored = set((tmp_path / "not_reached.txt").read_text().split())
+    assert {f"fun:{name}" for name in dead} <= ignored
 
 
 @pytest.mark.skipif(not shutil.which("cargo"), reason="cargo not installed")
@@ -734,7 +748,7 @@ def test_run_mixed_end_to_end(analyzer, tmp_path, monkeypatch):
 @pytest.mark.skipif(
     not shutil.which("cargo-ziggy"), reason="cargo-ziggy not installed",
 )
-def test_run_rust_indirect_fixture(analyzer, tmp_path, monkeypatch):
+def test_run_rust_indirect_fixture(analyzer, tmp_path, monkeypatch, capsys):
     _require_cli_rust(analyzer)
     monkeypatch.setenv("REACHABILITY_ANALYZER", analyzer)
     work = tmp_path / "rust_indirect"
@@ -743,7 +757,10 @@ def test_run_rust_indirect_fixture(analyzer, tmp_path, monkeypatch):
         ignore=shutil.ignore_patterns("target", "*.bc", "reachability.json", "reached.txt", "not_reached.txt"),
     )
     out = tmp_path / "rust-indirect.json"
-    assert cli.main([
+    rc = cli.main([
         "run", "--project", str(work), "--lang", "ziggy", "--out", str(out),
-    ]) == 0
+    ])
+    if rc != 0 and "plugins are not installed" in capsys.readouterr().err:
+        pytest.skip("cargo-afl AFL++ plugins are not installed for this rustc")
+    assert rc == 0
     assert json.load(open(out))["summary"]["reachable"] > 100

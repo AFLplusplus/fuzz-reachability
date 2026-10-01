@@ -7,7 +7,6 @@
 #include "llvm/Support/JSON.h"
 #include <algorithm>
 #include <set>
-#include <tuple>
 #include <vector>
 
 using namespace llvm;
@@ -76,9 +75,12 @@ void emitFn(json::OStream &J, Function *f, const Via *via,
             const DenseSet<Function *> &flow,
             const DenseMap<Function *, unsigned> &depth,
             const DenseMap<Function *, FuncMetrics> &metrics) {
-  std::string name = sanitizeUtf8(f->getName());
+  std::string irName = sanitizeUtf8(f->getName());
+  std::string name = sanitizeUtf8(symbolName(*f));
   J.object([&] {
     J.attribute("mangled", name);
+    if (name != irName)
+      J.attribute("ir_name", irName);
     J.attribute("demangled", demangle(name));
     J.attribute("key", canonicalKey(name));
     if (DISubprogram *sp = f->getSubprogram()) {
@@ -96,7 +98,7 @@ void emitFn(json::OStream &J, Function *f, const Via *via,
       const FuncMetrics &fm = metrics.lookup(f);
       J.attribute("basic_blocks", (int64_t)fm.basicBlocks);
       J.attribute("dangerous_calls", (int64_t)fm.dangerousCalls);
-      J.attribute("C11", (int64_t)fm.localVars);
+      J.attribute("local_vars", (int64_t)fm.localVars);
       J.attribute("cyclomatic", (int64_t)fm.cyclomatic);
       J.attribute("loops", (int64_t)fm.loops);
       J.attribute("interesting", fm.interesting);
@@ -110,7 +112,8 @@ void emitFn(json::OStream &J, Function *f, const Via *via,
 void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult &res,
                StringRef backend, const std::vector<std::string> &entries,
                const DenseSet<Function *> &flowTargets,
-               const DenseMap<Function *, FuncMetrics> &metrics) {
+               const DenseMap<Function *, FuncMetrics> &metrics,
+               const json::Object *run, bool includeEdges) {
   // Defined functions, partitioned into reachable / unreachable, sorted by name.
   std::vector<std::pair<Function *, Via>> reachable;
   std::vector<Function *> unreachable;
@@ -139,22 +142,38 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
   }
 
   std::set<std::string> externalCallees;
+  auto addExternal = [&](Function *to) {
+    if (to->isDeclaration() && !to->isIntrinsic())
+      externalCallees.insert(sanitizeUtf8(to->getName()));
+  };
   for (auto &kv : g.edges()) {
     Function *from = kv.first;
     if (from->isDeclaration() || !res.reached.count(from))
       continue;
     for (auto &[to, kind] : kv.second)
-      if (to->isDeclaration() && !to->isIntrinsic())
-        externalCallees.insert(sanitizeUtf8(to->getName()));
+      addExternal(to);
+  }
+  DenseSet<SetId> externalSets;
+  for (auto &kv : g.setEdges()) {
+    Function *from = kv.first;
+    if (from->isDeclaration() || !res.reached.count(from))
+      continue;
+    for (SetId id : kv.second)
+      if (externalSets.insert(id).second)
+        for (Function *to : g.sets().get(id))
+          addExternal(to);
   }
 
   BuildOptEvidence optEvidence = collectBuildOptEvidence(m);
 
   json::OStream J(os, 2);
   J.object([&] {
+    J.attribute("schema_version", SchemaVersion);
     J.attribute("llvm_version", std::to_string(linkedLLVMMajor()));
     J.attribute("backend", backend);
     J.attribute("mangling", manglingStr(m));
+    if (run)
+      J.attribute("run", json::Value(json::Object(*run)));
     J.attributeArray("entries", [&] {
       for (const auto &e : entries)
         J.value(sanitizeUtf8(e));
@@ -182,35 +201,39 @@ void writeJson(raw_ostream &os, Module &m, const CallGraph &g, const ReachResult
       for (const std::string &n : externalCallees)
         J.value(n);
     });
-    J.attributeArray("edges", [&] {
-      std::vector<std::tuple<std::string, std::string, EdgeKind>> edges;
-      for (auto &kv : g.edges()) {
-        Function *from = kv.first;
-        if (from->isDeclaration() || !res.reached.count(from))
-          continue;
-        for (auto &[to, kind] : kv.second)
-          if (!to->isDeclaration() && res.reached.count(to))
-            edges.emplace_back(sanitizeUtf8(from->getName()),
-                               sanitizeUtf8(to->getName()), kind);
-      }
-      std::sort(edges.begin(), edges.end(), [](const auto &a, const auto &b) {
-        if (std::get<0>(a) != std::get<0>(b))
-          return std::get<0>(a) < std::get<0>(b);
-        if (std::get<1>(a) != std::get<1>(b))
-          return std::get<1>(a) < std::get<1>(b);
-        return std::get<2>(a) < std::get<2>(b);
-      });
-      for (auto &e : edges) {
-        const std::string &from = std::get<0>(e);
-        const std::string &to = std::get<1>(e);
-        EdgeKind kind = std::get<2>(e);
-        J.object([&] {
-          J.attribute("from", from);
-          J.attribute("to", to);
-          J.attribute("kind", kind == EdgeKind::Direct ? "direct" : "indirect");
+    if (includeEdges)
+      J.attributeArray("edges", [&] {
+        std::vector<std::pair<std::string, Function *>> froms;
+        for (auto &[f, via] : reachable)
+          froms.emplace_back(sanitizeUtf8(f->getName()), f);
+        std::sort(froms.begin(), froms.end(), [](const auto &a, const auto &b) {
+          return a.first < b.first;
         });
-      }
-    });
+        std::vector<std::pair<std::string, EdgeKind>> targets;
+        DenseSet<std::pair<Function *, unsigned>> seen;
+        for (size_t i = 0; i < froms.size();) {
+          size_t j = i;
+          targets.clear();
+          for (; j < froms.size() && froms[j].first == froms[i].first; ++j) {
+            seen.clear();
+            g.forEachCallee(froms[j].second, [&](Function *to, EdgeKind kind) {
+              if (to->isDeclaration() || !res.reached.count(to))
+                return;
+              if (seen.insert({to, (unsigned)kind}).second)
+                targets.emplace_back(sanitizeUtf8(to->getName()), kind);
+            });
+          }
+          std::sort(targets.begin(), targets.end());
+          for (const auto &target : targets)
+            J.object([&] {
+              J.attribute("from", froms[i].first);
+              J.attribute("to", target.first);
+              J.attribute("kind", target.second == EdgeKind::Direct ? "direct"
+                                                                    : "indirect");
+            });
+          i = j;
+        }
+      });
   });
   os << "\n";
 }

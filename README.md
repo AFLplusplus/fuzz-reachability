@@ -128,13 +128,16 @@ Two components, joined by merged bitcode:
 - **Driver** (Python) — acquires bitcode per language, merges it with
   `llvm-link`, verifies the LLVM toolchain is version-coherent, and runs the
   analyzer.
-- **Analyzer** (C++ linking LLVM) — loads the merged `.bc`, builds the call
-  graph, resolves indirect calls (C function pointers, C++ virtual dispatch, Rust
-  `dyn`/`fn` pointers), treats function pointers that escape to code outside the
-  bitcode (handed to an external/indirect call or returned — e.g. qsort/bsearch
-  comparators, atexit/pthread/`std::call_once` callbacks) as reachable, computes
-  reachability from the entry, and emits a JSON report plus the two sancov lists.
-  It demangles C++ (Itanium) and Rust names.
+- **Analyzer** (C++ linking LLVM) — loads the merged `.bc`, promotes stack slots
+  to SSA registers (`mem2reg`; it deletes no function) so value flow can follow
+  pointers through `-O0` code, builds the call graph, resolves indirect calls (C
+  function pointers, C++ virtual dispatch, Rust `dyn`/`fn` pointers), treats
+  function pointers that escape to code outside the bitcode (handed to an
+  external/indirect call, returned, or stored into a global that external code
+  owns — e.g. qsort/bsearch comparators, atexit/pthread/`std::call_once`
+  callbacks, error-hook variables) as reachable, computes reachability from the
+  entry, and emits a JSON report plus the two sancov lists. It demangles C++
+  (Itanium) and Rust names.
 
 ## Prerequisites
 
@@ -345,18 +348,20 @@ entry point(s).
 | `--lang TARGET` | *(required)* | Target type (see the table below): sets how bitcode is acquired and the default entry. |
 | `--out FILE` | `reachability.json` in `--project` | File path for the JSON report. Existing directories are rejected. The two sancov lists default to `reached.txt` / `not_reached.txt` beside it. |
 | `--entry NAME` | per `--lang` | Entry to root reachability at. **Repeatable**; overrides the target default. See [Entry resolution](#entry-resolution). |
-| `--include-process-lifecycle-roots` | off | Also root `llvm.global_ctors`, `llvm.global_dtors`, ifunc resolvers, and a defined `LLVMFuzzerInitialize`. See [Process-lifecycle roots](#process-lifecycle-roots). |
+| `--include-process-lifecycle-roots` | off | Also root `llvm.global_ctors`, `llvm.global_dtors`, and ifunc resolvers. (`LLVMFuzzerInitialize` and callbacks that constructors hand to external code are rooted without this flag.) See [Process-lifecycle roots](#process-lifecycle-roots). |
 | `--backend NAME` | *(none)* | Deprecated and ignored; the type-based backend is always used. Accepted for backward compatibility — passing it prints a warning. |
 | `--artifact PATH` | auto-detect | C/C++ only: a strict built binary/object/archive target (relative to `--project`). A missing, unsupported, or unextractable explicit path fails; automatic discovery runs only when the option is omitted. Discovery prefers executables over shared libraries, archives, then objects, and requires `--artifact` when equally plausible candidates remain. |
-| `--build-cmd CMD` | auto-detect | Shell build command. C/C++: run with `gllvm` injected, auto-detected otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`); e.g. `"cmake -S . -B build && cmake --build build"`. An auto-detected build is forced static where the build system allows it (shared libraries are linked separately, so their bitcode never reaches the target): `--disable-shared`/`--enable-static` for `configure` when `configure --help` lists them, `-DBUILD_SHARED_LIBS=OFF` for CMake, `--default-library=static` for Meson. An auto-detected build also disables link-time optimization, since gllvm cannot embed bitcode under `-flto`: `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF` for CMake, `-Db_lto=false` for Meson, and `--disable-lto` for `configure` when its `--help` lists an LTO toggle. If bitcode extraction still fails, the error names the likely cause (LTO, an afl-clang-fast/clang-LTO binary, a ccache/sccache layer, or assembly-only units) and its fix. Pass `--build-cmd` to override this entirely. `libfuzzer`/`ziggy`/`afl`: overrides the native build command (default `cargo fuzz build` / `cargo ziggy build --no-honggfuzz` / `cargo afl build`). |
+| `--build-cmd CMD` | auto-detect | Shell build command. C/C++: run with `gllvm` injected, auto-detected otherwise (`configure` → `Makefile` → `CMakeLists.txt` → `build.ninja` → `meson.build`, else `make`); e.g. `"cmake -S . -B build && cmake --build build"`. Auto-detected CMake and Meson builds configure into a tool-owned `build-reachability/` directory, never the project's own `build/`: both tools ignore a changed `CC`/`CXX` once a build directory exists, so reusing yours would silently skip gllvm and write the options below into your cache. An auto-detected build is forced static where the build system allows it (shared libraries are linked separately, so their bitcode never reaches the target): `--disable-shared`/`--enable-static` for `configure` when `configure --help` lists them, `-DBUILD_SHARED_LIBS=OFF` for CMake, `--default-library=static` for Meson. An auto-detected build also disables link-time optimization, since gllvm cannot embed bitcode under `-flto`: `-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF` for CMake, `-Db_lto=false` for Meson, and `--disable-lto` for `configure` when its `--help` lists an LTO toggle. If bitcode extraction still fails, the error names the likely cause (LTO, an afl-clang-fast/clang-LTO binary, a ccache/sccache layer, or assembly-only units) and its fix. Pass `--build-cmd` to override this entirely. `libfuzzer`/`ziggy`/`afl`: overrides the native build command (default `cargo fuzz build` / `cargo ziggy build --no-honggfuzz` / `cargo afl build`). |
 | `--static-libs {auto,none,all}` | `auto` | C/C++ only: how to treat static archives (`.a`) the target links. `auto` also analyzes each linked archive in full, so members the linker dropped are reported rather than silently absent. `none` keeps only the linker's view. `all` includes every bitcode archive in the tree. Exact archive manifests prevent linked objects from being dropped. Requested expansion fails closed if any archive cannot be listed or fully extracted, so an incomplete report is never published as complete. |
 | `--profile {debug,release}` | tool default | Build profile. `libfuzzer`/`ziggy`/`afl`: `release` adds `--release` to the native command (else the tool's default). Plain `--lang rust`: the cargo profile (default `debug`). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--codegen-units N` | auto | Plain `--lang rust` only (positive integer): rustc `-Ccodegen-units`, auto-detected from `Cargo.toml` else cargo's per-profile default. Ignored for `libfuzzer`/`ziggy`/`afl` (their build sets it). See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
 | `--optimize` | off | Build the analysis at the target's real optimization (post-inline). By default the analysis build is **source-faithful**: C/C++ analysis bitcode is built with `-O0 -fno-inline -fno-inline-functions` (via `LLVM_BITCODE_GENERATION_FLAGS`, which gllvm applies to the bitcode compile only — the native object keeps the project's own `-Ox`); Rust with `-Copt-level=0` (via composed `RUSTFLAGS` for plain `--lang rust`/`mixed`, or via `RUSTC_WRAPPER` for native harnesses). No function the source defines is optimized away, so the reachable set matches what `llvm-cov` reports and is a safe allowlist superset. An inherited `LLVM_BITCODE_GENERATION_FLAGS` that already sets an `-O` level keeps it — the escape hatch for a unit that only compiles optimized; only the no-inlining flags are then added. For native Rust harnesses (`libfuzzer`/`ziggy`/`afl`), `--optimize` also skips the post-analysis clean (otherwise their throwaway opt-0 build is discarded). Pass `--optimize` when you want the set and per-function metrics to mirror a specific `-O3` instrumented binary. LTO is stripped either way. |
 | `--no-name-roots` | off | Do not root a defined, externally-visible function whose symbol name appears as a string constant in a module that performs a runtime name lookup. The heuristic is on by default and disabling it **can under-report**; its use is measuring how much of the reachable set it contributes. See [Reachability through runtime symbol lookup](#reachability-through-runtime-symbol-lookup). |
 | `--build-std` | off | Rust only: build the standard library from source with Cargo's `-Zbuild-std` option and rustc's detected host target, so std functions appear in the graph instead of as external declarations. |
-| `--clean` | off | Validate every selected output first, then remove those files and tool-owned build state before rebuilding. Rust uses `cargo clean` (also in `fuzz/` for cargo-fuzz). C/C++ runs configured build-system clean targets and removes only artifacts recorded in `.reachability-cache/owned-c-artifacts.json`; unrelated `.o`, `.bc`, and manifest files are not swept recursively. |
+| `--mangling {auto,legacy,v0}` | `auto` | Rust only: the symbol-mangling scheme of the analysis build; `legacy`/`v0` append `-Csymbol-mangling-version=<v>`. Pass `v0` to join against a `-Cinstrument-coverage` build. See [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build). |
+| `--clean` | off | Validate every selected output first, then remove those files and tool-owned build state before rebuilding. Rust uses `cargo clean` (also in `fuzz/` for cargo-fuzz). C/C++ removes the tool-owned `build-reachability/` directory, runs configured build-system clean targets, and removes only artifacts recorded in `.reachability-cache/owned-c-artifacts.json`; unrelated `.o`, `.bc`, and manifest files are not swept recursively. |
 | `--dot FILE` | *(none)* | Also write the deterministic reachable-defined subgraph as Graphviz DOT (indirect edges dashed/red; bodyless declarations remain in the JSON `external_declarations` list rather than as DOT nodes). |
+| `--no-edges` | off | Omit the `edges` array from the JSON report. Its size grows with call sites × indirect targets, so on code with large dispatch tables it dominates both the report size and the run time. |
 | `--reached FILE` | beside `--out` | Path for the sancov **allowlist** of reachable functions. |
 | `--not-reached FILE` | beside `--out` | Path for the sancov **ignorelist** of unreachable functions. |
 | `-v`, `--verbose` | off | Narrate each pipeline stage (toolchain → build → merge → analyze): echoes the tool commands run, streams the build output live, and lists the collected bitcode modules. |
@@ -379,7 +384,7 @@ and instrumentation; `--build-cmd` overrides the command. `rust`/`mixed` use a
 plain `cargo build`, tunable with `--profile` / `--codegen-units`.
 
 The C/C++ targets root at both `main` and `LLVMFuzzerTestOneInput`, so one
-`--lang c`/`cpp` covers a normal program and an LLVMFUzzerTestOneInput harness alike. A default
+`--lang c`/`cpp` covers a normal program and an `LLVMFuzzerTestOneInput` harness alike. A default
 entry that matches nothing is a harmless warning, because roots are unioned.
 
 #### Entry resolution
@@ -402,13 +407,26 @@ once on stderr and never mixed into JSON output.
 
 #### Process-lifecycle roots
 
-By default, reachability starts only at the selected entries and runtime
-name-lookup roots. Pass `--include-process-lifecycle-roots` when the analyzed
-execution model includes process startup/shutdown behavior. It adds valid
-constructors, destructors, ifunc resolvers, and `LLVMFuzzerInitialize` to the
-existing `entries` metadata, deduplicated against all other roots. Malformed
-lifecycle records produce warnings. The default remains off so existing
-harness-only reports do not unexpectedly widen.
+By default, reachability starts at the selected entries, the runtime
+name-lookup roots, and two kinds of code a fuzzer runs before the first input:
+
+- **`LLVMFuzzerInitialize`**, whenever `LLVMFuzzerTestOneInput` is an entry.
+  libFuzzer and AFL++'s libFuzzer driver call it once at startup, and harnesses
+  use it to register callbacks (error handlers, allocators) that the library
+  then calls on every input.
+- **Callbacks that constructors hand to external code.** A constructor in
+  `llvm.global_ctors` (C++ static registration, `__attribute__((constructor))`)
+  that passes a function to code outside the bitcode makes that function
+  callable later. The callback becomes a root; the constructor body itself does
+  not. Exit-time registrations (`atexit`, `__cxa_atexit` for static-object
+  destructors, `at_quick_exit`, `on_exit`, `__cxa_thread_atexit`) are shutdown
+  code and are not rooted this way.
+
+Both are added to the `entries` metadata and noted on stderr. Pass
+`--include-process-lifecycle-roots` when the analyzed execution model includes
+process startup and shutdown as a whole: it also roots the constructors,
+destructors, and ifunc resolvers themselves (and so everything constructors
+register, exit handlers included), deduplicated against all other roots. Malformed lifecycle records produce warnings.
 
 #### Matching the fuzz binary's build
 
@@ -434,7 +452,7 @@ than an optimized build of the same project.
 Pass **`--optimize`** to instead analyze at the build's real optimization, so the
 reachable set and per-function metrics mirror a specific instrumented binary;
 inlining then governs both, and when a callee is inlined its basic blocks,
-loops, locals (`C11`) and `dangerous_calls` fold into the caller (see
+loops, locals (`local_vars`) and `dangerous_calls` fold into the caller (see
 [Function metrics](#function-metrics)). **AFL++'s `afl-cc`/`afl-clang-fast`
 default to `-O3`**; sancov-based harnesses (libFuzzer, honggfuzz) use whatever
 `-Ox` you give their compiler. So under `--optimize`, when the fuzz binary is a
@@ -563,8 +581,12 @@ cannot recover a function that one build inlined away and the other did not.
 
 `reachability run` writes three files:
 
-- **`<out>.json`** — a top-level `mangling` field (`"legacy"` or `"v0"`, detected
-  from the analyzed bitcode's Rust symbols — see `--mangling` above), `summary`
+- **`<out>.json`** — a `schema_version` (currently `2`; reports without the
+  field predate versioning), a `run` object recording the driver version and the
+  options that shaped the analysis (`lang`, `entries`, `optimize`, and the
+  C/C++ or Rust build settings), a top-level `mangling` field (`"legacy"` or
+  `"v0"`, detected from the analyzed bitcode's Rust symbols — see `--mangling`
+  above), `summary`
   counts (including `low_confidence`, `external_declarations`, and the
   build-optimization evidence behind the post-optimizer warning:
   `compile_units` / `optimized_compile_units` from `DICompileUnit isOptimized`,
@@ -572,20 +594,25 @@ cannot recover a function that one build inlined away and the other did not.
   see [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)), a `reachable`
   array (mangled and demangled name, a `key` (the mangled name with the Rust
   `17h<hash>` disambiguator stripped — the build-independent join key
-  cov-analysis uses), source file/line when debug info is present,
+  cov-analysis uses), an `ir_name` when it differs from `mangled` (see
+  [Static functions with the same name](#static-functions-with-the-same-name)),
+  source file/line when debug info is present,
   `via` = `direct`/`indirect`/`both`, an `indirect_only` flag, a `confidence`
   of `high`/`medium`/`low` — see [Confidence](#confidence) — and a `depth`: the
   fewest call-graph hops from the nearest entry, with entries at `0` and the
-  shortest path winning when several reach the same function), an
-  a set of per-function triage metrics — see [Function metrics](#function-metrics)),
+  shortest path winning when several reach the same function), and a set of
+  per-function triage metrics — see [Function metrics](#function-metrics)),
   an `unreachable_defined` array, a top-level `external_declarations` array
   (sorted mangled names of reachable functions with no body in the analyzed
   bitcode — precompiled libs, Rust std without `--build-std`, asm units;
   `summary.external_declarations` is its count), and an `edges` array — the
   reachable call graph as
   `{ "from", "to", "kind" }` objects (`kind` = `direct`/`indirect`), restricted to
-  edges whose endpoints are both reachable defined functions. With `--dot FILE`,
-  also the same reachable-defined subgraph in deterministic Graphviz form.
+  edges whose endpoints are both reachable defined functions. Edges and
+  `entries` name functions by their IR name (`ir_name` when present, else
+  `mangled`), which is unique within the analyzed module. `--no-edges` omits the
+  array. With `--dot FILE`, also the same reachable-defined subgraph in
+  deterministic Graphviz form.
 - **`reached.txt`** — a SanitizerCoverage **allowlist** of reachable functions.
 - **`not_reached.txt`** — a SanitizerCoverage **ignorelist** of unreachable
   functions.
@@ -626,37 +653,25 @@ clang -fsanitize-coverage=trace-pc-guard -fsanitize-coverage-ignorelist=not_reac
 > plain `--lang rust` (see
 > [Matching the fuzz binary's build](#matching-the-fuzz-binarys-build)).
 >
-> **This normalization only covers legacy mangling.** The `17h<hash>`
-> pattern above is specific to Rust's *legacy* mangling scheme. Under the
-> **v0** scheme (symbols starting `_R…` — forced by `-Cinstrument-coverage`,
-> and opt-in via `-Csymbol-mangling-version=v0`), the
-> disambiguator has a different shape that `canonicalKey`/`toPattern` do not
-> recognize, so the normalization is a no-op: `key` is identical to the raw
-> mangled name, and the text-list entry keeps its exact name instead of
-> gaining a `*`. A tool joining this report against a v0-mangled build by
-> name or `key` alone can therefore miss instances whose disambiguator
-> differs between builds. For legacy-mangled sancov builds this is not a
-> correctness gap — the `*` glob tolerates the drifting disambiguator, and
-> the sancov instrument-time build is legacy-mangled in practice (it is not
-> `-Cinstrument-coverage`), so its `fun:` entries match. Under a v0-mangled
-> build there is no glob, so a disambiguator that drifts between the
-> analysis snapshot and the fuzz binary can cause an exact-name miss (a
-> blind spot) — matching the build (profile/codegen-units) minimizes this.
-> Pass **`--mangling v0`** to make the analysis build request the same v0
-> scheme a `-Cinstrument-coverage` build gets: for a crate-local generic this
-> makes the mangled name itself byte-identical between the two builds (no
-> disambiguator drift observed on this toolchain — see
-> `driver/tests/test_v0_mangling_probe.py`), so the exact-name/`key` join works
-> with no normalization needed and this whole caveat does not apply. Full
-> v0-aware normalization of a *drifting* disambiguator (the scenario this
-> caveat describes) remains unimplemented and is only a theoretical future
-> enhancement for the untested case of an upstream/std generic whose defining
-> crate could flip under `-Zshare-generics`; it also affects
-> consumers that must match a `-Cinstrument-coverage` build by name across
-> two independently-mangled builds, e.g.
-> [cov-analysis](https://github.com/AFLplusplus/cov-analysis)'s
-> `--reachability` JSON-mode join, which falls back to source `file`/`line`
-> matching in that case (see its docs). See [Limitations](#limitations).
+> **This normalization only covers legacy mangling.** Under the v0 scheme
+> (`_R…`) the disambiguator has another shape, so `key` equals the mangled name
+> and list entries keep their exact names. See [Limitations](#limitations) for
+> when that matters and how `--mangling v0` avoids it.
+
+### Static functions with the same name
+
+Two translation units may each define a `static` (or anonymous-namespace)
+function with the same name. `llvm-link` must give the merged module unique
+names, so it renames one copy (`helper` → `helper.1`), but each copy keeps its
+original name in its own object file, and that name is what sancov and AFL++
+match against. The analyzer therefore recovers the object-file name from debug
+info (`DISubprogram` linkage name or name) and reports it as `mangled`, with the
+merged-module name in `ir_name`. The allowlist lists every reachable function
+under both names. The ignorelist drops any name that a reachable copy also
+carries, so excluding one unreachable copy never excludes a reachable one with
+the same name. Without debug info the original name cannot be recovered exactly;
+the allowlist then also lists every `.N`-stripped variant, which can only
+over-instrument, and `mangled` stays the merged-module name.
 
 ## Indirect-call resolution
 
@@ -667,7 +682,20 @@ is `T`. Exact matches remain the primary path. The resolver also unions any
 candidate whose address flow reaches that call site even when a cast changed its
 declared type; if provenance disappears across a cast, it conservatively falls
 back to all address-taken functions at that site. Definitions and declarations
-use the same policy. This is language-agnostic and deliberately favors soundness
+use the same policy.
+
+The address flow follows values through globals, aggregates, `select`/PHI,
+casts, call arguments and returns, and memory: a load sees what was stored into
+the same underlying object. When a callee stores a function, or a pointer it
+received as a parameter, through one of its pointer parameters (a setter such
+as `set_cb(obj, fn)`), that store also counts as a store into each object its
+callers pass there. Other values stored through parameters are not propagated,
+which keeps C++ `this`-passing from merging every object's fields. The analyzer
+promotes stack slots to SSA registers before the flow is built, so a `-O0`
+module, where every pointer is reloaded from its own stack slot, resolves like
+an optimized one. All sites share one flow computation, and each site points at shared
+target sets instead of one edge per candidate, so a dispatch table with N
+targets used from M sites costs N + M rather than N × M. This is language-agnostic and deliberately favors soundness
 over precision. The analyzer's `--indirect-any` debug flag widens every indirect
 site to all address-taken functions regardless of type or local provenance.
 
@@ -706,11 +734,14 @@ call. Each reachable function in the JSON therefore carries a `confidence`:
 
 - **`high`** — reached by a concrete direct call (or it is a root). The IR
   literally calls it.
-- **`medium`** — reached only indirectly, but value-flow shows the address is
-  used as a callable: it reaches the callee operand of an indirect call (through
-  globals, vtables, tables, `select`/`phi`, loads/stores), or it escapes as an
-  argument/return to external code that may call it (`qsort`, `signal`,
-  `pthread_create`, …).
+- **`medium`** — reached only indirectly, but there is evidence the address is
+  used as a callable: value flow carries it to the callee operand of an indirect
+  call (through globals, vtables, tables, `select`/`phi`, loads/stores), or it
+  escapes as an argument, return, or external-hook store to code that may call
+  it (`qsort`, `signal`, `pthread_create`, …), or it is stored into the same
+  slot that a reached indirect call loads: the same struct field (struct type
+  and field path), or the same C++ or Rust vtable slot (byte offset from the
+  vtable's address point).
 - **`low`** — reached only by a *type match*, with no value-flow evidence the
   address is ever used as a callable. This is the soft, likely-spurious surface
   of the over-approximation (e.g. a function pointer that is only taken, cast to
@@ -731,7 +762,8 @@ whose address is laundered through integer arithmetic (`ptrtoint`→`inttoptr`),
 reached only via an inline-asm `call`, or invoked only as a startup constructor
 can rate `low`; conversely a true decoy whose address escapes to a real callable
 sink can rate `medium`. Treat `low` as "worth auditing", not "safe to remove".
-(See `driver/tests/test_analyzer_core.py::test_confidence_tiers`.)
+(See `driver/tests/test_analyzer_core.py::test_confidence_tiers` and
+`::test_slot_evidence_grades_confidence`.)
 
 ## Function metrics
 
@@ -741,7 +773,7 @@ hints, never verdicts — they do not change the reachable set or the coverage
 lists. By default they are computed on a source-faithful build (heuristic inlining
 suppressed), so the counts reflect functions as written. Pass `--optimize` to
 compute them on the optimized/post-inline bitcode that mirrors the instrumented
-binary — there an inlined callee's basic blocks, loops, locals (`C11`) and
+binary — there an inlined callee's basic blocks, loops, locals (`local_vars`) and
 `dangerous_calls` fold into the caller, so an `-O3` `main` can report several
 times the counts of its source.
 
@@ -755,16 +787,22 @@ times the counts of its source.
   [`dangerous_functions.txt`](dangerous_functions.txt) at the project root: one
   name per line, `#` comments, a trailing `*` for a prefix match. It is compiled
   into the analyzer, so edit it and rebuild (`make build`) to change the set.
-- **`C11`** — number of local variables. From debug info (`DILocalVariable`
-  entries, excluding parameters) when the bitcode carries it; otherwise it falls
-  back to the count of `alloca` instructions. Build with `-g` for the accurate
-  source-level count, since optimization promotes most locals out of `alloca`s.
+- **`local_vars`** — number of local variables (called `C11` before schema
+  version 2). From debug info (`DILocalVariable` entries, excluding parameters)
+  when the bitcode carries it; otherwise it falls back to the count of `alloca`
+  instructions, taken before the analyzer's own register promotion. Build with
+  `-g` for the accurate source-level count, since optimization promotes most
+  locals out of `alloca`s.
 - **`interesting`** (boolean) — the function takes at least one pointer argument
   **and** lies on a call-graph path from an entry along which *every* function
   also takes a pointer argument. It flags code the fuzzer's input (a pointer) can
   plausibly be threaded into through an unbroken chain of pointer-passing calls. A
   function with a pointer argument whose only callers are non-pointer-taking is
-  `false`.
+  `false`. The chain starts at every entry that takes a pointer and at every
+  pointer-taking closure or lambda defined inside an entry (Rust `{{closure}}` /
+  `{closure#N}`, C++ `{lambda…}` and clang's `$_N`). That covers ziggy and
+  cargo-afl harnesses, whose Rust `main` takes no pointer and hands the input
+  to a `fuzz!` closure.
 - **`bottleneck`** (boolean) — the function is the immediate dominator of at
   least one other reachable function in the call graph rooted at the entries:
   every path from an entry to that other function passes through it. A bottleneck
@@ -776,8 +814,9 @@ times the counts of its source.
   terminates — input flow goes no deeper past a dead end.
 
 (See `driver/tests/test_analyzer_core.py::test_function_metrics_counts`,
-`::test_interesting_pointer_path`, `::test_bottleneck_dominators`, and
-`::test_dead_end`.)
+`::test_interesting_pointer_path`, `::test_interesting_starts_at_closure_inside_entry`,
+`::test_interesting_starts_at_clang_lambda_inside_entry`,
+`::test_bottleneck_dominators`, and `::test_dead_end`.)
 
 ## Historical note: the removed SVF backend
 
@@ -857,28 +896,31 @@ Two things recover it, in this order:
   that heuristic, not the over-approximation as a whole.
 
 **Callbacks that escape to external code.** A function pointer is treated as
-reachable when it is handed to an external/indirect call as an argument, or
-returned (qsort/bsearch comparators, atexit/pthread/`std::call_once` callbacks,
-etc.). The escape analysis follows local loads/stores, globals, aggregates,
-select/PHI values, defined wrapper arguments, and defined functions that return
-callbacks.
+reachable when it is handed to an external/indirect call as an argument,
+returned, or stored into a global that is only declared in the bitcode (or into
+memory reached through such a global) — qsort/bsearch comparators,
+atexit/pthread/`std::call_once` callbacks, error-hook and allocator-hook
+variables. The escape analysis follows local loads/stores, callbacks stored
+through pointer parameters, globals, aggregates, select/PHI values, defined
+wrapper arguments, and defined functions that return callbacks. Escapes are taken from
+reached functions, `LLVMFuzzerInitialize`, and code reachable from constructors
+(see [Process-lifecycle roots](#process-lifecycle-roots)). A callback registered
+only from other unreached code stays unreachable.
 
 **v0 mangling is supported via scheme-matching, not via disambiguator
-normalization.** The build-independent `key` and the `fun:` pattern-list `*` glob (see
-[Output](#output)) only recognize the *legacy* Rust mangling scheme's
+normalization.** The build-independent `key` and the `fun:` pattern-list `*`
+glob (see [Output](#output)) only recognize the *legacy* Rust mangling scheme's
 `17h<hash>` disambiguator; under the **v0** scheme (`_R…`, forced by
 `-Cinstrument-coverage`) they are inert, so a name/key join against a
-v0-mangled build can miss instances whose disambiguator differs between
-builds. **Run the analysis with `--mangling v0`** to request the same v0
-scheme the target uses in the first place: the mangled names then match
-verbatim with no normalization needed (see the `--mangling` note under
-[Matching the fuzz binary's build](#matching-the-fuzz-binarys-build) and the
-caveat under [Output](#output)), which closes this gap for every case
-measured so far. Consumers that also have source location can work around a
-residual mismatch via a `file`/`line` fallback (cov-analysis's JSON mode does
-this). A v0-demangler-aware disambiguator stripper — the v0 analogue of the
-legacy-mangling fix above, for the untested case of a disambiguator that
-actually drifts between two v0 builds — would close the remaining gap but is
-not implemented; it is planned as a future enhancement and would likely
-warrant its own plan spanning both fuzz-reachability and any downstream
-consumer's shared normalization code.
+v0-mangled build can miss instances whose disambiguator differs between builds.
+Legacy-mangled sancov builds are unaffected: the instrumentation build is not
+`-Cinstrument-coverage`, so it is legacy-mangled and the `*` glob applies.
+**Run the analysis with `--mangling v0`** when the target is v0-mangled: the
+mangled names then match verbatim (for a crate-local generic no disambiguator
+drift was observed — see `driver/tests/test_v0_mangling_probe.py`), which closes
+the gap for every case measured so far. Consumers that also have source
+location can work around a residual mismatch with a `file`/`line` fallback, as
+[cov-analysis](https://github.com/AFLplusplus/cov-analysis)'s JSON mode does. A
+v0-aware disambiguator stripper, for the untested case of an upstream or std
+generic whose defining crate flips under `-Zshare-generics`, is not
+implemented.

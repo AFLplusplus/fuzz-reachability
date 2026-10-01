@@ -21,6 +21,57 @@
 - The driver now requires Python >= 3.10 instead of >= 3.12. On 3.10 the
   `tomli` backport supplies `tomllib`; it is not installed on 3.11+. CI runs the
   LLVM 21 job on Python 3.10.
+- Soundness: a `static` function whose name collides with one in another
+  translation unit is no longer dropped from instrumentation. llvm-link renames
+  one copy (`helper` -> `helper.1`); the lists used that merged-module name, so
+  the reachable copy matched nothing under the allowlist and was excluded by the
+  other copy's name under the ignorelist. The analyzer now recovers the
+  object-file name from debug info, reports it as `mangled` (with the merged
+  name in the new `ir_name` field), lists reachable functions under both names,
+  and keeps any name a reachable copy carries out of the ignorelist.
+- Soundness: the analyzer promotes stack slots to SSA registers before building
+  value flow. The `-O0` analysis default had stopped flow from connecting stores
+  and loads through heap objects (every pointer is reloaded from its own stack
+  slot), so callbacks whose signature differs from the call site were missed:
+  on libxml2 the `-O0` run reached 1674 functions against 1902 from `-O2`
+  bitcode; it now reaches 1901. Local-variable counts are taken before the
+  promotion.
+- Soundness: a callee that stores a function, or a pointer parameter it
+  received, through one of its pointer parameters (setters such as
+  `set_cb(obj, fn)`) now counts as storing it into the caller's object, so a
+  callback whose signature differs from its call site is no longer missed when
+  it is installed through a setter.
+- Soundness: `LLVMFuzzerInitialize` is rooted whenever `LLVMFuzzerTestOneInput`
+  is an entry, and callbacks that constructors hand to external code become
+  roots without `--include-process-lifecycle-roots`. Exit-time registrations
+  (`atexit`, `__cxa_atexit` static-object destructors, …) stay lifecycle roots.
+- Soundness: storing a function into a global that is only declared in the
+  bitcode (an error or allocator hook owned by a precompiled library), or into
+  memory reached through one, counts as an escape.
+- Performance: indirect call sites share one value-flow computation and point at
+  shared target sets instead of carrying one edge per candidate. A synthetic
+  8000-entry dispatch table used from 8000 sites went from 79 s / 8.4 GB to
+  19 s / 0.1 GB, or 0.15 s with the new `--no-edges` (analyzer and driver),
+  which omits the `edges` array whose size is inherently sites x targets.
+- Confidence: a function stored into the same struct field, or the same C++ or
+  Rust vtable slot, that a reached indirect call loads now rates `medium`.
+  Previously every C++ virtual target rated `low`.
+- `interesting` / `dead_end`: the pointer chain now also starts at closures and
+  lambdas (including clang's `$_N` lambdas) defined inside an entry, so ziggy
+  and cargo-afl harnesses (whose Rust `main` takes no pointer) no longer report
+  every function as uninteresting.
+- JSON schema version 2: new top-level `schema_version` and `run` (driver
+  version and the options that shaped the analysis; analyzer `--run-info`),
+  per-function `ir_name`, and `C11` renamed to `local_vars`.
+- Auto-detected CMake and Meson builds configure into a tool-owned
+  `build-reachability/` directory instead of the project's `build/`, which both
+  tools would keep configured with the previous compiler. `--clean` removes it.
+- `--optimize`, `--build-std`, and `--dot` help texts are corrected or added;
+  `--mangling` and `--no-edges` are in the README option table.
+- Removed stale committed outputs from `fixtures/cpp_complex`,
+  `fixtures/cpp_complex2`, and `fixtures/rust_indirect`.
+- The ziggy fixture test skips instead of failing when cargo-afl's AFL++
+  plugins are not installed for the current rustc.
 
 
 ### v1.1

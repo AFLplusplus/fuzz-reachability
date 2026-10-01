@@ -259,10 +259,17 @@ def _run_clean(cmd, directory, verbose):
 
 
 def _clean_c_artifacts(project, drop, verbose=False):
-    """Clean a C/C++ build in place under `project` without deleting build
-    directories — some projects build in-source and have none. Each configured
-    build tree is cleaned with its own tool (make/ninja/cmake/meson, see
-    `_build_clean_cmd`), then files recorded as analysis-owned are removed."""
+    """Clean a C/C++ build in place under `project` without deleting the
+    project's own build directories — some projects build in-source and have
+    none. The tool-owned `build-reachability/` directory that auto-detected
+    CMake/Meson builds configure into is removed outright. Every other
+    configured build tree is cleaned with its own tool (make/ninja/cmake/meson,
+    see `_build_clean_cmd`), then files recorded as analysis-owned are removed."""
+    owned_build = os.path.join(project, acquire_c.BUILD_DIR)
+    if os.path.isdir(owned_build) and not os.path.islink(owned_build):
+        shutil.rmtree(owned_build)
+        if verbose:
+            print(f"  removed {owned_build}")
     cleaned = []
     for root, dirs, files in os.walk(project):
         dirs[:] = [d for d in dirs if d not in acquire_c._SKIP_DIRS]
@@ -325,6 +332,28 @@ def _clean_project(args, verbose=False, output_paths=None):
     print(f"clean: removed {removed} cached path(s) under {project}")
 
 
+def _run_info(args):
+    mode = TARGETS[args.lang][0]
+    info = {
+        "tool_version": __version__,
+        "lang": args.lang,
+        "entries": list(args.entry),
+        "optimize": bool(args.optimize),
+        "include_process_lifecycle_roots": bool(
+            getattr(args, "include_process_lifecycle_roots", False)),
+        "no_name_roots": bool(getattr(args, "no_name_roots", False)),
+    }
+    if mode in ("c", "cpp", "mixed"):
+        info["artifact"] = args.artifact
+        info["static_libs"] = args.static_libs
+    if mode in ("rust", "mixed"):
+        info["profile"] = args.profile
+        info["codegen_units"] = args.codegen_units
+        info["mangling"] = args.mangling
+        info["build_std"] = bool(args.build_std)
+    return info
+
+
 def cmd_run(args):
     v = args.verbose
     if args.backend is not None:
@@ -376,6 +405,8 @@ def cmd_run(args):
                         getattr(args, "include_process_lifecycle_roots", False)
                     ),
                     no_name_roots=getattr(args, "no_name_roots", False),
+                    no_edges=getattr(args, "no_edges", False),
+                    run_info=_run_info(args),
                 )
                 transaction.publish()
     except OSError as exc:
@@ -476,7 +507,10 @@ def build_parser():
                         "project's Cargo.toml [profile.<name>] codegen-units, else "
                         "cargo's per-profile default (debug 256, release 16). "
                         "Ignored for libfuzzer/ziggy/afl (their build sets it)")
-    r.add_argument("--build-std", action="store_true", dest="build_std")
+    r.add_argument("--build-std", action="store_true", dest="build_std",
+                   help="Rust: build the standard library from source "
+                        "(-Zbuild-std) so std functions appear in the graph "
+                        "instead of as external declarations")
     r.add_argument("--mangling", default="auto", choices=["auto", "legacy", "v0"],
                    help="Rust symbol-mangling scheme for the analysis build "
                         "(all Rust --lang values). 'auto' (default) uses "
@@ -488,15 +522,22 @@ def build_parser():
     r.add_argument(
         "--optimize", action="store_true", dest="optimize",
         help="build at the target's real optimization (post-inline). By default "
-             "the analysis build is source-faithful (C/C++ via -fno-inline; Rust "
-             "via -Copt-level=0), so reachability matches llvm-cov and is a safe "
-             "allowlist superset. Controls inlining only; LTO is still stripped.")
+             "the analysis build is source-faithful (C/C++ bitcode compiled with "
+             "-O0 -fno-inline -fno-inline-functions; Rust with -Copt-level=0), so "
+             "no source function is optimized away, reachability matches llvm-cov, "
+             "and the allowlist is a safe superset. LTO is stripped either way.")
     r.add_argument("--clean", action="store_true",
                    help="remove prior selected output files and tool-owned build "
                         "state before rebuilding. Rust uses cargo clean; C/C++ "
-                        "uses configured build-system clean targets and removes "
+                        "removes the tool-owned build-reachability/ directory, "
+                        "runs configured build-system clean targets, and removes "
                         "only artifacts recorded as produced by this tool")
-    r.add_argument("--dot", default=None)
+    r.add_argument("--dot", default=None,
+                   help="also write the reachable call graph as Graphviz DOT")
+    r.add_argument("--no-edges", action="store_true", dest="no_edges",
+                   help="omit the edges array from the JSON report (it grows "
+                        "with call sites x indirect targets and dominates the "
+                        "report size on large dispatch tables)")
     r.add_argument("--reached", default=None,
                    help="sancov allowlist path (default: reached.txt next to --out)")
     r.add_argument("--not-reached", default=None, dest="not_reached",

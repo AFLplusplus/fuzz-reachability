@@ -12,8 +12,9 @@ Four complete, start-to-finish runs on real targets:
 4. [**rustyknife + a cargo-afl harness**](#4-rustyknife--a-cargo-afl-harness-rust)
    — the Rust manual route, for a feature-gated AFL bin.
 
-The exact counts below come from real runs (LLVM 22, type-based backend); yours
-will vary with library version, build flags, and LLVM release.
+The exact counts below come from real runs (type-based backend; LLVM 23 for
+section 1, LLVM 22 for the others); yours will vary with library version, build
+flags, and LLVM release.
 
 ---
 
@@ -123,18 +124,18 @@ What each piece does:
 The run prints a one-line summary. On this machine it is:
 
 ```
-reachable 1294 / defined 2467  (302 indirect-only, 35 low-confidence, 1173 unreachable)  [backend=type-based]
+reachable 1901 / defined 3035  (329 indirect-only, 50 low-confidence, 1134 unreachable)  [backend=type-based]
 ```
 
-- **defined (2467)** — every libxml2 function (plus the harness) in the merged
+- **defined (3035)** — every libxml2 function (plus the harness) in the merged
   module. Because of `--static-libs all`, this is the whole library, not just the
   parts the harness pulls in.
-- **reachable (1294)** — the subset reachable from `LLVMFuzzerTestOneInput`.
-- **unreachable (1173)** — `defined − reachable`, everything the harness can
+- **reachable (1901)** — the subset reachable from `LLVMFuzzerTestOneInput`.
+- **unreachable (1134)** — `defined − reachable`, everything the harness can
   never touch (listed in `not_reached.txt`).
-- **indirect-only (302)** — reachable functions reached *only* through an
+- **indirect-only (329)** — reachable functions reached *only* through an
   indirect call. This is the over-approximation surface.
-- **low-confidence (35)** — indirect-only functions supported by type matching
+- **low-confidence (50)** — indirect-only functions supported by type matching
   but not by entry-relative address-flow evidence. They remain reachable.
 
 **Reachable** — the parser and everything it pulls in, since `xmlReadMemory`
@@ -154,7 +155,8 @@ mangled name:
   "demangled": "ignore(void*, char const*, ...)",
   "via": "indirect",
   "indirect_only": true,
-  "depth": 2
+  "confidence": "low",
+  "depth": 1
 }
 ```
 
@@ -164,18 +166,20 @@ A directly-reached function carries its source location:
 {
   "mangled": "xmlReadMemory",
   "demangled": "xmlReadMemory",
+  "key": "xmlReadMemory",
   "file": "parser.c",
   "line": 15376,
   "via": "direct",
   "indirect_only": false,
+  "confidence": "high",
   "depth": 1,
   "basic_blocks": 4,
   "dangerous_calls": 0,
-  "C11": 3,
+  "local_vars": 1,
   "cyclomatic": 2,
   "loops": 0,
   "interesting": true,
-  "bottleneck": true,
+  "bottleneck": false,
   "dead_end": false
 }
 ```
@@ -191,10 +195,12 @@ entirely; now they are correctly reported as defined-but-unreachable.
 
 > **Over-approximation in action.** Some helpers *look* reachable through the
 > type-based backend even when their feature is not. For example `xmlXPathEval`
-> is unreachable, yet the XPath axis callbacks (`xmlXPathNextAncestor`, …) are
-> reported reachable `via indirect`: they are address-taken and their type
-> matches an indirect call site the parser reaches. This is the sound-leaning
-> bias at work — never miss a real edge, even at the cost of some false ones.
+> is unreachable, yet XPath internals such as the axis callbacks
+> (`xmlXPathNextAncestor`, …) are reported reachable: XPath and XPointer helper
+> functions are address-taken and match indirect call sites the parser reaches,
+> and they in turn call `xmlXPathEvalExpr` and the evaluator below it. This is the
+> sound-leaning bias at work — never miss a real edge, even at the cost of some
+> false ones.
 
 ### Step 5 — Instrument only reachable code
 

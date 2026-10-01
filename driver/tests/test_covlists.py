@@ -8,6 +8,7 @@ instrumented. This validates the format (lowercase `fun:`, `src:*` for the
 allowlist) and that clang matches the *mangled* names we write.
 """
 
+import json
 import os
 import re
 import shutil
@@ -19,6 +20,8 @@ from conftest import FIXTURES
 
 CLANG = shutil.which("clang-21") or shutil.which("clang")
 CLANGXX = shutil.which("clang++-21") or shutil.which("clang++")
+LLVM_LINK = (shutil.which("llvm-link-21") if CLANG and CLANG.endswith("-21")
+             else shutil.which("llvm-link"))
 
 
 def _instrumented(ll_path):
@@ -91,3 +94,48 @@ def test_cpp_allowlist_matches_mangled(analyzer, tmp_path):
 
     al = _sancov_ir(CLANGXX, src, "-fsanitize-coverage-allowlist", reached, tmp_path / "a.ll")
     assert {"_ZN1A3runEi", "_ZN1B3runEi"} <= al  # both overrides instrumented
+
+
+@pytest.mark.skipif(not (CLANG and LLVM_LINK), reason="clang/llvm-link not installed")
+def test_static_name_collision_stays_instrumented(analyzer, tmp_path):
+    sources = {
+        "a.c": "static int helper(int x) { return x + 1; }\n"
+               "int a_entry(int x) { return helper(x); }\n",
+        "b.c": "static int helper(int x) { return x * 2; }\n"
+               "int b_unused(int x) { return helper(x); }\n",
+        "main.c": "int a_entry(int);\n"
+                  "int LLVMFuzzerTestOneInput(const unsigned char *d, unsigned long n)"
+                  " { return a_entry((int)n); }\n",
+    }
+    bcs = []
+    for name in ("b.c", "a.c", "main.c"):
+        src = tmp_path / name
+        src.write_text(sources[name])
+        bc = tmp_path / (name + ".bc")
+        subprocess.run([CLANG, "-g", "-O0", "-fno-inline", "-emit-llvm", "-c",
+                        str(src), "-o", str(bc)], check=True)
+        bcs.append(str(bc))
+    merged = tmp_path / "merged.bc"
+    subprocess.run([LLVM_LINK, *bcs, "-o", str(merged)], check=True)
+    reached, notr = tmp_path / "reached.txt", tmp_path / "not_reached.txt"
+    report = tmp_path / "r.json"
+    subprocess.run(
+        [analyzer, str(merged), "--entry", "LLVMFuzzerTestOneInput",
+         "--reached-out", str(reached), "--not-reached-out", str(notr),
+         "--out", str(report)],
+        check=True,
+    )
+    data = json.loads(report.read_text())
+    reachable = {(os.path.basename(f["file"]), f["mangled"]): f
+                 for f in data["reachable"]}
+    renamed = reachable[("a.c", "helper")]
+    assert renamed["ir_name"] == "helper.1"
+    assert renamed["key"] == "helper"
+
+    a_src = str(tmp_path / "a.c")
+    al = _sancov_ir(CLANG, a_src, "-fsanitize-coverage-allowlist", reached,
+                    tmp_path / "a_allow.ll")
+    ig = _sancov_ir(CLANG, a_src, "-fsanitize-coverage-ignorelist", notr,
+                    tmp_path / "a_ignore.ll")
+    assert "helper" in al
+    assert "helper" in ig

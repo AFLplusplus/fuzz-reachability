@@ -22,8 +22,11 @@ struct FuncMetrics {
   bool deadEnd = false;
 };
 
+llvm::DenseMap<llvm::Function *, unsigned> countLocalVariables(llvm::Module &m);
+
 llvm::DenseMap<llvm::Function *, FuncMetrics>
 computeMetrics(llvm::Module &m, const CallGraph &g, const ReachResult &res,
-               const std::vector<std::string> &roots);
+               const std::vector<std::string> &roots,
+               const llvm::DenseMap<llvm::Function *, unsigned> &localVars);
 
 } // namespace reach

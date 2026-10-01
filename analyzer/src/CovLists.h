@@ -13,6 +13,8 @@ namespace reach {
 // '17h<hash>' mangling disambiguator is replaced by a '*' glob so an entry
 // matches the same instance across builds (the disambiguator is codegen
 // dependent and differs between the bitcode snapshot and the fuzz binary).
+// A local function that llvm-link renamed on a name collision ('helper' ->
+// 'helper.1') is also listed under the name it has in its own object file.
 // Only defined functions are listed (declarations are external).
 
 // Allowlist of reachable functions. A coverage allowlist instruments a function

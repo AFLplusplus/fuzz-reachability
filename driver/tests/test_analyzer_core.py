@@ -56,9 +56,11 @@ def test_json_schema_contract(run_analyzer):
     assert r.returncode == 0, r.stderr
     report = json.loads(r.stdout)
     assert set(report) == {
-        "llvm_version", "backend", "mangling", "entries", "summary",
-        "reachable", "unreachable_defined", "external_declarations", "edges",
+        "schema_version", "llvm_version", "backend", "mangling", "entries",
+        "summary", "reachable", "unreachable_defined", "external_declarations",
+        "edges",
     }
+    assert report["schema_version"] == 2
     assert set(report["summary"]) == {
         "defined", "reachable", "indirect_only", "low_confidence",
         "unreachable", "external_declarations", "compile_units",
@@ -67,7 +69,7 @@ def test_json_schema_contract(run_analyzer):
     assert set(report["reachable"][0]) == {
         "mangled", "demangled", "key", "file", "line", "via",
         "indirect_only", "confidence", "depth", "basic_blocks",
-        "dangerous_calls", "C11", "cyclomatic", "loops", "interesting",
+        "dangerous_calls", "local_vars", "cyclomatic", "loops", "interesting",
         "bottleneck", "dead_end",
     }
     assert set(report["unreachable_defined"][0]) == {
@@ -111,7 +113,7 @@ def test_function_metrics_counts(run_analyzer):
     assert m["a"]["basic_blocks"] == 3
     assert m["a"]["loops"] == 1
     assert m["a"]["cyclomatic"] == 2
-    assert m["c"]["C11"] == 2
+    assert m["c"]["local_vars"] == 2
     assert m["d"]["dangerous_calls"] == 0
 
 
@@ -119,7 +121,7 @@ def test_local_vars_from_debug_info(run_analyzer):
     r = run_analyzer([ll("metrics_dbg.ll"), "--entry", "process"])
     assert r.returncode == 0, r.stderr
     m = {f["mangled"]: f for f in json.loads(r.stdout)["reachable"]}
-    assert m["process"]["C11"] == 3
+    assert m["process"]["local_vars"] == 3
     assert m["process"]["dangerous_calls"] == 1
     assert m["process"]["loops"] == 1
 
@@ -600,3 +602,115 @@ def test_json_key_strips_rust_disambiguator(run_analyzer, tmp_path):
     assert unreach["_ZN3app4dead17hfedcba9876543210E"]["key"] == "_ZN3app4dead"
     assert "fun:_ZN3app4work*" in reached.read_text()
     assert "fun:_ZN3app4dead*" in notr.read_text()
+
+
+def test_run_info_and_edges_toggle(run_analyzer):
+    r = run_analyzer([
+        FNPTR(), "--entry", "entry", "--no-edges",
+        "--run-info", '{"lang": "c", "optimize": false}',
+    ])
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    assert report["run"] == {"lang": "c", "optimize": False}
+    assert "edges" not in report
+    bad = run_analyzer([FNPTR(), "--entry", "entry", "--run-info", "[1]"])
+    assert bad.returncode == 1
+    assert "--run-info must be a JSON object" in bad.stderr
+
+
+def test_heap_callback_with_mismatched_type_is_reachable_at_O0(run_analyzer, tmp_path):
+    ignored = tmp_path / "ignored.txt"
+    r = run_analyzer([
+        ll("heap_callback.ll"), "--entry", "LLVMFuzzerTestOneInput",
+        "--not-reached-out", str(ignored),
+    ])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert "free_entry" in names
+    assert "fun:free_entry" not in ignored.read_text()
+
+
+def test_callbacks_handed_out_before_the_first_input(run_analyzer, tmp_path):
+    ignored = tmp_path / "ignored.txt"
+    r = run_analyzer([
+        ll("harness_callbacks.ll"), "--entry", "LLVMFuzzerTestOneInput",
+        "--not-reached-out", str(ignored),
+    ])
+    assert r.returncode == 0, r.stderr
+    report = json.loads(r.stdout)
+    names = {f["mangled"] for f in report["reachable"]}
+    handed_out = {"on_init_record", "on_ctor_record", "my_hook", "table_hook"}
+    assert {"LLVMFuzzerInitialize"} | handed_out <= names
+    assert {"ctor", "register_all", "never_handed", "at_exit_only", "static_dtor",
+            "pick_callback", "returned_only"}.isdisjoint(names)
+    assert {"LLVMFuzzerInitialize", "on_ctor_record"} <= set(report["entries"])
+    assert "added LLVMFuzzerInitialize as a harness root" in r.stderr
+    assert not {f"fun:{n}" for n in handed_out} & set(ignored.read_text().split())
+
+
+def test_initialize_is_rooted_only_for_libfuzzer_harnesses(run_analyzer):
+    r = run_analyzer([ll("harness_callbacks.ll"), "--entry", "other_entry"])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert "LLVMFuzzerInitialize" not in names
+    assert "on_init_record" not in names
+    assert "on_ctor_record" in names
+
+
+def test_constructor_bodies_are_rooted_only_on_request(run_analyzer):
+    r = run_analyzer([
+        ll("harness_callbacks.ll"), "--entry", "LLVMFuzzerTestOneInput",
+        "--include-process-lifecycle-roots",
+    ])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {"ctor", "register_all", "on_ctor_record", "at_exit_only",
+            "static_dtor", "returned_only"} <= names
+    assert "callbacks that constructors hand to external code" not in r.stderr
+
+
+def test_slot_evidence_grades_confidence(run_analyzer):
+    r = run_analyzer([ll("slot_confidence.ll"), "--entry", "entry"])
+    assert r.returncode == 0, r.stderr
+    conf = {f["mangled"]: f["confidence"] for f in json.loads(r.stdout)["reachable"]}
+    assert conf["field_called"] == "medium"
+    assert conf["field_default"] == "medium"
+    assert conf["Impl_run"] == "medium"
+    assert conf["field_unused"] == "low"
+    assert conf["Impl_other"] == "low"
+
+
+def test_interesting_starts_at_closure_inside_entry(run_analyzer):
+    r = run_analyzer([ll("rust_closure_entry.ll"), "--entry", "zshape::main"])
+    assert r.returncode == 0, r.stderr
+    m = {f["mangled"]: f for f in json.loads(r.stdout)["reachable"]}
+    closure = "_ZN6zshape4main28_$u7b$$u7b$closure$u7d$$u7d$17h1111111111111111E"
+    assert m[closure]["interesting"] is True
+    assert m["_ZN6zshape5parse17h2222222222222222E"]["interesting"] is True
+    assert m["_ZN6zshape4main17h3333333333333333E"]["interesting"] is False
+    assert m["_ZN6zshape9fuzz_loop17h0123456789abcdefE"]["interesting"] is False
+
+
+def test_interesting_starts_at_clang_lambda_inside_entry(run_analyzer):
+    r = run_analyzer([ll("cpp_lambda_entry.ll"), "--entry", "main"])
+    assert r.returncode == 0, r.stderr
+    m = {f["mangled"]: f for f in json.loads(r.stdout)["reachable"]}
+    assert m["_ZZ4mainEN3$_08__invokeEPKhm"]["interesting"] is True
+    assert m["_ZZ4mainENK3$_0clEPKhm"]["interesting"] is True
+    assert m["_ZL5parsePKhm"]["interesting"] is True
+    assert m["main"]["interesting"] is False
+
+
+def test_renamed_static_function_keeps_both_lists_safe(run_analyzer, tmp_path):
+    reached = tmp_path / "reached.txt"
+    notr = tmp_path / "not_reached.txt"
+    r = run_analyzer([
+        ll("static_collision.ll"), "--entry", "LLVMFuzzerTestOneInput",
+        "--reached-out", str(reached), "--not-reached-out", str(notr),
+    ])
+    assert r.returncode == 0, r.stderr
+    allow = set(_fun_patterns(reached.read_text()))
+    ignore = set(_fun_patterns(notr.read_text()))
+    assert {"helper", "helper.1"} <= allow
+    assert "helper" not in ignore
+    assert "b_unused" in ignore

@@ -46,6 +46,7 @@ class AcquireError(RuntimeError):
 
 _SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv",
               ".cache"}
+BUILD_DIR = "build-reachability"
 _BC_MARKERS = (b".llvm_bc", b"__llvm_bc")
 _KIND_RANK = {"exec": 3, "shared": 2, "archive": 1, "object": 0}
 _MACHO_MAGIC = (0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE, 0xBEBAFECA, 0xBFBAFECA)
@@ -172,7 +173,11 @@ def detect_build_cmd(project_dir):
     `--disable-shared`/`--enable-static` for an existing `configure` (each added
     only if `configure --help` lists it), `-DBUILD_SHARED_LIBS=OFF` for CMake,
     and `--default-library=static` for Meson -- both unconditional, being
-    built-in toggles those tools always accept. The autotools-bootstrap paths add
+    built-in toggles those tools always accept. CMake and Meson configure into a
+    tool-owned `build-reachability/` directory rather than the project's own
+    `build/`: both ignore a changed CC/CXX once a build directory is configured,
+    so reusing the user's tree would silently skip gllvm and would also write
+    these options into the user's cache. The autotools-bootstrap paths add
     `--disable-shared --enable-static` directly, since the configure they
     regenerate does not exist yet to probe and autoconf only warns (never errors)
     on options it does not recognize. Plain make/ninja trees have no portable
@@ -195,13 +200,13 @@ def detect_build_cmd(project_dir):
     if has("Makefile", "makefile", "GNUmakefile"):
         return "make"
     if has("CMakeLists.txt"):
-        return ("cmake -S . -B build -DBUILD_SHARED_LIBS=OFF "
-                "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF && cmake --build build")
+        return (f"cmake -S . -B {BUILD_DIR} -DBUILD_SHARED_LIBS=OFF "
+                f"-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF && cmake --build {BUILD_DIR}")
     if has("build.ninja"):
         return "ninja"
     if has("meson.build"):
-        return ("meson setup build --default-library=static -Db_lto=false "
-                "&& ninja -C build")
+        return (f"meson setup {BUILD_DIR} --default-library=static -Db_lto=false "
+                f"&& ninja -C {BUILD_DIR}")
     if has("autogen.sh"):
         return ("./autogen.sh && ./configure --disable-shared --enable-static "
                 "--disable-lto && make")

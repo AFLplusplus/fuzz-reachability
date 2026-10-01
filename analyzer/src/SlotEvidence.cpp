@@ -1,0 +1,195 @@
+#include "SlotEvidence.h"
+#include "CallGraph.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/Constants.h"
+#include "llvm/IR/DataLayout.h"
+#include "llvm/IR/InstIterator.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Operator.h"
+#include <map>
+#include <optional>
+#include <set>
+#include <utility>
+#include <vector>
+
+using namespace llvm;
+
+namespace reach {
+
+namespace {
+
+using SlotKey = std::pair<Type *, std::vector<uint64_t>>;
+
+std::optional<SlotKey> fieldKey(Value *pointer) {
+  auto *gep = dyn_cast<GEPOperator>(pointer);
+  if (!gep || !gep->getSourceElementType()->isStructTy() ||
+      gep->getNumIndices() < 2)
+    return std::nullopt;
+  Type *owner = gep->getSourceElementType();
+  Type *current = owner;
+  std::vector<uint64_t> path;
+  for (auto it = std::next(gep->idx_begin()); it != gep->idx_end(); ++it) {
+    auto *index = dyn_cast<ConstantInt>(*it);
+    if (!index)
+      return std::nullopt;
+    uint64_t k = index->getZExtValue();
+    if (auto *st = dyn_cast<StructType>(current)) {
+      if (k >= st->getNumElements())
+        return std::nullopt;
+      current = st->getElementType(k);
+    } else if (auto *at = dyn_cast<ArrayType>(current)) {
+      current = at->getElementType();
+    } else {
+      return std::nullopt;
+    }
+    path.push_back(k);
+    if (current->isStructTy() && std::next(it) != gep->idx_end()) {
+      owner = current;
+      path.clear();
+    }
+  }
+  if (path.empty())
+    return std::nullopt;
+  return SlotKey{owner, std::move(path)};
+}
+
+void recordInitializer(Constant *c, Type *owner, std::vector<uint64_t> path,
+                       std::map<SlotKey, std::vector<Function *>> &stored) {
+  if (Function *f = resolveCallableValue(c)) {
+    if (owner && !path.empty())
+      stored[{owner, path}].push_back(f);
+    return;
+  }
+  if (auto *cs = dyn_cast<ConstantStruct>(c)) {
+    for (unsigned i = 0; i < cs->getNumOperands(); ++i)
+      recordInitializer(cs->getOperand(i), cs->getType(), {i}, stored);
+    return;
+  }
+  if (auto *ca = dyn_cast<ConstantArray>(c)) {
+    for (unsigned i = 0; i < ca->getNumOperands(); ++i) {
+      std::vector<uint64_t> element = path;
+      element.push_back(i);
+      recordInitializer(ca->getOperand(i), owner, owner ? element : path, stored);
+    }
+  }
+}
+
+void collectOffsets(Constant *c, uint64_t base, const DataLayout &dl,
+                    std::vector<std::pair<uint64_t, Function *>> &out) {
+  if (Function *f = resolveCallableValue(c)) {
+    out.push_back({base, f});
+    return;
+  }
+  if (auto *cs = dyn_cast<ConstantStruct>(c)) {
+    const StructLayout *layout = dl.getStructLayout(cs->getType());
+    for (unsigned i = 0; i < cs->getNumOperands(); ++i)
+      collectOffsets(cs->getOperand(i), base + layout->getElementOffset(i), dl,
+                     out);
+    return;
+  }
+  if (auto *ca = dyn_cast<ConstantArray>(c)) {
+    uint64_t size = dl.getTypeAllocSize(ca->getType()->getElementType());
+    for (unsigned i = 0; i < ca->getNumOperands(); ++i)
+      collectOffsets(ca->getOperand(i), base + i * size, dl, out);
+  }
+}
+
+unsigned topLevelElement(GlobalVariable &g, uint64_t offset,
+                         const DataLayout &dl) {
+  auto *st = dyn_cast<StructType>(g.getValueType());
+  if (!st)
+    return 0;
+  const StructLayout *layout = dl.getStructLayout(st);
+  if (offset >= layout->getSizeInBytes())
+    return st->getNumElements();
+  return layout->getElementContainingOffset(offset);
+}
+
+void recordDispatchTable(GlobalVariable &g, const DataLayout &dl,
+                         std::map<SlotKey, std::vector<Function *>> &stored) {
+  StringRef name = g.getName();
+  std::set<uint64_t> addressPoints;
+  bool itanium = name.starts_with("_ZTV") || name.starts_with("_ZTC");
+  if (itanium) {
+    for (User *user : g.users()) {
+      auto *gep = dyn_cast<GEPOperator>(user);
+      if (!gep || gep->getPointerOperand() != &g)
+        continue;
+      APInt offset(dl.getIndexTypeSizeInBits(gep->getType()), 0);
+      if (gep->accumulateConstantOffset(dl, offset) && !offset.isNegative())
+        addressPoints.insert(offset.getZExtValue());
+    }
+  } else if (name.starts_with("vtable.")) {
+    addressPoints.insert(0);
+  }
+  if (addressPoints.empty())
+    return;
+  std::vector<std::pair<uint64_t, Function *>> entries;
+  collectOffsets(g.getInitializer(), 0, dl, entries);
+  for (const auto &[offset, f] : entries)
+    for (uint64_t point : addressPoints) {
+      if (point > offset)
+        continue;
+      if (itanium && topLevelElement(g, point, dl) != topLevelElement(g, offset, dl))
+        continue;
+      stored[{nullptr, {offset - point}}].push_back(f);
+    }
+}
+
+std::optional<SlotKey> dispatchKey(Value *pointer, const DataLayout &dl) {
+  APInt offset(dl.getIndexTypeSizeInBits(pointer->getType()), 0);
+  Value *base =
+      pointer->stripAndAccumulateConstantOffsets(dl, offset, /*AllowNonInbounds=*/true);
+  if (offset.isNegative() || isa<GlobalValue>(base) || isa<AllocaInst>(base))
+    return std::nullopt;
+  return SlotKey{nullptr, {offset.getZExtValue()}};
+}
+
+} // namespace
+
+DenseSet<Function *> computeSlotTargets(Module &m, const ReachResult &res) {
+  const DataLayout &dl = m.getDataLayout();
+  std::map<SlotKey, std::vector<Function *>> stored;
+  std::set<SlotKey> called;
+
+  for (GlobalVariable &g : m.globals()) {
+    if (!g.hasInitializer())
+      continue;
+    recordInitializer(g.getInitializer(), nullptr, {}, stored);
+    recordDispatchTable(g, dl, stored);
+  }
+
+  for (Function &f : m) {
+    if (f.isDeclaration() || !res.reached.count(&f))
+      continue;
+    for (Instruction &i : instructions(f)) {
+      if (auto *store = dyn_cast<StoreInst>(&i)) {
+        if (Function *target = resolveCallableValue(store->getValueOperand()))
+          if (auto key = fieldKey(store->getPointerOperand()))
+            stored[*key].push_back(target);
+        continue;
+      }
+      auto *cb = dyn_cast<CallBase>(&i);
+      if (!cb || !isIndirectCall(*cb))
+        continue;
+      auto *load = dyn_cast<LoadInst>(cb->getCalledOperand()->stripPointerCasts());
+      if (!load)
+        continue;
+      Value *slot = load->getPointerOperand();
+      if (auto key = fieldKey(slot))
+        called.insert(*key);
+      else if (auto key = dispatchKey(slot, dl))
+        called.insert(*key);
+    }
+  }
+
+  DenseSet<Function *> out;
+  for (const SlotKey &key : called) {
+    auto it = stored.find(key);
+    if (it != stored.end())
+      out.insert(it->second.begin(), it->second.end());
+  }
+  return out;
+}
+
+} // namespace reach

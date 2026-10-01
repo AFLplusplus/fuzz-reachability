@@ -1,6 +1,7 @@
 #pragma once
 
-#include "llvm/ADT/ArrayRef.h"
+#include "CallGraph.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
@@ -8,16 +9,15 @@
 
 namespace reach {
 
-struct EscapeIndex;
-
 // Pluggable backend for resolving indirect call targets. The type-based
 // resolver is the default; AnyResolver (--indirect-any) is a debug variant.
 struct IndirectResolver {
   virtual ~IndirectResolver() = default;
   // Precompute over the whole module once before resolve() calls.
-  virtual void prepare(llvm::Module &m, const EscapeIndex &idx) = 0;
+  virtual void prepare(llvm::Module &m, const EscapeIndex &idx,
+                       FunctionSets &sets) = 0;
   // Candidate callees for one indirect call site (over-approximation).
-  virtual llvm::ArrayRef<llvm::Function *> resolve(llvm::CallBase &cb) = 0;
+  virtual void resolve(llvm::CallBase &cb, llvm::SmallVectorImpl<SetId> &out) = 0;
 };
 
 } // namespace reach

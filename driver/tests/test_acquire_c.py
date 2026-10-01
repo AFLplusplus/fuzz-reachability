@@ -153,15 +153,16 @@ def test_detect_build_cmd_make(tmp_path):
 def test_detect_build_cmd_cmake(tmp_path):
     (tmp_path / "CMakeLists.txt").write_text("project(x)\n")
     assert acquire_c.detect_build_cmd(str(tmp_path)) == (
-        "cmake -S . -B build -DBUILD_SHARED_LIBS=OFF "
-        "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF && cmake --build build"
+        "cmake -S . -B build-reachability -DBUILD_SHARED_LIBS=OFF "
+        "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF && cmake --build build-reachability"
     )
 
 
 def test_detect_build_cmd_meson(tmp_path):
     (tmp_path / "meson.build").write_text("project('x', 'c')\n")
     assert acquire_c.detect_build_cmd(str(tmp_path)) == (
-        "meson setup build --default-library=static -Db_lto=false && ninja -C build"
+        "meson setup build-reachability --default-library=static -Db_lto=false "
+        "&& ninja -C build-reachability"
     )
 
 
