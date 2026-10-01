@@ -145,6 +145,14 @@
   Previously only clang `-O0` struct-typed field loads counted, so Rust
   (byte-offset fields) and optimized C setters that copy a callback lost it.
   Struct-typed field loads still count only when that field holds a callback.
+- Documentation: the README is split into `docs/usage.md`, `docs/rust.md`,
+  `docs/output.md`, `docs/analysis.md`, `docs/troubleshooting.md` and
+  `docs/development.md`. The guarantee now names its known exceptions, the
+  instrumentation example starts with the ignorelist, the LTO note is measured
+  on libxml2, and the JSON report has a schema table. The examples were re-run
+  with this version, and `docs/EXAMPLES.md` §3 and §4 use
+  `reachability run --lang afl --build-cmd …` instead of linking bitcode by
+  hand.
 
 
 ### v1.1
@@ -253,10 +261,11 @@
   forces `-Copt-level=0` (plain `--lang rust`/`mixed` via composed RUSTFLAGS;
   native `libfuzzer`/`ziggy`/`afl` via the RUSTC wrapper), so functions the
   optimizer would inline still appear in `reachability.json`/`reached.txt` and
-  match what `llvm-cov` reports. rustc does not guarantee the `17h<hash>`
+  match what `llvm-cov` reports. `--profile release` then no longer changes
+  the opt level of plain `--lang rust` builds. rustc does not guarantee the `17h<hash>`
   mangled-name disambiguator is stable across builds, so it is
   `reachability.json`'s build-independent `key` (the disambiguator stripped;
-  see [Output](README.md#output)), not the raw mangled name, that guarantees
+  see [Rust names](docs/output.md#rust-names-and-key)), not the raw mangled name, that guarantees
   the set lines up with the optimized fuzz/coverage binary;
   `driver/tests/test_rust_hash_stability.py` checks that `key` stays identical
   across opt levels.
@@ -270,7 +279,7 @@
   `basic_blocks`, `cyclomatic`, `loops`, `dangerous_calls`, `C11` (local variable
   count), `interesting` (pointer-argument path from an entry), `bottleneck`
   (call-graph dominator), and `dead_end` (calls no `interesting` function). See
-  the "Function metrics" section of the README.
+  [Function metrics](docs/analysis.md#function-metrics).
 - The `dangerous_calls` function list is now the editable `dangerous_functions.txt`
   at the project root, compiled into the analyzer at build time.
 - C/C++ acquisition: auto-detected builds now also disable link-time
@@ -286,3 +295,8 @@
 
 ### v1.0
 - initial release
+- The optional SVF backend (`--backend=svf`, Andersen points-to analysis) was
+  removed before this release. It gave nearly the same reachable sets as the
+  type-based backend, built only against LLVM 21, needed a separately built and
+  patched SVF and Z3, and ran much slower. `--backend` is still accepted and
+  ignored with a warning.
