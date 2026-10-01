@@ -745,6 +745,18 @@ def test_callbacks_in_memory_owned_by_external_code(run_analyzer, tmp_path):
             "orphan_cb"}.isdisjoint(names)
 
 
+def test_external_memory_through_wrappers_helpers_and_out_parameters(run_analyzer):
+    r = run_analyzer([ll("external_memory_shapes.ll"), "--entry",
+                      "LLVMFuzzerTestOneInput"])
+    assert r.returncode == 0, r.stderr
+    names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
+    assert {"phi_cb", "select_cb", "accessor_cb", "helper_cb", "helper_arg_cb",
+            "outparam_cb", "wrapped_outparam_cb", "used_outparam_cb",
+            "reload_global_cb", "reload_param_cb", "stored_handle_cb",
+            "deref_cb"} <= names
+    assert {"local_slot_cb", "libc_outparam_cb", "own_memory_cb"}.isdisjoint(names)
+
+
 def test_callbacks_handed_out_only_by_unreached_code_are_reported(run_analyzer):
     r = run_analyzer([ll("external_hooks.ll"), "--entry", "LLVMFuzzerTestOneInput"])
     assert r.returncode == 0, r.stderr
@@ -760,8 +772,10 @@ def test_setters_that_copy_or_choose_a_callback(run_analyzer):
     report = json.loads(r.stdout)
     names = {f["mangled"] for f in report["reachable"]}
     assert {"via_copy", "via_select", "via_select_b", "via_phi", "via_phi_b",
-            "via_memcpy"} <= names
-    assert {"never_installed", "copied_never_called"}.isdisjoint(names)
+            "via_memcpy", "via_offset", "via_plain", "via_global",
+            "via_init", "via_ctor_arg", "via_template"} <= names
+    assert {"never_installed", "copied_never_called",
+            "sibling_field"}.isdisjoint(names)
 
 
 def test_callback_in_object_passed_to_indirect_call(run_analyzer):

@@ -4,10 +4,14 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
+#include <cstdint>
+#include <deque>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -45,10 +49,6 @@ public:
   const SetMap &escapeSets() const { return EscapeSets; }
   FunctionSets &sets() { return Sets; }
   const FunctionSets &sets() const { return Sets; }
-  void markExternallyCalled(llvm::Function *f) { ExternallyCalled.insert(f); }
-  const llvm::DenseSet<llvm::Function *> &externallyCalled() const {
-    return ExternallyCalled;
-  }
 
   template <typename Fn> void forEachCallee(llvm::Function *from, Fn &&fn) const {
     auto it = Edges.find(from);
@@ -67,7 +67,6 @@ private:
   SetMap SetEdges;
   SetMap EscapeSets;
   FunctionSets Sets;
-  llvm::DenseSet<llvm::Function *> ExternallyCalled;
   llvm::DenseSet<std::pair<llvm::Function *, llvm::Function *>> SeenDirect;
   llvm::DenseSet<std::pair<llvm::Function *, llvm::Function *>> SeenIndirect;
   llvm::DenseSet<std::pair<llvm::Function *, SetId>> SeenSet;
@@ -107,7 +106,97 @@ struct EscapeIndex {
 
 void buildEscapeIndex(llvm::Module &m, EscapeIndex &idx);
 
-void buildEscapeEdges(llvm::Module &m, CallGraph &g, const EscapeIndex &idx);
+class ExternalMemory {
+public:
+  ExternalMemory(llvm::Module &m, const EscapeIndex &idx);
+  ExternalMemory(const ExternalMemory &) = delete;
+  ExternalMemory &operator=(const ExternalMemory &) = delete;
+
+  void addCalledFunction(llvm::Function *f);
+  std::vector<llvm::Function *> takeChanged();
+  bool writesExternalMemory(const llvm::Instruction &write) const {
+    return ExternalWrites.count(&write);
+  }
+
+private:
+  struct Sources {
+    uint64_t external = 0;
+    uint64_t holds = 0;
+    uint64_t nested = 0;
+    bool always = false;
+
+    bool empty() const { return !always && !external && !holds && !nested; }
+    bool merge(const Sources &other);
+  };
+
+  struct Facts {
+    Sources external;
+    Sources holds;
+    Sources nested;
+
+    bool empty() const {
+      return external.empty() && holds.empty() && nested.empty();
+    }
+    bool merge(const Facts &other);
+  };
+
+  struct Writes {
+    Sources holds;
+    Sources nested;
+  };
+
+  struct Summary {
+    Facts returned;
+    llvm::SmallVector<Writes, 0> writes;
+  };
+
+  using Slot = std::pair<const llvm::Value *, unsigned>;
+
+  static bool evaluate(const Sources &sources, const Sources &params);
+  void pend(llvm::Function *f);
+  void propagate();
+  void process(llvm::Function &f);
+  void analyze(llvm::Function &f);
+  void visit(llvm::Instruction &i);
+  void updateArgument(llvm::Argument &arg);
+  void schedule(llvm::Value *v);
+  void scheduleUsers(llvm::Value *v);
+  Facts factsOf(llvm::Value *v) const;
+  Facts computeFacts(llvm::Instruction &i);
+  Facts argumentFacts(llvm::Argument &arg) const;
+  Sources substitute(const Sources &sources, llvm::CallBase &cb) const;
+  Facts substitute(const Facts &facts, llvm::CallBase &cb) const;
+  Sources localWrite(const llvm::Value *object, unsigned depth) const;
+  void applyWrites(llvm::Instruction &i);
+  void addWrite(const llvm::Value *pointer, unsigned depth,
+                const Sources &sources);
+  void markGlobal(const Slot &slot);
+
+  const EscapeIndex &Idx;
+  llvm::TargetLibraryInfoImpl TLII;
+  llvm::TargetLibraryInfo TLI;
+  llvm::DenseMap<llvm::Function *, llvm::SmallVector<llvm::CallBase *, 4>> Calls;
+  llvm::DenseSet<const llvm::Function *> Fillers;
+  llvm::DenseMap<const llvm::Function *, Summary> Summaries;
+  llvm::DenseMap<const llvm::Function *, Sources> Params;
+  llvm::DenseSet<Slot> GlobalWritten;
+  std::deque<llvm::Function *> Pending;
+  llvm::DenseSet<llvm::Function *> PendingSet;
+  std::vector<llvm::Function *> Changed;
+  llvm::DenseSet<llvm::Function *> ChangedSet;
+  llvm::DenseSet<const llvm::Instruction *> ExternalWrites;
+  llvm::DenseMap<const llvm::Value *, Facts> ValueFacts;
+  llvm::DenseMap<Slot, Sources> LocalWrites;
+  llvm::DenseMap<Slot, Sources> GlobalWrites;
+  llvm::SmallPtrSet<const llvm::BasicBlock *, 32> Visited;
+  llvm::Instruction *Current = nullptr;
+  std::vector<llvm::Value *> Work;
+  llvm::DenseSet<llvm::Value *> Queued;
+  std::vector<llvm::Instruction *> WriteSites;
+};
+
+void buildEscapeEdges(llvm::Module &m, CallGraph &g, const EscapeIndex &idx,
+                      ExternalMemory &memory);
 
 struct ValueFlow {
   llvm::DenseMap<llvm::Value *, unsigned> sccOf;
@@ -128,6 +217,6 @@ void computeValueFlow(const std::vector<llvm::Value *> &roots,
 // here is a low-confidence (likely-spurious) indirect target.
 llvm::DenseSet<llvm::Function *> computeAddressFlowTargets(
     llvm::Module &m, const EscapeIndex &idx, const ReachResult &res,
-    const llvm::DenseSet<llvm::Function *> &externallyCalled);
+    const ExternalMemory &memory);
 
 } // namespace reach

@@ -417,7 +417,8 @@ int main(int argc, char **argv) {
   reach::buildDirectEdges(*mod, graph);
   reach::EscapeIndex escapeIdx;
   reach::buildEscapeIndex(*mod, escapeIdx);
-  reach::buildEscapeEdges(*mod, graph, escapeIdx);
+  reach::ExternalMemory externalMemory(*mod, escapeIdx);
+  reach::buildEscapeEdges(*mod, graph, escapeIdx, externalMemory);
 
   std::unique_ptr<reach::IndirectResolver> resolver;
   if (IndirectAny)
@@ -517,7 +518,7 @@ int main(int argc, char **argv) {
   }
 
   auto flowTargets = reach::computeAddressFlowTargets(
-      *mod, escapeIdx, res, graph.externallyCalled());
+      *mod, escapeIdx, res, externalMemory);
   for (Function *f : reach::computeSlotTargets(*mod, res))
     flowTargets.insert(f);
   auto metrics = reach::computeMetrics(*mod, graph, res, roots, localVars);

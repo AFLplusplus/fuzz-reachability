@@ -704,7 +704,13 @@ When a callee stores a callback through one of its pointer parameters (a setter
 such as `set_cb(obj, fn)`), that store also counts as a store into each object
 its callers pass there. A callback here is a function, a pointer parameter, a
 `select`/PHI that picks one, a load from a struct field that some other store or
-initializer fills with a function, or a pointer to an object that holds one.
+initializer fills with a function, any other load (at a byte offset, as in Rust
+and optimized C) from an object that holds one, or a pointer to such an object.
+An object holds a callback when an initializer or store puts a function into
+it, or a parameter that callers pass a function (`init(&t, cb)`), or when it is
+copied (`memcpy`, struct assignment) from an object that holds one. This also
+counts through a helper or constructor the object is passed to, and the object
+can be a global, a local, or an object a caller passes in.
 Other values, and vtable pointers in particular, are not propagated, which keeps
 C++ `this`-passing from merging every object's fields. The analyzer
 promotes stack slots to SSA registers before the flow is built, so a `-O0`
@@ -936,16 +942,25 @@ comparators, atexit/pthread/`std::call_once` callbacks, error-hook and
 allocator-hook variables. Calls to LLVM intrinsics (`memcpy`, lifetime markers,
 bit-counting, …) are not escapes; a `memcpy` into externally owned memory is.
 Memory counts as externally owned when it is a global
-that is only declared in the bitcode, what a function without a body returns
-(directly or through a defined wrapper), or what a callback that external code
-calls receives as a pointer parameter, and also memory reached by loading
-pointers out of any of these. Memory from an allocator (`malloc`, `calloc`,
-`realloc`, `strdup`, `operator new`, and declarations whose result is
-`noalias` or marked as an allocation) is the program's own. The escape analysis
-follows local loads/stores, callbacks stored through pointer parameters,
-globals, aggregates, select/PHI values, defined wrapper arguments, and defined
-functions that return callbacks. Escapes are taken from reached functions,
-`LLVMFuzzerInitialize`, and code reachable from constructors (see
+that is only declared in the bitcode, what a function without a body returns,
+what such a function writes through a pointer argument (an out-parameter such as
+`ext_get_hooks(&h)`, also when the pointer is loaded again, as in
+`ext_get_hooks(g_ctx); g_ctx->hooks->cb = f`), or what a callback that external
+code calls receives as a pointer parameter, and also memory reached by loading
+pointers out of any of these or out of memory the program stored such a pointer
+into (`g_lib = lib_init(); g_lib->cb = f`). Defined wrappers, accessors and
+helpers are followed through their returns and parameters at any depth,
+including ones that pick the pointer with `?:` or return early. Each call is
+judged by its own arguments, so an accessor that some callers pass externally
+owned memory does not make the memory other callers pass external. Memory from
+an allocator (`malloc`, `calloc`, `realloc`, `strdup`, `operator new`, and
+declarations whose result is `noalias` or marked as an allocation) is the
+program's own, and so is what a known C library function writes through its
+arguments. The escape analysis follows local loads/stores, callbacks stored
+through pointer parameters, globals, aggregates, select/PHI values, defined
+wrapper arguments, and defined functions that return callbacks. Escapes are
+taken from reached functions, `LLVMFuzzerInitialize`, and code reachable from
+constructors (see
 [Process-lifecycle roots](#process-lifecycle-roots)). A callback registered only
 from other unreached code stays unreachable; the report lists it in
 `escaped_from_unreached` and the analyzer prints a note, since it usually means

@@ -123,6 +123,28 @@
 - `--mangling legacy` passes `-Zunstable-options`, without which rustc rejects
   an explicit legacy scheme, so it now builds on a nightly rustc; stable rustc
   cannot force legacy.
+- Soundness: more stores into externally owned memory count as escapes. The
+  check follows every operand of a `?:` or PHI, so wrappers with an early return
+  (`if (!c) return NULL; return ext_get_hooks();`) count; it follows accessors
+  that load through their argument (`hooks_of(ext_get_ctx())->cb = f`); a
+  helper that receives such memory, from a caller or from a callback external
+  code calls (`my_init(o) { install(o); }`), stores into it as well; memory
+  that a function without a body writes through a pointer argument
+  (`ext_get_hooks(&h); h->cb = f`), directly or through a defined wrapper, is
+  externally owned, also when the pointer is loaded again
+  (`ext_get_hooks(g_ctx); g_ctx->hooks->cb = f`); and so is memory reached
+  through a pointer the program stored after getting it from external code
+  (`g_lib = lib_init(); g_lib->cb = f`). Wrappers are followed at any depth
+  (previously at most 8 levels), and each call is judged by its own arguments.
+  Known C library functions (`strtol`, …) do not count.
+- Soundness: setter propagation recognizes a callback loaded at a byte offset
+  out of an object that holds one: a global (`o->cb = g_default`), a local, or
+  an object a caller passes in, including one a helper or constructor filled
+  (`init(&t); copy(&o, &t)`), one a constructor filled from its parameter
+  (`init(&t, cb)`), and one copied from a template (`t = default_ops`).
+  Previously only clang `-O0` struct-typed field loads counted, so Rust
+  (byte-offset fields) and optimized C setters that copy a callback lost it.
+  Struct-typed field loads still count only when that field holds a callback.
 
 
 ### v1.1
