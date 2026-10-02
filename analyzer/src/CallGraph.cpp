@@ -80,14 +80,20 @@ void buildDirectEdges(Module &m, CallGraph &g) {
   }
 }
 
+static std::optional<MemoryWrite> writeOf(Value *pointer, Value *value) {
+  if (!pointer || !value)
+    return std::nullopt;
+  return MemoryWrite{pointer, value};
+}
+
 std::optional<MemoryWrite> memoryWrite(Instruction &i) {
   if (auto *store = dyn_cast<StoreInst>(&i))
-    return MemoryWrite{store->getPointerOperand(), store->getValueOperand()};
+    return writeOf(store->getPointerOperand(), store->getValueOperand());
   if (auto *rmw = dyn_cast<AtomicRMWInst>(&i))
     if (rmw->getOperation() == AtomicRMWInst::Xchg)
-      return MemoryWrite{rmw->getPointerOperand(), rmw->getValOperand()};
+      return writeOf(rmw->getPointerOperand(), rmw->getValOperand());
   if (auto *cmpxchg = dyn_cast<AtomicCmpXchgInst>(&i))
-    return MemoryWrite{cmpxchg->getPointerOperand(), cmpxchg->getNewValOperand()};
+    return writeOf(cmpxchg->getPointerOperand(), cmpxchg->getNewValOperand());
   return std::nullopt;
 }
 
@@ -855,9 +861,13 @@ void ExternalMemory::process(Function &f) {
   for (const Slot &slot : written)
     markGlobal(slot);
   for (Instruction *i : WriteSites) {
-    Value *pointer = isa<AnyMemTransferInst>(i)
-                         ? cast<AnyMemTransferInst>(i)->getRawDest()
-                         : memoryWrite(*i)->pointer;
+    Value *pointer;
+    if (auto *copy = dyn_cast<AnyMemTransferInst>(i))
+      pointer = copy->getRawDest();
+    else if (auto write = memoryWrite(*i))
+      pointer = write->pointer;
+    else
+      continue;
     if (evaluate(factsOf(pointer).external, params))
       ExternalWrites.insert(i);
   }

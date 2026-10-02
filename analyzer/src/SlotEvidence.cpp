@@ -104,7 +104,7 @@ Language languageOf(const Function &f) {
   return Language::Unknown;
 }
 
-void recordInitializer(Constant *c, Type *owner, std::vector<uint64_t> path,
+void recordInitializer(Constant *c, Type *owner, const std::vector<uint64_t> &path,
                        std::map<SlotKey, std::vector<Function *>> &stored) {
   if (Function *f = resolveCallableValue(c)) {
     if (owner && !path.empty())
