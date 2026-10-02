@@ -52,13 +52,17 @@ Test: `test_toolchain.py::test_check_coherence_rejects_rustc_newer_than_toolchai
 
 ## C and C++ builds
 
-### gclang not found
+### gclang or get-bc not found
 
 ```
-error: gclang not found on PATH; run scripts/setup.sh
+error: get-bc not found on PATH; run scripts/setup.sh and export PATH="$(go env GOPATH)/bin:$PATH"
 ```
 
-Put gllvm on `PATH`: `export PATH="$(go env GOPATH)/bin:$PATH"`.
+The run checks for `gclang`, `gclang++` and `get-bc` before it builds and lists
+the missing ones. `scripts/setup.sh` installs gllvm; then put it on `PATH`:
+`export PATH="$(go env GOPATH)/bin:$PATH"`.
+
+Test: `test_acquire_c.py::test_acquire_checks_gllvm_tools_before_building`.
 
 ### The build failed
 
@@ -75,13 +79,14 @@ example `--without-lzma`; pass the whole command with `--build-cmd`.
 
 ```
 error: multiple equally plausible build artifacts remain; pass --artifact with one of:
-  build-reachability/fuzz_target
-  build-reachability/CMakeFiles/4.2.3/CMakeDetermineCompilerABI_CXX.bin
-  build-reachability/CMakeFiles/4.2.3/CompilerIdCXX/a.out
+  build-reachability/fuzz_decode
+  build-reachability/fuzz_encode
 ```
 
-Pass `--artifact` with the file you want. CMake's compiler checks always cause
-this, see [usage.md](usage.md#artifact-selection).
+The build produced several targets of the same kind, for example one binary per
+fuzzer. Pass `--artifact` with the file you want. Leftovers of CMake, Meson and
+autoconf checks are never candidates, see
+[usage.md](usage.md#artifact-selection).
 
 Test: `test_acquire_c.py::test_auto_discovery_rejects_equally_plausible_artifacts`.
 

@@ -1,6 +1,7 @@
 import os
 import shutil
 import struct
+import time
 
 import pytest
 
@@ -264,6 +265,32 @@ def test_find_artifacts_detects_archive(tmp_path):
     assert [os.path.basename(p) for p in found] == ["lib.a"]
 
 
+@pytest.mark.parametrize("probe", [
+    "build-reachability/CMakeFiles/4.2.3/CompilerIdC/a.out",
+    "build-reachability/CMakeFiles/4.2.3/CMakeDetermineCompilerABI_C.bin",
+    "build-reachability/meson-private/sanity_check_for_c.exe",
+    ".conftest.c.o",
+    "conftest",
+])
+def test_find_artifacts_skips_build_system_probes(tmp_path, probe):
+    real = tmp_path / "build-reachability" / "app"
+    real.parent.mkdir()
+    _write(str(real), _fake_elf(2), executable=True)
+    path = tmp_path / probe
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write(str(path), _fake_elf(2), executable=True)
+    assert acquire_c.find_artifacts(str(tmp_path)) == [str(real)]
+
+
+def test_find_artifacts_prefers_this_runs_output_over_kind(tmp_path):
+    stale = tmp_path / "app"
+    _write(str(stale), _fake_elf(2), executable=True)
+    os.utime(stale, (1_000_000_000, 1_000_000_000))
+    _write(str(tmp_path / "libfoo.a"), b"!<arch>\n" + b"junk.llvm_bc more")
+    found = acquire_c.find_artifacts(str(tmp_path), newer_than=time.time() - 60)
+    assert [os.path.basename(p) for p in found] == ["libfoo.a", "app"]
+
+
 def test_classify_recognizes_fat_macho(tmp_path):
     fat = tmp_path / "fatbin"
     fat.write_bytes(b"\xca\xfe\xba\xbe" + b"\x00" * 16)
@@ -452,6 +479,18 @@ def test_acquire_reports_lto_when_no_artifact(monkeypatch, tmp_path):
     msg = str(exc.value)
     assert "Likely cause" in msg
     assert "link-time optimization" in msg
+
+
+def test_acquire_checks_gllvm_tools_before_building(monkeypatch, tmp_path):
+    monkeypatch.setattr(acquire_c.shutil, "which",
+                        lambda n: None if n == "get-bc" else "/usr/bin/" + n)
+    monkeypatch.setattr(
+        acquire_c, "_run_build",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("build ran")),
+    )
+    with pytest.raises(acquire_c.AcquireError, match="get-bc not found on PATH"):
+        acquire_c.acquire_c_bitcode(
+            str(tmp_path), _TC(), work_dir=str(tmp_path / "work"))
 
 
 def test_acquire_forwards_optimize_to_build_env(monkeypatch, tmp_path):

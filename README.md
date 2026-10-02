@@ -138,12 +138,10 @@ reachable 3 / defined 4  (0 indirect-only, 0 low-confidence, 1 unreachable)  [ba
 `dead_fn` is in `not_reached.txt`. The warning is harmless: `c` tries both
 `main` and `LLVMFuzzerTestOneInput`.
 
-**C++ with CMake.** `examples/cpp_cmake` calls `Codec::decode` virtually. CMake
-projects currently need `--artifact`
-([why](docs/usage.md#artifact-selection)):
+**C++ with CMake.** `examples/cpp_cmake` calls `Codec::decode` virtually:
 
 ```
-$ reachability run --lang cpp --project examples/cpp_cmake --artifact build-reachability/fuzz_target
+$ reachability run --lang cpp --project examples/cpp_cmake
 build command: cmake -S . -B build-reachability -DBUILD_SHARED_LIBS=OFF -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF && cmake --build build-reachability
 artifact: …/examples/cpp_cmake/build-reachability/fuzz_target
 reachable 13 / defined 13  (5 indirect-only, 0 low-confidence, 0 unreachable)  [backend=type-based]

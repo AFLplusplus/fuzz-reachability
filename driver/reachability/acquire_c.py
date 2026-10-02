@@ -46,6 +46,8 @@ class AcquireError(RuntimeError):
 
 _SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv",
               ".cache"}
+_PROBE_DIRS = {"CMakeFiles", "meson-private"}
+_PROBE_PREFIXES = ("conftest", ".conftest")
 BUILD_DIR = "build-reachability"
 _BC_MARKERS = (b".llvm_bc", b"__llvm_bc")
 _KIND_RANK = {"exec": 3, "shared": 2, "archive": 1, "object": 0}
@@ -268,27 +270,39 @@ def _classify(path):
     return None
 
 
+def _built_files(project_dir):
+    for root, dirs, files in os.walk(project_dir):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and d not in _PROBE_DIRS]
+        for f in files:
+            if f.startswith(_PROBE_PREFIXES):
+                continue
+            p = os.path.join(root, f)
+            if os.path.islink(p) or not os.path.isfile(p):
+                continue
+            yield p
+
+
 def find_artifacts(project_dir, newer_than=None):
     """Walk `project_dir` for built files get-bc can read, ranked best-first:
     files carrying gllvm's bitcode section come first, then ones built by this
     run, then by kind (executable > shared lib > archive > object), then newest.
+    Build-system probe outputs are skipped, since their probes are compiled with
+    gclang too: CMake's `CMakeFiles/` (compiler-ID and ABI-check executables),
+    Meson's `meson-private/` (sanity-check executable) and autoconf's `conftest*`
+    files, including the hidden `.conftest.c.o` gllvm leaves behind, which
+    configure's `rm -f conftest*` does not remove.
     """
     cands = []
-    for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-        for f in files:
-            p = os.path.join(root, f)
-            if os.path.islink(p) or not os.path.isfile(p):
-                continue
-            kind = _classify(p)
-            if kind is None:
-                continue
-            try:
-                mtime = os.path.getmtime(p)
-            except OSError:
-                continue
-            fresh = newer_than is not None and mtime >= newer_than - 2
-            cands.append((_has_bitcode_marker(p), fresh, _KIND_RANK[kind], mtime, p))
+    for p in _built_files(project_dir):
+        kind = _classify(p)
+        if kind is None:
+            continue
+        try:
+            mtime = os.path.getmtime(p)
+        except OSError:
+            continue
+        fresh = newer_than is not None and mtime >= newer_than - 2
+        cands.append((_has_bitcode_marker(p), fresh, _KIND_RANK[kind], mtime, p))
     cands.sort(reverse=True)
     return [c[-1] for c in cands]
 
@@ -371,16 +385,8 @@ def _archive_members(archive_path):
 
 def _bitcode_archives(project_dir):
     """Static archives under `project_dir` that carry gllvm bitcode."""
-    found = []
-    for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
-        for f in files:
-            p = os.path.join(root, f)
-            if os.path.islink(p) or not os.path.isfile(p):
-                continue
-            if _classify(p) == "archive" and _has_bitcode_marker(p):
-                found.append(p)
-    return found
+    return [p for p in _built_files(project_dir)
+            if _classify(p) == "archive" and _has_bitcode_marker(p)]
 
 
 def _plan_static_libs(manifest, archive_members, mode):
@@ -552,8 +558,12 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
 
     Returns a list of absolute .bc paths to be linked together.
     """
-    if not shutil.which("gclang"):
-        raise AcquireError("gclang not found on PATH; run scripts/setup.sh")
+    missing = [t for t in ("gclang", "gclang++", "get-bc") if not shutil.which(t)]
+    if missing:
+        raise AcquireError(
+            f"{', '.join(missing)} not found on PATH; run scripts/setup.sh and "
+            'export PATH="$(go env GOPATH)/bin:$PATH"'
+        )
     if work_dir is None:
         work_dir = tempfile.mkdtemp(prefix="reach-c-")
         atexit.register(shutil.rmtree, work_dir, ignore_errors=True)

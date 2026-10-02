@@ -153,6 +153,17 @@
   with this version, and `docs/EXAMPLES.md` §3 and §4 use
   `reachability run --lang afl --build-cmd …` instead of linking bitcode by
   hand.
+- C/C++ artifact auto-detection skips the leftovers of build-system checks,
+  which `gclang` compiles too, so they carry bitcode: CMake's `CMakeFiles/`,
+  Meson's `meson-private/` and autoconf's `conftest*` files, including the
+  hidden `.conftest.c.o` that gllvm leaves and `configure` does not remove.
+  Previously every auto-detected CMake or Meson build stopped with "multiple
+  equally plausible build artifacts" (a library-only project did not even list
+  its library), as did an autoconf project whose target is an object.
+  `examples/cpp_cmake` no longer needs `--artifact`.
+- C/C++ runs check for `gclang`, `gclang++` and `get-bc` before building, so a
+  missing `get-bc` no longer fails only after a complete build. The error
+  names the missing tools and the `PATH` export.
 
 
 ### v1.1

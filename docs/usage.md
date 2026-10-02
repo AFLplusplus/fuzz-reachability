@@ -195,16 +195,25 @@ The driver takes the bitcode from one built file, the artifact.
   shared libraries over archives over objects, then the newest. When several
   files tie for first place, the run stops and lists them.
 
-CMake's own compiler checks leave small executables with bitcode under
-`build-reachability/CMakeFiles/`, so a CMake project currently needs
-`--artifact`, for example `--artifact build-reachability/fuzz_target`.
+The search skips the leftovers of build-system checks. Those checks compile
+with `gclang` as well, so their outputs carry bitcode and would otherwise tie
+with the real target:
+
+- CMake's `CMakeFiles/` directories (compiler-ID and ABI-check executables)
+- Meson's `meson-private/` directory (sanity-check executable)
+- autoconf's `conftest*` files, including the hidden `.conftest.c.o` that gllvm
+  writes next to each probe and `configure` does not remove
+
+An object inside `CMakeFiles/` can still be analyzed with `--artifact`.
 
 Tests: `test_acquire_c.py::test_missing_explicit_artifact_never_discovers`,
 `::test_unsupported_explicit_artifact_never_discovers`,
 `::test_omitted_artifact_uses_discovery`,
 `::test_auto_discovery_rejects_equally_plausible_artifacts`,
-`::test_find_artifacts_prefers_executable_over_object` and
-`::test_find_artifacts_prefers_bitcode_marker`.
+`::test_find_artifacts_prefers_executable_over_object`,
+`::test_find_artifacts_prefers_bitcode_marker`,
+`::test_find_artifacts_prefers_this_runs_output_over_kind` and
+`::test_find_artifacts_skips_build_system_probes`.
 
 ### Static libraries
 
