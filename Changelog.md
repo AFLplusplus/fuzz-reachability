@@ -161,6 +161,11 @@
   equally plausible build artifacts" (a library-only project did not even list
   its library), as did an autoconf project whose target is an object.
   `examples/cpp_cmake` no longer needs `--artifact`.
+- C/C++ acquisition supports thin archives (`!<thin>`), which Meson builds for
+  every static library it does not install. Before, such an archive was not
+  recognized at all: `--static-libs` silently skipped it, so functions in
+  members the target does not link were missing from the report instead of
+  unreachable, and a library-only Meson project could not be auto-detected.
 - C/C++ runs check for `gclang`, `gclang++` and `get-bc` before building, so a
   missing `get-bc` no longer fails only after a complete build. The error
   names the missing tools and the `PATH` export.

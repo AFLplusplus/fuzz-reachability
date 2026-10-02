@@ -230,7 +230,9 @@ report instead of showing as unreachable. `--static-libs` controls this:
 Adding the rest of a library can only add unreachable functions; the reachable
 set stays the same. The driver uses the exact object lists gllvm records, so
 no linked object is dropped. If an archive cannot be listed or fully
-extracted, the run fails and publishes nothing.
+extracted, the run fails and publishes nothing. Thin archives, which Meson
+builds for static libraries it does not install, are handled like regular ones:
+their bitcode is read from the member files they point to.
 
 `auto` reads the list of linked archives from the artifact, so it only works
 when the artifact is a linked executable or shared library. For an object file
@@ -254,8 +256,8 @@ functions `first_dead` and `second_dead` are missing instead of unreachable.
 
 Tests: `test_cli.py::test_run_static_archives_end_to_end`,
 `::test_static_archive_failure_publishes_no_report`, and the
-`test_acquire_c.py::test_plan_static_libs_*` and `::test_include_static_libs_*`
-tests.
+`test_acquire_c.py::test_plan_static_libs_*`, `::test_include_static_libs_*`
+and `::test_thin_archive_*` tests.
 
 ### Source-faithful build
 

@@ -1,6 +1,7 @@
 import os
 import shutil
 import struct
+import subprocess
 import time
 
 import pytest
@@ -280,6 +281,38 @@ def test_find_artifacts_skips_build_system_probes(tmp_path, probe):
     path.parent.mkdir(parents=True, exist_ok=True)
     _write(str(path), _fake_elf(2), executable=True)
     assert acquire_c.find_artifacts(str(tmp_path)) == [str(real)]
+
+
+def test_classify_recognizes_thin_archive(tmp_path):
+    thin = tmp_path / "libfoo.a"
+    thin.write_bytes(b"!<thin>\n" + b"\x00" * 16)
+    assert acquire_c._classify(str(thin)) == "archive"
+
+
+def _thin_archive(tmp_path, marker):
+    member = tmp_path / "libfoo.a.p" / "foo.c.o"
+    member.parent.mkdir()
+    _write(str(member), _fake_elf(1, marker=marker))
+    subprocess.run(["ar", "rcST", "libfoo.a", "libfoo.a.p/foo.c.o"],
+                   cwd=tmp_path, check=True)
+    return tmp_path / "libfoo.a"
+
+
+@pytest.mark.skipif(shutil.which("ar") is None, reason="needs ar")
+def test_thin_archive_bitcode_comes_from_members(tmp_path, monkeypatch):
+    archive = _thin_archive(tmp_path, marker=True)
+    monkeypatch.chdir("/")
+    assert acquire_c._has_bitcode_marker(str(archive))
+    assert acquire_c._archive_members(str(archive)) == {"foo.c.o"}
+    assert acquire_c._bitcode_archives(str(tmp_path)) == [str(archive)]
+    assert acquire_c.find_artifacts(str(tmp_path))[0] == str(archive)
+
+
+@pytest.mark.skipif(shutil.which("ar") is None, reason="needs ar")
+def test_thin_archive_without_bitcode_members(tmp_path):
+    archive = _thin_archive(tmp_path, marker=False)
+    assert not acquire_c._has_bitcode_marker(str(archive))
+    assert acquire_c._bitcode_archives(str(tmp_path)) == []
 
 
 def test_find_artifacts_prefers_this_runs_output_over_kind(tmp_path):

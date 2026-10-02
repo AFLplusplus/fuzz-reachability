@@ -50,6 +50,8 @@ _PROBE_DIRS = {"CMakeFiles", "meson-private"}
 _PROBE_PREFIXES = ("conftest", ".conftest")
 BUILD_DIR = "build-reachability"
 _BC_MARKERS = (b".llvm_bc", b"__llvm_bc")
+_ARCHIVE_MAGIC = b"!<arch>\n"
+_THIN_ARCHIVE_MAGIC = b"!<thin>\n"
 _KIND_RANK = {"exec": 3, "shared": 2, "archive": 1, "object": 0}
 _MACHO_MAGIC = (0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE, 0xBEBAFECA, 0xBFBAFECA)
 
@@ -219,9 +221,13 @@ def detect_build_cmd(project_dir):
 
 
 def _has_bitcode_marker(path):
-    """True if `path` embeds gllvm's bitcode-section name (so get-bc can read it)."""
+    """True if `path` embeds gllvm's bitcode-section name (so get-bc can read it).
+    A thin archive stores only the paths of its members, so its members are
+    checked instead."""
     try:
         with open(path, "rb") as fh:
+            if fh.read(len(_THIN_ARCHIVE_MAGIC)) == _THIN_ARCHIVE_MAGIC:
+                return any(_has_bitcode_marker(m) for m in _archive_listing(path))
             mm = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
             try:
                 return any(mm.find(m) != -1 for m in _BC_MARKERS)
@@ -250,7 +256,7 @@ def _classify(path):
         return None
     if len(hdr) < 8:
         return None
-    if hdr[:8] == b"!<arch>\n":
+    if hdr[:8] in (_ARCHIVE_MAGIC, _THIN_ARCHIVE_MAGIC):
         return "archive"
     if hdr[:4] == b"\x7fELF":
         endian = "<H" if hdr[5] != 2 else ">H"
@@ -365,8 +371,8 @@ def _member_name(bc_path):
     return base
 
 
-def _archive_members(archive_path):
-    """Member object names (basename) in a static archive, via `ar t`."""
+def _archive_listing(archive_path):
+    archive_path = os.path.abspath(archive_path)
     for tool in ("ar", "llvm-ar"):
         if not shutil.which(tool):
             continue
@@ -375,12 +381,14 @@ def _archive_members(archive_path):
         except OSError:
             continue
         if r.returncode == 0:
-            return {
-                os.path.basename(line)
-                for line in decode(r.stdout).splitlines()
-                if line
-            }
+            return [line for line in decode(r.stdout).splitlines() if line]
     raise AcquireError(f"cannot list static archive members: {archive_path}")
+
+
+def _archive_members(archive_path):
+    """Member object names (basename) in a static archive, via `ar t`. For a thin
+    archive `ar t` prints each member's path, resolved against the archive's."""
+    return {os.path.basename(line) for line in _archive_listing(archive_path)}
 
 
 def _bitcode_archives(project_dir):
