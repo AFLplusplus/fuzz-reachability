@@ -82,7 +82,9 @@ the entries; see [docs/analysis.md](docs/analysis.md).
   ship old LLVM versions, so install it from https://apt.llvm.org/llvm.sh,
   especially for Rust.
 - **Go** (to install gllvm), **Python 3.10 or newer**, and a **C++17**
-  compiler.
+  compiler. [rllvm](https://github.com/h1994st/rllvm) 0.7.1 or newer can
+  replace gllvm with `--capture rllvm`, see
+  [Capturing with rllvm](docs/usage.md#capturing-with-rllvm).
 - For Rust targets: a nightly **rustc** and **cargo** whose LLVM is not newer
   than yours.
 - [AFL++](https://github.com/AFLplusplus/AFLplusplus) from commit

@@ -1,4 +1,9 @@
 ### v1.2-dev
+- `--capture rllvm` (or `REACHABILITY_CAPTURE=rllvm`) records bitcode with
+  rllvm 0.7.1 or newer instead of gllvm. Rust and mixed targets then take
+  their bitcode from one build and one extraction from the linked artifact,
+  so crates that only run at build time (`syn`, `quote`, `cc`, ...) are no
+  longer analyzed as part of the target.
 - Support cargo 1.100's new build layout
 - C/C++ analysis bitcode is now compiled at `-O0` in addition to
   `-fno-inline -fno-inline-functions` (bitcode compile only, via

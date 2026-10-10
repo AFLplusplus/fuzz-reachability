@@ -50,8 +50,9 @@ reachability run --lang <target> --project <dir> [options]
 | `--dot FILE` | none | Also write the reachable call graph as Graphviz DOT |
 | `--no-edges` | off | Leave the `edges` array out of the report |
 | `--build-cmd CMD` | detected | Shell command that builds the project, see [C and C++ builds](#c-and-c-builds) and [rust.md](rust.md#native-harness-builds) |
-| `--artifact PATH` | detected | C/C++: the built file to take bitcode from, see [Artifact selection](#artifact-selection) |
-| `--static-libs {auto,none,all}` | `auto` | C/C++: which static archives to analyze in full, see [Static libraries](#static-libraries) |
+| `--capture {gllvm,rllvm}` | `gllvm` | Wrappers that record the bitcode, see [Capturing with rllvm](#capturing-with-rllvm) |
+| `--artifact PATH` | detected | C/C++, or any target with `--capture rllvm`: the built file to take bitcode from, see [Artifact selection](#artifact-selection) |
+| `--static-libs {auto,none,all}` | `auto` | C/C++, or any target with `--capture rllvm`: which static archives to analyze in full, see [Static libraries](#static-libraries) |
 | `--optimize` | off | Analyze at the build's own optimization level, see [Source-faithful build](#source-faithful-build) |
 | `--profile {debug,release}` | tool default | Rust build profile, see [rust.md](rust.md#profile-and-codegen-units) |
 | `--codegen-units N` | detected | `rust` and `mixed`: rustc `-Ccodegen-units`, see [rust.md](rust.md#profile-and-codegen-units) |
@@ -85,7 +86,8 @@ only starts from `main`; a `staticlib` harness needs
 
 `libfuzzer`, `ziggy` and `afl` build through the fuzzer's own command. `rust`
 and `mixed` run a plain `cargo build`. Both are described in
-[rust.md](rust.md).
+[rust.md](rust.md). With `--capture rllvm`, every target takes its bitcode
+from one build instead; see [Capturing with rllvm](#capturing-with-rllvm).
 
 Test: `test_cli.py::test_target_entry_defaults`.
 
@@ -303,6 +305,61 @@ Tests: `test_acquire_c.py::test_build_env_injects_opt0_by_default`,
 `::test_acquire_forwards_optimize_to_build_env`, and the
 `test_report.py::test_optimization_advisory_*` tests.
 
+## Capturing with rllvm
+
+`--capture rllvm`, or `REACHABILITY_CAPTURE=rllvm`, records the bitcode with
+[rllvm](https://github.com/h1994st/rllvm) 0.7.1 or newer instead of gllvm
+(`brew install h1994st/tap/rllvm` or `cargo install rllvm`). `rllvm-cc`,
+`rllvm-cxx`, `rllvm-rustc`, `rllvm-get-bc` and `rllvm-info` must be on `PATH`.
+gllvm stays the default.
+
+**C and C++.** The build runs with `CC=rllvm-cc` and `CXX=rllvm-cxx`. The
+driver writes a private `RLLVM_CONFIG` that names the same `clang`, `clang++`
+and `llvm-link` as for gllvm, and passes the
+[source-faithful flags](#source-faithful-build), together with any
+`LLVM_BITCODE_GENERATION_FLAGS`, as rllvm's `bitcode_generation_flags`, which
+also apply to the bitcode compile only. Build command detection, artifact
+selection and static libraries work as with gllvm. Archive members are matched
+by the exact bitcode paths rllvm records rather than by object name, which
+libtool's `libfoo_la-bar.o` member names would otherwise defeat.
+
+**Rust and mixed.** rllvm also wraps rustc, so every target takes its bitcode
+from one build and one extraction from the linked artifact, with no separate
+Rust collection and no merge of the two:
+
+| `--lang` | Build command | Wrapped |
+|---|---|---|
+| `rust` | `cargo build` | rustc |
+| `libfuzzer`, `ziggy`, `afl` | the fuzzer's own command | rustc |
+| `mixed` | the C/C++ build command | rustc, `CC`, `CXX` |
+
+`--build-cmd` replaces the command in each case. A `mixed` build must link
+the C/C++ code and the Rust crates into the artifact itself, for example
+`--build-cmd 'cargo build && make && $CXX glue.o target/debug/libfoo.a -o fuzzer' --artifact fuzzer`.
+Harness builds leave `CC` and `CXX` alone, so libFuzzer's C++ runtime stays
+out of the report, and still run the clean command afterwards.
+
+The rustc flags are the ones the per-crate collection adds: `-Copt-level=0`
+unless `--optimize` (for `rust` and `mixed` with the profile's debug
+assertions and overflow checks pinned), the `--mangling` flags, and
+`--codegen-units` when given. Cargo applies the profile itself.
+
+The bitcode is what the linker put into the artifact. Crates that only run at
+build time, the dependencies of build scripts and proc macros such as `syn`,
+`quote` or `cc`, are therefore not analyzed, whereas the per-crate collection
+merges them in. A library-only crate yields only its own bitcode; point
+`--artifact` at a binary that links it, such as the fuzz harness. The artifact
+search also covers a cargo workspace's target directory and skips cargo's own
+`deps/`, `build/` and `incremental/` copies in favor of the uplifted output.
+
+Tests: the `test_acquire_c.py::test_rllvm_*` tests,
+`::test_extract_bc_rllvm_writes_manifest_from_catalog`,
+`::test_include_static_libs_rllvm_matches_members_by_bitcode_path`,
+`::test_find_artifacts_prefers_cargo_uplifted_output`,
+`::test_find_artifacts_searches_a_workspace_target_outside_the_project`,
+`test_cli.py::test_run_static_archives_end_to_end` and
+`test_reachable_sets.py::test_mixed_c_rust_reachable_from_one_rllvm_extraction`.
+
 ## Output files
 
 The file formats are described in [output.md](output.md).
@@ -364,7 +421,8 @@ Tests: `test_cli.py::test_clean_c_removes_build_artifacts_and_outputs`,
 |---|---|
 | `REACHABILITY_ANALYZER` | Analyzer binary; default `analyzer/build/reachability-analyzer` in the repository |
 | `CLANG`, `CLANGXX`, `LLVM_LINK` | Override one tool; otherwise the version matching the analyzer's LLVM is used (`clang-23`, …), then the plain name |
-| `PATH` | Must contain gllvm's `gclang`, `gclang++` and `get-bc` for `c`, `cpp` and `mixed` |
+| `PATH` | Must contain gllvm's `gclang`, `gclang++` and `get-bc` for `c`, `cpp` and `mixed`, or rllvm's tools with `--capture rllvm` |
+| `REACHABILITY_CAPTURE` | Default for `--capture`, see [Capturing with rllvm](#capturing-with-rllvm) |
 | `LLVM_BITCODE_GENERATION_FLAGS` | Extra flags for gllvm's bitcode compile, see [Source-faithful build](#source-faithful-build) |
 | `RUSTFLAGS`, `CARGO_ENCODED_RUSTFLAGS` | Kept and merged with the driver's flags, see [rust.md](rust.md#plain-cargo-builds) |
 | `CARGO_TARGET_DIR` | Honoured when collecting Rust bitcode |
