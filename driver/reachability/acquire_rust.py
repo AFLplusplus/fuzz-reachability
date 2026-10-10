@@ -140,6 +140,23 @@ def _cargo_metadata(project_dir):
         raise AcquireError(f"cargo metadata returned malformed JSON: {exc}") from exc
 
 
+def cargo_target_dirs(project_dir):
+    """Target directories of the cargo projects at `project_dir` and, for
+    cargo-fuzz, `project_dir/fuzz`. A workspace member builds into the
+    workspace's target directory, outside the member itself."""
+    dirs = []
+    for directory in (project_dir, os.path.join(project_dir, "fuzz")):
+        if not os.path.exists(os.path.join(directory, "Cargo.toml")):
+            continue
+        try:
+            target = _cargo_metadata(directory).get("target_directory")
+        except AcquireError:
+            continue
+        if target:
+            dirs.append(target)
+    return dirs
+
+
 def _profile_manifest(project_dir):
     directory = os.path.realpath(project_dir)
     fallback = None

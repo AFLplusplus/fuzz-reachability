@@ -357,11 +357,24 @@ def _classify(path):
     return None
 
 
-def _built_files(project_dir, skip_cargo_internals=False):
-    """Files under `project_dir`. skip_cargo_internals also prunes cargo's own
-    directories inside a profile directory (the one holding `.cargo-lock`);
-    the final artifacts are uplifted next to them."""
-    for root, dirs, files in os.walk(project_dir):
+def _search_roots(project_dir, extra_dirs=()):
+    """`project_dir` plus each existing directory in `extra_dirs` outside it,
+    such as a cargo workspace's target directory."""
+    roots = [project_dir]
+    base = os.path.realpath(project_dir)
+    for directory in extra_dirs:
+        real = os.path.realpath(directory)
+        if os.path.isdir(real) and os.path.commonpath([base, real]) != base:
+            roots.append(directory)
+    return list(dict.fromkeys(roots))
+
+
+def _built_files(project_dir, skip_cargo_internals=False, extra_dirs=()):
+    """Files under `project_dir` and `extra_dirs`. skip_cargo_internals also
+    prunes cargo's own directories inside a profile directory (the one holding
+    `.cargo-lock`); the final artifacts are uplifted next to them."""
+    for root, dirs, files in (entry for top in _search_roots(project_dir, extra_dirs)
+                              for entry in os.walk(top)):
         skip = _SKIP_DIRS | _PROBE_DIRS
         if skip_cargo_internals and ".cargo-lock" in files:
             skip = skip | _CARGO_INTERNAL_DIRS
@@ -375,7 +388,7 @@ def _built_files(project_dir, skip_cargo_internals=False):
             yield p
 
 
-def find_artifacts(project_dir, newer_than=None):
+def find_artifacts(project_dir, newer_than=None, extra_dirs=()):
     """Walk `project_dir` for built files get-bc can read, ranked best-first:
     files carrying gllvm's bitcode section come first, then ones built by this
     run, then by kind (executable > shared lib > archive > object), then newest.
@@ -388,7 +401,8 @@ def find_artifacts(project_dir, newer_than=None):
     artifacts cargo uplifts.
     """
     cands = []
-    for p in _built_files(project_dir, skip_cargo_internals=True):
+    for p in _built_files(project_dir, skip_cargo_internals=True,
+                          extra_dirs=extra_dirs):
         kind = _classify(p)
         if kind is None:
             continue
@@ -522,9 +536,10 @@ def _rllvm_archive_members(archive_path, env=None):
     return {os.path.realpath(p) for p in paths}
 
 
-def _bitcode_archives(project_dir):
-    """Static archives under `project_dir` that carry gllvm or rllvm bitcode."""
-    return [p for p in _built_files(project_dir)
+def _bitcode_archives(project_dir, extra_dirs=()):
+    """Static archives under `project_dir` and `extra_dirs` that carry gllvm or
+    rllvm bitcode."""
+    return [p for p in _built_files(project_dir, extra_dirs=extra_dirs)
             if _classify(p) == "archive" and _has_bitcode_marker(p)]
 
 
@@ -554,11 +569,12 @@ def _plan_static_libs(manifest, archive_members, mode, key=_member_name):
 
 
 def _include_static_libs(project_dir, art, kind, primary_bc, mode,
-                         work_dir=None, env=None, capture="gllvm"):
+                         work_dir=None, env=None, capture="gllvm",
+                         extra_dirs=()):
     """Replace `primary_bc` with the target's own objects plus the full contents
     of the static archives it links. Returns the replacement bc list, or None when
     there is no relevant archive."""
-    archives = [a for a in _bitcode_archives(project_dir)
+    archives = [a for a in _bitcode_archives(project_dir, extra_dirs)
                 if os.path.realpath(a) != os.path.realpath(art)]
     if not archives:
         return None
@@ -689,7 +705,7 @@ def _run_build(cmd, project_dir, env, verbose):
 def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
                       static_libs="auto", verbose=False, optimize=False,
                       work_dir=None, capture="gllvm", rustc_flags=None,
-                      wrap_c=True, extra_env=None):
+                      wrap_c=True, extra_env=None, search_dirs=()):
     """Build `project_dir` with gllvm (or rllvm) wrappers and extract its bitcode.
 
     artifact: path (relative to project_dir) of the built binary/object/archive.
@@ -707,6 +723,8 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     these flags appended, so Rust crates linked into the artifact are extracted
     with it. wrap_c=False leaves CC/CXX alone (a Rust-only target).
     extra_env: further variables for the build.
+    search_dirs: directories outside project_dir that also hold build output,
+    searched for the artifact and static archives (a cargo target directory).
 
     Returns a list of absolute .bc paths to be linked together.
     """
@@ -763,7 +781,8 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
         candidates = [explicit]
     else:
         cutoff = None if cached else before
-        candidates = find_artifacts(project_dir, newer_than=cutoff)
+        candidates = find_artifacts(project_dir, newer_than=cutoff,
+                                    extra_dirs=search_dirs)
         if len(candidates) > 1:
             best = _artifact_score(candidates[0], cutoff)
             tied = [p for p in candidates if _artifact_score(p, cutoff) == best]
@@ -811,6 +830,7 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
         expanded = _include_static_libs(
             project_dir, art, kind, primary, static_libs,
             work_dir=work_dir, env=env, capture=capture,
+            extra_dirs=search_dirs,
         )
         if expanded is not None:
             return expanded

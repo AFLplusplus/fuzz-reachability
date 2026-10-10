@@ -102,6 +102,7 @@ def _acquire_rllvm_rust(args, tc, mode, verbose=False, work_dir=None):
             static_libs=args.static_libs, verbose=verbose,
             optimize=args.optimize, work_dir=work_dir, capture="rllvm",
             rustc_flags=flags, wrap_c=wrap_c, extra_env=extra_env,
+            search_dirs=acquire_rust.cargo_target_dirs(args.project),
         )
     finally:
         _record_c_artifacts(args.project, before)

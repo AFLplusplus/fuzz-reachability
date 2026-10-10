@@ -187,7 +187,7 @@ def test_include_static_libs_rllvm_matches_members_by_bitcode_path(monkeypatch):
         "/p/lib/libxml2.a.full.bc.llvm.manifest": members,
     }
     monkeypatch.setattr(acquire_c, "_bitcode_archives",
-                        lambda p: ["/p/lib/libxml2.a", "/p/other/libother.a"])
+                        lambda p, *a, **k: ["/p/lib/libxml2.a", "/p/other/libother.a"])
     monkeypatch.setattr(acquire_c, "_rllvm_modules", lambda a, env=None: (
         members if a == "/p/lib/libxml2.a" else ["/p/other/.other_4.o.bc"], ""))
     monkeypatch.setattr(acquire_c, "_extract_bc", lambda *a, **k: (True, ""))
@@ -398,6 +398,19 @@ def test_find_artifacts_prefers_cargo_uplifted_output(tmp_path, internal):
     assert acquire_c.find_artifacts(str(tmp_path)) == [str(profile / "app")]
 
 
+def test_find_artifacts_searches_a_workspace_target_outside_the_project(tmp_path):
+    project = tmp_path / "workspace" / "member"
+    project.mkdir(parents=True)
+    profile = tmp_path / "workspace" / "target" / "release"
+    profile.mkdir(parents=True)
+    (profile / ".cargo-lock").write_bytes(b"")
+    _write(str(profile / "app"), _fake_elf(2), executable=True)
+    assert acquire_c.find_artifacts(str(project)) == []
+    found = acquire_c.find_artifacts(
+        str(project), extra_dirs=[str(profile.parent), str(project)])
+    assert found == [str(profile / "app")]
+
+
 def test_find_artifacts_keeps_c_build_directories(tmp_path):
     app = tmp_path / "build" / "app"
     app.parent.mkdir()
@@ -524,7 +537,7 @@ def test_include_static_libs_uses_exact_manifest_paths(monkeypatch):
         "/p/b/libsame.a.full.bc.llvm.manifest": ["/p/b/.same.o.bc"],
         "/p/app.bc.llvm.manifest": primary,
     }
-    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: archives)
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p, *a, **k: archives)
     monkeypatch.setattr(acquire_c, "_archive_members", lambda p: {"same.o"})
     monkeypatch.setattr(acquire_c, "_extract_bc", lambda *a, **k: (True, ""))
     monkeypatch.setattr(
@@ -538,7 +551,7 @@ def test_include_static_libs_uses_exact_manifest_paths(monkeypatch):
 
 def test_include_static_libs_partial_failure_is_atomic(monkeypatch):
     archives = ["/p/a.a", "/p/b.a"]
-    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: archives)
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p, *a, **k: archives)
     monkeypatch.setattr(
         acquire_c, "_manifest_objects",
         lambda p: ["/p/.main.o.bc", "/p/.a.o.bc", "/p/.b.o.bc"]
@@ -560,7 +573,7 @@ def test_include_static_libs_partial_failure_is_atomic(monkeypatch):
 
 
 def test_include_static_libs_distinguishes_empty_target_manifest(monkeypatch):
-    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: ["/p/lib.a"])
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p, *a, **k: ["/p/lib.a"])
     monkeypatch.setattr(acquire_c, "_manifest_objects", lambda p: [])
     with pytest.raises(acquire_c.AcquireError, match="empty target manifest"):
         acquire_c._include_static_libs(
@@ -569,7 +582,7 @@ def test_include_static_libs_distinguishes_empty_target_manifest(monkeypatch):
 
 
 def test_include_static_libs_reports_genuinely_empty_archive(monkeypatch, capsys):
-    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: ["/p/empty.a"])
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p, *a, **k: ["/p/empty.a"])
     monkeypatch.setattr(acquire_c, "_archive_members", lambda p: set())
     result = acquire_c._include_static_libs(
         "/p", "/p/app", "archive", "/p/app.bc", "all",
