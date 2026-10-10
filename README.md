@@ -104,6 +104,7 @@ see [docs/analysis.md](docs/analysis.md).
 
 ```bash
 bash scripts/setup.sh        # gllvm, rust-src, .venv, analyzer build
+REACHABILITY_CAPTURE=rllvm bash scripts/setup.sh   # rllvm instead of gllvm
 ```
 
 Or step by step: `make venv`, then `make build` (or `make build LLVM_MAJOR=23`).

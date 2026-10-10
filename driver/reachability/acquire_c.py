@@ -736,7 +736,8 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     tools = _CAPTURE_TOOLS[capture] + (("rllvm-rustc",) if rustc_flags is not None else ())
     missing = [t for t in tools if not shutil.which(t)]
     if missing:
-        hint = (" (https://github.com/h1994st/rllvm)" if capture == "rllvm"
+        hint = ("; install rllvm 0.7.1 or newer, e.g. with "
+                "REACHABILITY_CAPTURE=rllvm bash scripts/setup.sh" if capture == "rllvm"
                 else '; run scripts/setup.sh and export PATH="$(go env GOPATH)/bin:$PATH"')
         raise AcquireError(f"{', '.join(missing)} not found on PATH{hint}")
     if work_dir is None:

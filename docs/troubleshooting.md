@@ -62,6 +62,11 @@ The run checks for `gclang`, `gclang++` and `get-bc` before it builds and lists
 the missing ones. `scripts/setup.sh` installs gllvm; then put it on `PATH`:
 `export PATH="$(go env GOPATH)/bin:$PATH"`.
 
+With `--capture rllvm` it checks for `rllvm-cc`, `rllvm-cxx`, `rllvm-get-bc`
+and `rllvm-info` instead, plus `rllvm-rustc` for Rust targets.
+`REACHABILITY_CAPTURE=rllvm bash scripts/setup.sh` installs rllvm 0.7.1 or
+newer with `brew install`, or with `cargo install` without Homebrew.
+
 Test: `test_acquire_c.py::test_acquire_checks_gllvm_tools_before_building`.
 
 ### The build failed
