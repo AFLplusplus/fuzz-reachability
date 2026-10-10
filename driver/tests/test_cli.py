@@ -10,6 +10,7 @@ from conftest import FIXTURES
 from reachability import cli, outputs, toolchain
 
 HAVE_GLLVM = shutil.which("gclang") is not None
+HAVE_RLLVM = shutil.which("rllvm-cc") is not None
 
 
 class _Ok:
@@ -613,15 +614,20 @@ def test_run_c_direct(analyzer, tmp_path, monkeypatch):
     assert "dead_fn" not in reachable
 
 
-@pytest.mark.skipif(not HAVE_GLLVM, reason="gllvm not installed")
-def test_run_static_archives_end_to_end(analyzer, tmp_path, monkeypatch):
+@pytest.mark.parametrize("capture", [
+    pytest.param("gllvm", marks=pytest.mark.skipif(
+        not HAVE_GLLVM, reason="gllvm not installed")),
+    pytest.param("rllvm", marks=pytest.mark.skipif(
+        not HAVE_RLLVM, reason="rllvm not installed")),
+])
+def test_run_static_archives_end_to_end(analyzer, tmp_path, monkeypatch, capture):
     monkeypatch.setenv("REACHABILITY_ANALYZER", analyzer)
     work = tmp_path / "c_static_archives"
     shutil.copytree(os.path.join(FIXTURES, "c_static_archives"), work)
     out = tmp_path / "report.json"
     rc = cli.main([
         "run", "--project", str(work), "--lang", "c", "--artifact", "app",
-        "--static-libs", "auto", "--out", str(out),
+        "--static-libs", "auto", "--capture", capture, "--out", str(out),
     ])
     assert rc == 0
     result = json.load(open(out))
