@@ -7,6 +7,7 @@
 import argparse
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -58,9 +59,79 @@ def default_analyzer():
     return path
 
 
+def _rllvm_rust_build(args, mode):
+    """(shell build command, rustc flags, wrap C) for a Rust or mixed target
+    captured with rllvm: the fuzzing tool's own build, `cargo build`, or the
+    project's C/C++ build (which links the Rust crates itself)."""
+    profile = args.profile or "debug"
+    if mode == "mixed":
+        flags = acquire_rust.rllvm_rustc_flags(
+            args.project, profile, args.optimize, args.mangling, args.codegen_units)
+        return (args.build_cmd or acquire_c.detect_build_cmd(args.project)
+                or "make"), flags, True
+    if args.lang in _RUST_NATIVE:
+        flags = acquire_rust.native_rustc_flags(args.optimize, args.mangling)
+        return (args.build_cmd
+                or shlex.join(_native_build_cmd(args.lang, args.profile))), flags, False
+    flags = acquire_rust.rllvm_rustc_flags(
+        args.project, profile, args.optimize, args.mangling, args.codegen_units)
+    cmd = ["cargo", "build"]
+    if profile == "release":
+        cmd.append("--release")
+    if args.build_std:
+        cmd += ["-Zbuild-std", "--target", acquire_rust._rustc_host()]
+    return args.build_cmd or shlex.join(cmd), flags, False
+
+
+def _acquire_rllvm_rust(args, tc, mode, verbose=False, work_dir=None):
+    """One build with rustc (and, for mixed, CC/CXX) wrapped by rllvm, then one
+    extraction from the linked artifact: C, C++ and Rust bitcode come out
+    together, so neither a separate Rust collection nor a merge of the two is
+    needed."""
+    build, flags, wrap_c = _rllvm_rust_build(args, mode)
+    print(f"build command: {build}"
+          f"{' (from --build-cmd)' if args.build_cmd else ''}")
+    extra_env = {}
+    if args.lang in _RUST_NATIVE:
+        extra_env["AFLRS_REQUIRE_PLUGINS"] = os.environ.get(
+            "AFLRS_REQUIRE_PLUGINS", "1")
+    before = _snapshot_c_artifacts(args.project)
+    try:
+        bcs = acquire_c.acquire_c_bitcode(
+            args.project, tc, args.artifact, ["sh", "-c", build],
+            static_libs=args.static_libs, verbose=verbose,
+            optimize=args.optimize, work_dir=work_dir, capture="rllvm",
+            rustc_flags=flags, wrap_c=wrap_c, extra_env=extra_env,
+        )
+    finally:
+        _record_c_artifacts(args.project, before)
+    if args.lang in _RUST_NATIVE and not args.optimize:
+        # Static-library expansion can return bitcode from the build tree,
+        # which the clean deletes.
+        bcs = [_keep_bitcode(path, index, work_dir) for index, path in enumerate(bcs)]
+        _native_clean(args.project, args.lang, verbose)
+    return bcs
+
+
+def _keep_bitcode(path, index, work_dir):
+    """`path`, copied into `work_dir` unless it is already there."""
+    root = os.path.realpath(work_dir)
+    if os.path.commonpath([root, os.path.realpath(path)]) == root:
+        return path
+    kept = os.path.join(work_dir, f"kept-{index}-{os.path.basename(path)}")
+    try:
+        shutil.copyfile(path, kept)
+    except OSError as exc:
+        raise acquire_c.AcquireError(f"cannot keep bitcode {path}: {exc}") from exc
+    return kept
+
+
 def _acquire(args, tc, verbose=False, work_dir=None):
     """Return the list of .bc files for the project per --lang."""
     mode = TARGETS[args.lang][0]
+    capture = getattr(args, "capture", "gllvm")
+    if capture == "rllvm" and mode in ("rust", "mixed"):
+        return _acquire_rllvm_rust(args, tc, mode, verbose, work_dir)
     bcs = []
     if mode in ("c", "cpp", "mixed"):
         # An explicit --build-cmd wins; otherwise auto-detect the build system
@@ -81,7 +152,7 @@ def _acquire(args, tc, verbose=False, work_dir=None):
                     args.project, tc, args.artifact, build_cmd,
                     static_libs=args.static_libs, verbose=verbose,
                     optimize=args.optimize, work_dir=work_dir,
-                    capture=args.capture,
+                    capture=capture,
                 )
             )
         finally:
@@ -348,6 +419,8 @@ def _run_info(args):
         info["artifact"] = args.artifact
         info["static_libs"] = args.static_libs
         info["capture"] = args.capture
+    elif args.capture == "rllvm":
+        info["capture"] = args.capture
     if mode in ("rust", "mixed"):
         info["profile"] = args.profile
         info["codegen_units"] = args.codegen_units
@@ -461,7 +534,7 @@ def build_parser():
                         "fuzz harness (libfuzzer/ziggy/afl). The harness types set "
                         "the default entry: libfuzzer->fuzz_target!, ziggy/afl->main")
     r.add_argument("--artifact", default=None,
-                   help="C/C++: built binary/object/archive to extract bitcode "
+                   help="C/C++ (any target with --capture rllvm): built binary/object/archive to extract bitcode "
                         "from, relative to --project (default: auto-detect the "
                         "build product)")
     r.add_argument("--build-cmd", default=None, dest="build_cmd",
@@ -481,8 +554,10 @@ def build_parser():
                         "in the tree")
     r.add_argument("--capture", default=os.environ.get("REACHABILITY_CAPTURE", "gllvm"),
                    choices=list(acquire_c.CAPTURES),
-                   help="C/C++: wrappers that record bitcode during the build, "
-                        "gllvm (gclang/get-bc) or rllvm (rllvm-cc/rllvm-get-bc) "
+                   help="wrappers that record bitcode during the build: gllvm "
+                        "(gclang/get-bc, C/C++ only) or rllvm (rllvm-cc, "
+                        "rllvm-rustc, rllvm-get-bc), which also captures Rust "
+                        "and extracts every language from the linked artifact "
                         "(default: $REACHABILITY_CAPTURE, else gllvm)")
     r.add_argument("--entry", action="append", default=None,
                    help="entry function (repeatable; overrides the --lang default). "

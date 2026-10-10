@@ -382,6 +382,29 @@ def test_find_artifacts_skips_build_system_probes(tmp_path, probe):
     assert acquire_c.find_artifacts(str(tmp_path)) == [str(real)]
 
 
+@pytest.mark.parametrize("internal", [
+    "deps/app-0123456789abcdef",
+    "build/foo-0123456789abcdef/build-script-build",
+    "build/app/0123456789abcdef/out/app",
+])
+def test_find_artifacts_prefers_cargo_uplifted_output(tmp_path, internal):
+    profile = tmp_path / "target" / "release"
+    profile.mkdir(parents=True)
+    (profile / ".cargo-lock").write_bytes(b"")
+    _write(str(profile / "app"), _fake_elf(2), executable=True)
+    path = profile / internal
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write(str(path), _fake_elf(2), executable=True)
+    assert acquire_c.find_artifacts(str(tmp_path)) == [str(profile / "app")]
+
+
+def test_find_artifacts_keeps_c_build_directories(tmp_path):
+    app = tmp_path / "build" / "app"
+    app.parent.mkdir()
+    _write(str(app), _fake_elf(2), executable=True)
+    assert acquire_c.find_artifacts(str(tmp_path)) == [str(app)]
+
+
 def test_classify_recognizes_thin_archive(tmp_path):
     thin = tmp_path / "libfoo.a"
     thin.write_bytes(b"!<thin>\n" + b"\x00" * 16)

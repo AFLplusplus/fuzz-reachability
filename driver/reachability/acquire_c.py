@@ -49,6 +49,7 @@ _SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv",
               ".cache"}
 _PROBE_DIRS = {"CMakeFiles", "meson-private"}
 _PROBE_PREFIXES = ("conftest", ".conftest")
+_CARGO_INTERNAL_DIRS = {".fingerprint", "fingerprint", "build", "deps", "incremental"}
 BUILD_DIR = "build-reachability"
 _BC_MARKERS = (b".llvm_bc", b"__llvm_bc", b".rllvm_bc", b"__rllvm_bc")
 _ARCHIVE_MAGIC = b"!<arch>\n"
@@ -101,11 +102,31 @@ def _build_env(clang_bindir: str, optimize: bool = False) -> dict:
     return env
 
 
+_RLLVM_RUSTC_WRAPPER = """#!/bin/sh
+exec rllvm-rustc "$@" $REACH_EXTRA_RUSTFLAGS
+"""
+
+
+def _rllvm_rustc_env(env, work_dir, rustc_flags):
+    """Wrap every rustc call in rllvm-rustc, appending `rustc_flags` after the
+    ones cargo or a fuzzing tool passes so they win over the profile."""
+    wrapper = os.path.join(work_dir, "rllvm-rustc-wrapper.sh")
+    try:
+        with open(wrapper, "w") as fh:
+            fh.write(_RLLVM_RUSTC_WRAPPER)
+        os.chmod(wrapper, 0o755)
+    except OSError as exc:
+        raise AcquireError(f"cannot create rllvm-rustc wrapper: {exc}") from exc
+    env["RUSTC_WRAPPER"] = wrapper
+    env["REACH_EXTRA_RUSTFLAGS"] = " ".join(rustc_flags)
+    return env
+
+
 def _toml_string(value):
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _rllvm_env(env, tc, work_dir, optimize=False):
+def _rllvm_env(env, tc, work_dir, optimize=False, wrap_c=True):
     """Point rllvm-cc/rllvm-cxx at the exact toolchain through a private
     RLLVM_CONFIG. The tools rllvm needs beyond clang and llvm-link come from
     clang's own (symlink-resolved) bin directory. The bitcode-only flags are the
@@ -139,8 +160,9 @@ def _rllvm_env(env, tc, work_dir, optimize=False):
             fh.write("\n".join(lines) + "\n")
     except OSError as exc:
         raise AcquireError(f"cannot write rllvm config: {exc}") from exc
-    env["CC"] = "rllvm-cc"
-    env["CXX"] = "rllvm-cxx"
+    if wrap_c:
+        env["CC"] = "rllvm-cc"
+        env["CXX"] = "rllvm-cxx"
     env["RLLVM_CONFIG"] = config
     env.pop("LLVM_BITCODE_GENERATION_FLAGS", None)
     return env
@@ -335,9 +357,15 @@ def _classify(path):
     return None
 
 
-def _built_files(project_dir):
+def _built_files(project_dir, skip_cargo_internals=False):
+    """Files under `project_dir`. skip_cargo_internals also prunes cargo's own
+    directories inside a profile directory (the one holding `.cargo-lock`);
+    the final artifacts are uplifted next to them."""
     for root, dirs, files in os.walk(project_dir):
-        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS and d not in _PROBE_DIRS]
+        skip = _SKIP_DIRS | _PROBE_DIRS
+        if skip_cargo_internals and ".cargo-lock" in files:
+            skip = skip | _CARGO_INTERNAL_DIRS
+        dirs[:] = [d for d in dirs if d not in skip]
         for f in files:
             if f.startswith(_PROBE_PREFIXES):
                 continue
@@ -355,10 +383,12 @@ def find_artifacts(project_dir, newer_than=None):
     gclang too: CMake's `CMakeFiles/` (compiler-ID and ABI-check executables),
     Meson's `meson-private/` (sanity-check executable) and autoconf's `conftest*`
     files, including the hidden `.conftest.c.o` gllvm leaves behind, which
-    configure's `rm -f conftest*` does not remove.
+    configure's `rm -f conftest*` does not remove. Cargo's internal copies
+    (`deps/`, build scripts, incremental objects) are skipped in favour of the
+    artifacts cargo uplifts.
     """
     cands = []
-    for p in _built_files(project_dir):
+    for p in _built_files(project_dir, skip_cargo_internals=True):
         kind = _classify(p)
         if kind is None:
             continue
@@ -658,7 +688,8 @@ def _run_build(cmd, project_dir, env, verbose):
 
 def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
                       static_libs="auto", verbose=False, optimize=False,
-                      work_dir=None, capture="gllvm"):
+                      work_dir=None, capture="gllvm", rustc_flags=None,
+                      wrap_c=True, extra_env=None):
     """Build `project_dir` with gllvm (or rllvm) wrappers and extract its bitcode.
 
     artifact: path (relative to project_dir) of the built binary/object/archive.
@@ -672,10 +703,14 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     no function the source defines is optimized away); when True leave the build's
     own optimization in place.
     capture: "gllvm" (default) or "rllvm", the wrappers that record bitcode.
+    rustc_flags: rllvm only; when given, rustc is wrapped in rllvm-rustc with
+    these flags appended, so Rust crates linked into the artifact are extracted
+    with it. wrap_c=False leaves CC/CXX alone (a Rust-only target).
+    extra_env: further variables for the build.
 
     Returns a list of absolute .bc paths to be linked together.
     """
-    tools = _CAPTURE_TOOLS[capture]
+    tools = _CAPTURE_TOOLS[capture] + (("rllvm-rustc",) if rustc_flags is not None else ())
     missing = [t for t in tools if not shutil.which(t)]
     if missing:
         hint = (" (https://github.com/h1994st/rllvm)" if capture == "rllvm"
@@ -687,13 +722,16 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     if capture == "rllvm":
         env = dict(os.environ)
         env["LC_ALL"] = "C"
-        env = _rllvm_env(env, tc, work_dir, optimize=optimize)
+        env = _rllvm_env(env, tc, work_dir, optimize=optimize, wrap_c=wrap_c)
+        if rustc_flags is not None:
+            env = _rllvm_rustc_env(env, work_dir, rustc_flags)
     else:
         clang_bindir = os.path.dirname(os.path.abspath(tc.clang))
         env = _gllvm_env(
             _build_env(clang_bindir, optimize=optimize), tc,
             tool_dir=os.path.join(work_dir, "gllvm-tools"),
         )
+    env.update(extra_env or {})
     cmd = build_cmd or ["make"]
     before = time.time()
     if verbose:
