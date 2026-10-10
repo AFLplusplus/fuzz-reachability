@@ -1,8 +1,8 @@
-"""C / C++ bitcode acquisition via gllvm.
+"""C / C++ bitcode acquisition via gllvm or rllvm.
 
-Build the project with the gclang/gclang++ wrappers (which embed bitcode-path
-metadata into each object), then run get-bc on the built artifact to extract a
-whole-program .bc. The artifact is auto-detected from the build output when not
+Build the project with the gclang/gclang++ wrappers (or rllvm-cc/rllvm-cxx, with
+capture="rllvm"; both embed bitcode-path metadata into each object), then run
+get-bc (or rllvm-get-bc) on the built artifact to extract a whole-program .bc. The artifact is auto-detected from the build output when not
 given explicitly. Independent of the project's own LTO setup.
 
 When the build command is auto-detected (no explicit --build-cmd), it also forces
@@ -26,6 +26,7 @@ provide exact object provenance; incomplete extraction fails the run.
 import atexit
 from collections import deque
 import hashlib
+import json
 import mmap
 import os
 import re
@@ -49,9 +50,14 @@ _SKIP_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv",
 _PROBE_DIRS = {"CMakeFiles", "meson-private"}
 _PROBE_PREFIXES = ("conftest", ".conftest")
 BUILD_DIR = "build-reachability"
-_BC_MARKERS = (b".llvm_bc", b"__llvm_bc")
+_BC_MARKERS = (b".llvm_bc", b"__llvm_bc", b".rllvm_bc", b"__rllvm_bc")
 _ARCHIVE_MAGIC = b"!<arch>\n"
 _THIN_ARCHIVE_MAGIC = b"!<thin>\n"
+CAPTURES = ("gllvm", "rllvm")
+_CAPTURE_TOOLS = {
+    "gllvm": ("gclang", "gclang++", "get-bc"),
+    "rllvm": ("rllvm-cc", "rllvm-cxx", "rllvm-get-bc", "rllvm-info"),
+}
 _KIND_RANK = {"exec": 3, "shared": 2, "archive": 1, "object": 0}
 _MACHO_MAGIC = (0xFEEDFACE, 0xFEEDFACF, 0xCEFAEDFE, 0xCFFAEDFE, 0xBEBAFECA, 0xBFBAFECA)
 
@@ -62,6 +68,16 @@ _build_looks_cached = build_looks_cached
 _BITCODE_NO_INLINE_FLAGS = "-fno-inline -fno-inline-functions"
 _BITCODE_SOURCE_FAITHFUL_FLAGS = "-O0 " + _BITCODE_NO_INLINE_FLAGS
 _OPT_LEVEL_FLAG = re.compile(r"(?:\A|\s)-O")
+
+
+def _bitcode_generation_flags(inherited: str, optimize: bool) -> str:
+    """Flags for the bitcode compile only. An inherited -O level is kept and
+    only the no-inlining flags are added; optimize=True adds nothing."""
+    if optimize:
+        return inherited
+    injected = (_BITCODE_NO_INLINE_FLAGS if _OPT_LEVEL_FLAG.search(inherited)
+                else _BITCODE_SOURCE_FAITHFUL_FLAGS)
+    return (inherited + " " + injected).strip()
 
 
 def _build_env(clang_bindir: str, optimize: bool = False) -> dict:
@@ -80,10 +96,53 @@ def _build_env(clang_bindir: str, optimize: bool = False) -> dict:
     env["LLVM_COMPILER_PATH"] = clang_bindir
     env["LC_ALL"] = "C"
     if not optimize:
-        inherited = env.get("LLVM_BITCODE_GENERATION_FLAGS", "")
-        injected = (_BITCODE_NO_INLINE_FLAGS if _OPT_LEVEL_FLAG.search(inherited)
-                    else _BITCODE_SOURCE_FAITHFUL_FLAGS)
-        env["LLVM_BITCODE_GENERATION_FLAGS"] = (inherited + " " + injected).strip()
+        env["LLVM_BITCODE_GENERATION_FLAGS"] = _bitcode_generation_flags(
+            env.get("LLVM_BITCODE_GENERATION_FLAGS", ""), optimize)
+    return env
+
+
+def _toml_string(value):
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _rllvm_env(env, tc, work_dir, optimize=False):
+    """Point rllvm-cc/rllvm-cxx at the exact toolchain through a private
+    RLLVM_CONFIG. The tools rllvm needs beyond clang and llvm-link come from
+    clang's own (symlink-resolved) bin directory. The bitcode-only flags are the
+    ones _build_env gives gllvm, including an inherited
+    LLVM_BITCODE_GENERATION_FLAGS."""
+    def resolved(value):
+        return os.path.abspath(shutil.which(value) or value)
+
+    clang = resolved(tc.clang)
+    bindir = os.path.dirname(os.path.realpath(clang))
+    keys = {
+        "llvm_config_filepath": os.path.join(bindir, "llvm-config"),
+        "clang_filepath": clang,
+        "clangxx_filepath": resolved(getattr(tc, "clangxx", clang)),
+        "llvm_ar_filepath": os.path.join(bindir, "llvm-ar"),
+        "llvm_link_filepath": resolved(getattr(tc, "llvm_link", "llvm-link")),
+        "llvm_bindir": bindir,
+    }
+    objcopy = os.path.join(bindir, "llvm-objcopy")
+    if os.path.exists(objcopy):
+        keys["llvm_objcopy_filepath"] = objcopy
+    lines = [f"{key} = {_toml_string(value)}" for key, value in keys.items()]
+    flags = _bitcode_generation_flags(
+        env.get("LLVM_BITCODE_GENERATION_FLAGS", ""), optimize).split()
+    if flags:
+        lines.append("bitcode_generation_flags = ["
+                     + ", ".join(_toml_string(f) for f in flags) + "]")
+    config = os.path.join(work_dir, "rllvm.toml")
+    try:
+        with open(config, "w") as fh:
+            fh.write("\n".join(lines) + "\n")
+    except OSError as exc:
+        raise AcquireError(f"cannot write rllvm config: {exc}") from exc
+    env["CC"] = "rllvm-cc"
+    env["CXX"] = "rllvm-cxx"
+    env["RLLVM_CONFIG"] = config
+    env.pop("LLVM_BITCODE_GENERATION_FLAGS", None)
     return env
 
 
@@ -323,28 +382,61 @@ def _artifact_score(path, newer_than=None):
     return (_has_bitcode_marker(path), fresh, _KIND_RANK.get(kind, -1))
 
 
-def _extract_bc(art, out, archive=False, manifest=False, env=None):
+def _rllvm_modules(art, env=None):
+    """Bitcode paths rllvm recorded in `art`, from its `rllvm-info --json`
+    catalog. Returns (paths, error); paths is None on failure."""
+    try:
+        r = subprocess.run(["rllvm-info", "--json", art], capture_output=True,
+                           env=env)
+    except OSError as exc:
+        return None, f"cannot run rllvm-info: {exc}"
+    if r.returncode != 0:
+        return None, tail(r.stderr or r.stdout) or f"rllvm-info exited {r.returncode}"
+    try:
+        modules = json.loads(r.stdout)["modules"]
+    except (ValueError, KeyError, TypeError) as exc:
+        return None, f"unreadable rllvm-info catalog: {exc}"
+    return [m["path"] for m in modules if m.get("path")], ""
+
+
+def _extract_bc(art, out, archive=False, manifest=False, env=None,
+                capture="gllvm"):
     """Run get-bc on `art` into `out`. `archive` uses -b to build one whole-archive
     module (instead of a lazy bitcode archive); `manifest` also writes the linked
-    object list to `<out>.llvm.manifest`. Returns (ok, stderr)."""
-    cmd = ["get-bc"]
-    if archive:
-        cmd.append("-b")
-    if manifest:
-        cmd.append("-m")
-    cmd += ["-o", out, art]
+    object list to `<out>.llvm.manifest`. Returns (ok, stderr).
+
+    With capture="rllvm", rllvm-get-bc already links an archive into one module,
+    and the manifest is written from rllvm's catalog of `art`."""
+    if capture == "rllvm":
+        cmd = ["rllvm-get-bc", "-o", out, art]
+    else:
+        cmd = ["get-bc"]
+        if archive:
+            cmd.append("-b")
+        if manifest:
+            cmd.append("-m")
+        cmd += ["-o", out, art]
     try:
         r = subprocess.run(cmd, capture_output=True, env=env)
     except OSError as exc:
-        return False, f"cannot run get-bc: {exc}"
+        return False, f"cannot run {cmd[0]}: {exc}"
     try:
         exists = os.path.exists(out) and os.path.getsize(out) > 0
     except OSError as exc:
-        return False, f"cannot inspect get-bc output {out}: {exc}"
+        return False, f"cannot inspect {cmd[0]} output {out}: {exc}"
     ok = r.returncode == 0 and exists
     detail = tail(r.stderr or r.stdout)
     if not ok and not detail:
-        detail = f"get-bc exited {r.returncode} without usable output"
+        detail = f"{cmd[0]} exited {r.returncode} without usable output"
+    if ok and manifest and capture == "rllvm":
+        paths, err = _rllvm_modules(art, env)
+        if paths is None:
+            return False, err
+        try:
+            with open(out + ".llvm.manifest", "w") as fh:
+                fh.write("".join(p + "\n" for p in paths))
+        except OSError as exc:
+            return False, f"cannot write manifest: {exc}"
     return ok, detail
 
 
@@ -391,17 +483,27 @@ def _archive_members(archive_path):
     return {os.path.basename(line) for line in _archive_listing(archive_path)}
 
 
+def _rllvm_archive_members(archive_path, env=None):
+    """Real paths of the bitcode rllvm recorded for each member of a static
+    archive, which the target's manifest names exactly."""
+    paths, err = _rllvm_modules(archive_path, env)
+    if paths is None:
+        raise AcquireError(f"cannot list static archive members: {archive_path}: {err}")
+    return {os.path.realpath(p) for p in paths}
+
+
 def _bitcode_archives(project_dir):
-    """Static archives under `project_dir` that carry gllvm bitcode."""
+    """Static archives under `project_dir` that carry gllvm or rllvm bitcode."""
     return [p for p in _built_files(project_dir)
             if _classify(p) == "archive" and _has_bitcode_marker(p)]
 
 
-def _plan_static_libs(manifest, archive_members, mode):
+def _plan_static_libs(manifest, archive_members, mode, key=_member_name):
     """Decide which static archives to fully include.
 
     manifest: per-object .bc paths the linker pulled into the target.
-    archive_members: {archive_path: {member object name, ...}}.
+    archive_members: {archive_path: {member key, ...}}, where `key` maps a
+    manifest path to the same kind of member key (gllvm: the member object name).
     mode: "auto" includes only archives the target links (members intersect the
     manifest); "all" includes every archive given.
 
@@ -409,7 +511,7 @@ def _plan_static_libs(manifest, archive_members, mode):
     (non-archive) objects itself, so merging them with the full archives produces
     no duplicate symbols.
     """
-    manifest_member_names = {_member_name(p) for p in manifest}
+    manifest_member_names = {key(p) for p in manifest}
     chosen = []
     ordered = sorted(archive_members.items(),
                      key=lambda kv: len(kv[1]), reverse=True)
@@ -422,7 +524,7 @@ def _plan_static_libs(manifest, archive_members, mode):
 
 
 def _include_static_libs(project_dir, art, kind, primary_bc, mode,
-                         work_dir=None, env=None):
+                         work_dir=None, env=None, capture="gllvm"):
     """Replace `primary_bc` with the target's own objects plus the full contents
     of the static archives it links. Returns the replacement bc list, or None when
     there is no relevant archive."""
@@ -440,11 +542,16 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode,
                 "cannot complete static-library expansion"
             )
 
-    members = {a: _archive_members(a) for a in archives}
+    if capture == "rllvm":
+        members = {a: _rllvm_archive_members(a, env) for a in archives}
+        key = os.path.realpath
+    else:
+        members = {a: _archive_members(a) for a in archives}
+        key = _member_name
     for archive, names in sorted(members.items()):
         if not names:
             print(f"static library (genuinely empty): {os.path.relpath(archive, project_dir)}")
-    chosen = _plan_static_libs(manifest, members, mode)
+    chosen = _plan_static_libs(manifest, members, mode, key=key)
     if not chosen:
         return None
 
@@ -456,7 +563,8 @@ def _include_static_libs(project_dir, art, kind, primary_bc, mode,
             out = os.path.join(work_dir, f"{os.path.basename(a)}-{tag}.full.bc")
         else:
             out = a + ".full.bc"
-        ok, err = _extract_bc(a, out, archive=True, manifest=True, env=env)
+        ok, err = _extract_bc(a, out, archive=True, manifest=True, env=env,
+                              capture=capture)
         if ok:
             objects = _manifest_objects(out + ".llvm.manifest")
             if objects:
@@ -550,8 +658,8 @@ def _run_build(cmd, project_dir, env, verbose):
 
 def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
                       static_libs="auto", verbose=False, optimize=False,
-                      work_dir=None):
-    """Build `project_dir` with gllvm wrappers and extract its bitcode.
+                      work_dir=None, capture="gllvm"):
+    """Build `project_dir` with gllvm (or rllvm) wrappers and extract its bitcode.
 
     artifact: path (relative to project_dir) of the built binary/object/archive.
     When None, the build product is auto-detected. An explicit path is strict.
@@ -563,23 +671,29 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     -fno-inline in the bitcode compile only, via LLVM_BITCODE_GENERATION_FLAGS, so
     no function the source defines is optimized away); when True leave the build's
     own optimization in place.
+    capture: "gllvm" (default) or "rllvm", the wrappers that record bitcode.
 
     Returns a list of absolute .bc paths to be linked together.
     """
-    missing = [t for t in ("gclang", "gclang++", "get-bc") if not shutil.which(t)]
+    tools = _CAPTURE_TOOLS[capture]
+    missing = [t for t in tools if not shutil.which(t)]
     if missing:
-        raise AcquireError(
-            f"{', '.join(missing)} not found on PATH; run scripts/setup.sh and "
-            'export PATH="$(go env GOPATH)/bin:$PATH"'
-        )
+        hint = (" (https://github.com/h1994st/rllvm)" if capture == "rllvm"
+                else '; run scripts/setup.sh and export PATH="$(go env GOPATH)/bin:$PATH"')
+        raise AcquireError(f"{', '.join(missing)} not found on PATH{hint}")
     if work_dir is None:
         work_dir = tempfile.mkdtemp(prefix="reach-c-")
         atexit.register(shutil.rmtree, work_dir, ignore_errors=True)
-    clang_bindir = os.path.dirname(os.path.abspath(tc.clang))
-    env = _gllvm_env(
-        _build_env(clang_bindir, optimize=optimize), tc,
-        tool_dir=os.path.join(work_dir, "gllvm-tools"),
-    )
+    if capture == "rllvm":
+        env = dict(os.environ)
+        env["LC_ALL"] = "C"
+        env = _rllvm_env(env, tc, work_dir, optimize=optimize)
+    else:
+        clang_bindir = os.path.dirname(os.path.abspath(tc.clang))
+        env = _gllvm_env(
+            _build_env(clang_bindir, optimize=optimize), tc,
+            tool_dir=os.path.join(work_dir, "gllvm-tools"),
+        )
     cmd = build_cmd or ["make"]
     before = time.time()
     if verbose:
@@ -632,7 +746,8 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
         tag = hashlib.sha256(os.path.realpath(cand).encode()).hexdigest()[:16]
         out = os.path.join(work_dir, f"{os.path.basename(cand)}-{tag}.bc")
         ok, err = _extract_bc(cand, out, archive=(ck == "archive"),
-                              manifest=(ck in ("exec", "shared")), env=env)
+                              manifest=(ck in ("exec", "shared")), env=env,
+                              capture=capture)
         if ok:
             art, kind, primary = cand, ck, out
             if not explicit:
@@ -657,7 +772,7 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     if static_libs != "none":
         expanded = _include_static_libs(
             project_dir, art, kind, primary, static_libs,
-            work_dir=work_dir, env=env,
+            work_dir=work_dir, env=env, capture=capture,
         )
         if expanded is not None:
             return expanded

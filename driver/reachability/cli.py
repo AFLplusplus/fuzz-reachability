@@ -65,7 +65,7 @@ def _acquire(args, tc, verbose=False, work_dir=None):
     if mode in ("c", "cpp", "mixed"):
         # An explicit --build-cmd wins; otherwise auto-detect the build system
         # from the project's files. Either runs under a shell so it can be a
-        # compound command; gllvm wrappers are injected via env.
+        # compound command; gllvm or rllvm wrappers are injected via env.
         build = args.build_cmd or acquire_c.detect_build_cmd(args.project)
         if args.build_cmd:
             if verbose:
@@ -81,6 +81,7 @@ def _acquire(args, tc, verbose=False, work_dir=None):
                     args.project, tc, args.artifact, build_cmd,
                     static_libs=args.static_libs, verbose=verbose,
                     optimize=args.optimize, work_dir=work_dir,
+                    capture=args.capture,
                 )
             )
         finally:
@@ -346,6 +347,7 @@ def _run_info(args):
     if mode in ("c", "cpp", "mixed"):
         info["artifact"] = args.artifact
         info["static_libs"] = args.static_libs
+        info["capture"] = args.capture
     if mode in ("rust", "mixed"):
         info["profile"] = args.profile
         info["codegen_units"] = args.codegen_units
@@ -477,6 +479,11 @@ def build_parser():
                         "are reported, not silently dropped); 'none' keeps only "
                         "the linker's view; 'all' includes every bitcode archive "
                         "in the tree")
+    r.add_argument("--capture", default=os.environ.get("REACHABILITY_CAPTURE", "gllvm"),
+                   choices=list(acquire_c.CAPTURES),
+                   help="C/C++: wrappers that record bitcode during the build, "
+                        "gllvm (gclang/get-bc) or rllvm (rllvm-cc/rllvm-get-bc) "
+                        "(default: $REACHABILITY_CAPTURE, else gllvm)")
     r.add_argument("--entry", action="append", default=None,
                    help="entry function (repeatable; overrides the --lang default). "
                         "Accepts a mangled symbol, a demangled name, a '::name' "
