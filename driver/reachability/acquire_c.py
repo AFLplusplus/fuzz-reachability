@@ -51,6 +51,11 @@ _PROBE_DIRS = {"CMakeFiles", "meson-private"}
 _PROBE_PREFIXES = ("conftest", ".conftest")
 _CARGO_INTERNAL_DIRS = {".fingerprint", "fingerprint", "build", "deps", "incremental"}
 BUILD_DIR = "build-reachability"
+# Sections that record the per-object bitcode paths: gllvm's `.llvm_bc` (Mach-O
+# `__llvm_bc`) and rllvm's `.rllvm_bc` (`__rllvm_bc`). rllvm uses names of its
+# own because LLVM's `.llvmbc`, which it once used for COFF and WebAssembly, is
+# the section `clang -fembed-bitcode` writes and wasm-ld drops at link time.
+# Neither name contains the other, so both are listed.
 _BC_MARKERS = (b".llvm_bc", b"__llvm_bc", b".rllvm_bc", b"__rllvm_bc")
 _ARCHIVE_MAGIC = b"!<arch>\n"
 _THIN_ARCHIVE_MAGIC = b"!<thin>\n"

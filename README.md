@@ -64,15 +64,22 @@ flowchart TD
    driver (Python)                   analyzer (C++ / LLVM)
    ───────────────                   ─────────────────────
    acquire bitcode ─┐
-   C/C++ : gllvm    │   llvm-link    load .bc → build call graph →
-   Rust  : rustc    ├─► merge .bc ─► resolve indirect calls → BFS from
-   --emit=llvm-bc  ─┘                entry → JSON report + coverage lists
+   C/C++ : gllvm    │
+   Rust  : rustc    │   llvm-link    load .bc → build call graph →
+   --emit=llvm-bc   ├─► merge .bc ─► resolve indirect calls → BFS from
+                    │                entry → JSON report + coverage lists
+   or, with         │
+   --capture rllvm: │
+   C/C++/Rust from ─┘
+   one build
 ```
 
 The driver builds the project so that it emits bitcode, and merges it with
-`llvm-link`. The analyzer builds the call graph, resolves indirect calls by
-type and by tracking where function addresses flow, and walks the graph from
-the entries; see [docs/analysis.md](docs/analysis.md).
+`llvm-link`. With `--capture rllvm`, one build records the C, C++ and Rust
+bitcode together, and `rllvm-get-bc` extracts it from the linked artifact. The
+analyzer builds the call graph, resolves indirect calls by type and by
+tracking where function addresses flow, and walks the graph from the entries;
+see [docs/analysis.md](docs/analysis.md).
 
 ## Prerequisites
 
@@ -82,9 +89,10 @@ the entries; see [docs/analysis.md](docs/analysis.md).
   ship old LLVM versions, so install it from https://apt.llvm.org/llvm.sh,
   especially for Rust.
 - **Go** (to install gllvm), **Python 3.10 or newer**, and a **C++17**
-  compiler. [rllvm](https://github.com/h1994st/rllvm) 0.7.1 or newer can
-  replace gllvm with `--capture rllvm`, see
-  [Capturing with rllvm](docs/usage.md#capturing-with-rllvm).
+  compiler.
+  - Instead of gllvm: [rllvm](https://github.com/h1994st/rllvm) 0.7.1 or
+    newer, with `--capture rllvm`; see
+    [Capturing with rllvm](docs/usage.md#capturing-with-rllvm).
 - For Rust targets: a nightly **rustc** and **cargo** whose LLVM is not newer
   than yours.
 - [AFL++](https://github.com/AFLplusplus/AFLplusplus) from commit
