@@ -320,8 +320,9 @@ and `llvm-link` as for gllvm, and passes the
 `LLVM_BITCODE_GENERATION_FLAGS`, as rllvm's `bitcode_generation_flags`, which
 also apply to the bitcode compile only. Build command detection, artifact
 selection and static libraries work as with gllvm. Archive members are matched
-by the exact bitcode paths rllvm records rather than by object name, which
-libtool's `libfoo_la-bar.o` member names would otherwise defeat.
+by the exact bitcode paths rllvm records rather than by object name: rllvm
+names a bitcode file after its source and compilation
+(`.parser_<hash>.o.bc`), not after the member object (`parser.o`).
 
 **Rust and mixed.** rllvm also wraps rustc, so every target takes its bitcode
 from one build and one extraction from the linked artifact, with no separate

@@ -179,7 +179,7 @@ def test_extract_bc_rllvm_writes_manifest_from_catalog(tmp_path, monkeypatch):
 
 
 def test_include_static_libs_rllvm_matches_members_by_bitcode_path(monkeypatch):
-    # rllvm names bitcode after the source, not the libtool member object.
+    # rllvm names bitcode after the source and a hash, not the member object.
     primary = ["/p/app/.main_1.o.bc", "/p/lib/.parser_2.o.bc"]
     members = ["/p/lib/.parser_2.o.bc", "/p/lib/.tree_3.o.bc"]
     manifests = {
