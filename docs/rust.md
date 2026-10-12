@@ -9,7 +9,9 @@ Rust projects are built in one of two ways:
 
 Both add `--emit=llvm-bc` to every rustc call and collect one bitcode file per
 crate and codegen unit. rustc's LLVM must not be newer than the analyzer's;
-see [llvm-support.md](llvm-support.md).
+see [llvm-support.md](llvm-support.md). With `--capture rllvm`, both instead
+take the bitcode from the linked artifact; see
+[Capturing with rllvm](usage.md#capturing-with-rllvm).
 
 The outputs on this page come from reachability 1.2-dev (commit `f5adeab`)
 with LLVM 23 and rustc 1.99.0-nightly (2026-07-12, LLVM 22.1.8).

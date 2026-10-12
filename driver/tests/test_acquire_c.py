@@ -1,3 +1,4 @@
+import json
 import os
 import shutil
 import struct
@@ -5,6 +6,11 @@ import subprocess
 import time
 
 import pytest
+
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 from reachability import acquire_c
 
@@ -98,6 +104,99 @@ def test_build_env_preserves_inherited_bcgen_flags(monkeypatch):
     flags = env["LLVM_BITCODE_GENERATION_FLAGS"]
     assert "-mllvm -x" in flags
     assert "-fno-inline" in flags
+
+
+def _rllvm_toolchain(tmp_path):
+    bindir = tmp_path / "llvm" / "bin"
+    bindir.mkdir(parents=True)
+    for name in ("clang", "clang++", "llvm-link", "llvm-config", "llvm-ar",
+                 "llvm-objcopy"):
+        _write(bindir / name, b"", executable=True)
+    return bindir, type("TC", (), {
+        "clang": str(bindir / "clang"),
+        "clangxx": str(bindir / "clang++"),
+        "llvm_link": str(bindir / "llvm-link"),
+    })()
+
+
+def test_rllvm_env_pins_exact_tools(tmp_path):
+    bindir, tc = _rllvm_toolchain(tmp_path)
+    env = acquire_c._rllvm_env({}, tc, str(tmp_path))
+    assert env["CC"] == "rllvm-cc"
+    assert env["CXX"] == "rllvm-cxx"
+    with open(env["RLLVM_CONFIG"], "rb") as fh:
+        config = tomllib.load(fh)
+    assert config["clang_filepath"] == tc.clang
+    assert config["clangxx_filepath"] == tc.clangxx
+    assert config["llvm_link_filepath"] == tc.llvm_link
+    assert config["llvm_config_filepath"] == str(bindir / "llvm-config")
+    assert config["llvm_ar_filepath"] == str(bindir / "llvm-ar")
+    assert config["llvm_objcopy_filepath"] == str(bindir / "llvm-objcopy")
+    assert config["bitcode_generation_flags"] == [
+        "-O0", "-fno-inline", "-fno-inline-functions"]
+
+
+def test_rllvm_env_keeps_inherited_opt_level(tmp_path):
+    _, tc = _rllvm_toolchain(tmp_path)
+    env = acquire_c._rllvm_env(
+        {"LLVM_BITCODE_GENERATION_FLAGS": "-O1"}, tc, str(tmp_path))
+    with open(env["RLLVM_CONFIG"], "rb") as fh:
+        flags = tomllib.load(fh)["bitcode_generation_flags"]
+    assert flags == ["-O1", "-fno-inline", "-fno-inline-functions"]
+    assert "LLVM_BITCODE_GENERATION_FLAGS" not in env
+
+
+def test_rllvm_env_optimize_omits_flags(tmp_path):
+    _, tc = _rllvm_toolchain(tmp_path)
+    env = acquire_c._rllvm_env({}, tc, str(tmp_path), optimize=True)
+    with open(env["RLLVM_CONFIG"], "rb") as fh:
+        assert "bitcode_generation_flags" not in tomllib.load(fh)
+
+
+def test_extract_bc_rllvm_writes_manifest_from_catalog(tmp_path, monkeypatch):
+    out = tmp_path / "app.bc"
+    calls = []
+
+    def run(cmd, **kwargs):
+        calls.append(cmd)
+        stdout = b""
+        if cmd[0] == "rllvm-get-bc":
+            out.write_bytes(b"BC")
+        else:
+            stdout = json.dumps({"modules": [
+                {"path": "/p/.main_1.o.bc"}, {"path": "/p/.util_2.o.bc"},
+            ]}).encode()
+        return type("R", (), {"returncode": 0, "stdout": stdout, "stderr": b""})()
+
+    monkeypatch.setattr(acquire_c.subprocess, "run", run)
+    ok, _ = acquire_c._extract_bc("/p/app", str(out), archive=True,
+                                  manifest=True, capture="rllvm")
+    assert ok
+    assert calls == [["rllvm-get-bc", "-o", str(out), "/p/app"],
+                     ["rllvm-info", "--json", "/p/app"]]
+    assert (tmp_path / "app.bc.llvm.manifest").read_text() == (
+        "/p/.main_1.o.bc\n/p/.util_2.o.bc\n")
+
+
+def test_include_static_libs_rllvm_matches_members_by_bitcode_path(monkeypatch):
+    # rllvm names bitcode after the source and a hash, not the member object.
+    primary = ["/p/app/.main_1.o.bc", "/p/lib/.parser_2.o.bc"]
+    members = ["/p/lib/.parser_2.o.bc", "/p/lib/.tree_3.o.bc"]
+    manifests = {
+        "/p/app.bc.llvm.manifest": primary,
+        "/p/lib/libxml2.a.full.bc.llvm.manifest": members,
+    }
+    monkeypatch.setattr(acquire_c, "_bitcode_archives",
+                        lambda p, *a, **k: ["/p/lib/libxml2.a", "/p/other/libother.a"])
+    monkeypatch.setattr(acquire_c, "_rllvm_modules", lambda a, env=None: (
+        members if a == "/p/lib/libxml2.a" else ["/p/other/.other_4.o.bc"], ""))
+    monkeypatch.setattr(acquire_c, "_extract_bc", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(acquire_c, "_manifest_objects",
+                        lambda p: manifests.get(p, []))
+    result = acquire_c._include_static_libs(
+        "/p", "/p/app", "exec", "/p/app.bc", "auto", capture="rllvm",
+    )
+    assert result == ["/p/app/.main_1.o.bc", "/p/lib/libxml2.a.full.bc"]
 
 
 def test_build_looks_cached():
@@ -283,6 +382,42 @@ def test_find_artifacts_skips_build_system_probes(tmp_path, probe):
     assert acquire_c.find_artifacts(str(tmp_path)) == [str(real)]
 
 
+@pytest.mark.parametrize("internal", [
+    "deps/app-0123456789abcdef",
+    "build/foo-0123456789abcdef/build-script-build",
+    "build/app/0123456789abcdef/out/app",
+])
+def test_find_artifacts_prefers_cargo_uplifted_output(tmp_path, internal):
+    profile = tmp_path / "target" / "release"
+    profile.mkdir(parents=True)
+    (profile / ".cargo-lock").write_bytes(b"")
+    _write(str(profile / "app"), _fake_elf(2), executable=True)
+    path = profile / internal
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write(str(path), _fake_elf(2), executable=True)
+    assert acquire_c.find_artifacts(str(tmp_path)) == [str(profile / "app")]
+
+
+def test_find_artifacts_searches_a_workspace_target_outside_the_project(tmp_path):
+    project = tmp_path / "workspace" / "member"
+    project.mkdir(parents=True)
+    profile = tmp_path / "workspace" / "target" / "release"
+    profile.mkdir(parents=True)
+    (profile / ".cargo-lock").write_bytes(b"")
+    _write(str(profile / "app"), _fake_elf(2), executable=True)
+    assert acquire_c.find_artifacts(str(project)) == []
+    found = acquire_c.find_artifacts(
+        str(project), extra_dirs=[str(profile.parent), str(project)])
+    assert found == [str(profile / "app")]
+
+
+def test_find_artifacts_keeps_c_build_directories(tmp_path):
+    app = tmp_path / "build" / "app"
+    app.parent.mkdir()
+    _write(str(app), _fake_elf(2), executable=True)
+    assert acquire_c.find_artifacts(str(tmp_path)) == [str(app)]
+
+
 def test_classify_recognizes_thin_archive(tmp_path):
     thin = tmp_path / "libfoo.a"
     thin.write_bytes(b"!<thin>\n" + b"\x00" * 16)
@@ -402,7 +537,7 @@ def test_include_static_libs_uses_exact_manifest_paths(monkeypatch):
         "/p/b/libsame.a.full.bc.llvm.manifest": ["/p/b/.same.o.bc"],
         "/p/app.bc.llvm.manifest": primary,
     }
-    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: archives)
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p, *a, **k: archives)
     monkeypatch.setattr(acquire_c, "_archive_members", lambda p: {"same.o"})
     monkeypatch.setattr(acquire_c, "_extract_bc", lambda *a, **k: (True, ""))
     monkeypatch.setattr(
@@ -416,7 +551,7 @@ def test_include_static_libs_uses_exact_manifest_paths(monkeypatch):
 
 def test_include_static_libs_partial_failure_is_atomic(monkeypatch):
     archives = ["/p/a.a", "/p/b.a"]
-    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: archives)
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p, *a, **k: archives)
     monkeypatch.setattr(
         acquire_c, "_manifest_objects",
         lambda p: ["/p/.main.o.bc", "/p/.a.o.bc", "/p/.b.o.bc"]
@@ -438,7 +573,7 @@ def test_include_static_libs_partial_failure_is_atomic(monkeypatch):
 
 
 def test_include_static_libs_distinguishes_empty_target_manifest(monkeypatch):
-    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: ["/p/lib.a"])
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p, *a, **k: ["/p/lib.a"])
     monkeypatch.setattr(acquire_c, "_manifest_objects", lambda p: [])
     with pytest.raises(acquire_c.AcquireError, match="empty target manifest"):
         acquire_c._include_static_libs(
@@ -447,7 +582,7 @@ def test_include_static_libs_distinguishes_empty_target_manifest(monkeypatch):
 
 
 def test_include_static_libs_reports_genuinely_empty_archive(monkeypatch, capsys):
-    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p: ["/p/empty.a"])
+    monkeypatch.setattr(acquire_c, "_bitcode_archives", lambda p, *a, **k: ["/p/empty.a"])
     monkeypatch.setattr(acquire_c, "_archive_members", lambda p: set())
     result = acquire_c._include_static_libs(
         "/p", "/p/app", "archive", "/p/app.bc", "all",

@@ -13,6 +13,7 @@ from conftest import FIXTURES
 from reachability import acquire_c, acquire_rust, analyze, link, toolchain
 
 HAVE_GLLVM = shutil.which("gclang") is not None
+HAVE_RLLVM = shutil.which("rllvm-rustc") is not None
 
 
 def assert_soundness(result, expected):
@@ -136,6 +137,28 @@ def test_mixed_c_rust_reachable(analyzer, tmp_path):
     glue_bcs = acquire_c.acquire_c_bitcode(str(work), tc, "glue.o")
     rust_bcs = acquire_rust.acquire_rust_bitcode(str(work))
     merged = link.link_bitcode([*glue_bcs, *rust_bcs], str(work / "merged.bc"), tc)
+    result = analyze.analyze(merged, tc, ["LLVMFuzzerTestOneInput"])
+    assert_soundness(result, _expected("mixed_c_rust"))
+
+
+@pytest.mark.skipif(
+    not (HAVE_RLLVM and shutil.which("cargo")), reason="needs rllvm + cargo"
+)
+def test_mixed_c_rust_reachable_from_one_rllvm_extraction(analyzer, tmp_path):
+    # One build links the C++ glue and the Rust staticlib; one extraction from
+    # the linked binary yields both sides, with no separate Rust collection.
+    work = tmp_path / "mixed_c_rust"
+    shutil.copytree(os.path.join(FIXTURES, "mixed_c_rust"), work,
+                    ignore=shutil.ignore_patterns("target"))
+    tc = _tc(analyzer)
+    _require_rust_readable(tc)
+    build = ("cargo build && make && $CXX glue.o target/debug/libmixed_rust.a "
+             "-shared -o libglue.so")
+    bcs = acquire_c.acquire_c_bitcode(
+        str(work), tc, "libglue.so", ["sh", "-c", build], capture="rllvm",
+        rustc_flags=acquire_rust.rllvm_rustc_flags(str(work)),
+    )
+    merged = link.link_bitcode(bcs, str(work / "merged.bc"), tc)
     result = analyze.analyze(merged, tc, ["LLVMFuzzerTestOneInput"])
     assert_soundness(result, _expected("mixed_c_rust"))
 

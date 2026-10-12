@@ -9,9 +9,14 @@ metric fields mean, and where the analysis is known to fall short.
    driver (Python)                   analyzer (C++ / LLVM)
    ───────────────                   ─────────────────────
    acquire bitcode ─┐
-   C/C++ : gllvm    │   llvm-link    load .bc → build call graph →
-   Rust  : rustc    ├─► merge .bc ─► resolve indirect calls → BFS from
-   --emit=llvm-bc  ─┘                entry → JSON report + coverage lists
+   C/C++ : gllvm    │
+   Rust  : rustc    │   llvm-link    load .bc → build call graph →
+   --emit=llvm-bc   ├─► merge .bc ─► resolve indirect calls → BFS from
+                    │                entry → JSON report + coverage lists
+   or, with         │
+   --capture rllvm: │
+   C/C++/Rust from ─┘
+   one build
 ```
 
 The **driver** (`driver/reachability/`) checks that the LLVM tools agree on one

@@ -140,6 +140,23 @@ def _cargo_metadata(project_dir):
         raise AcquireError(f"cargo metadata returned malformed JSON: {exc}") from exc
 
 
+def cargo_target_dirs(project_dir):
+    """Target directories of the cargo projects at `project_dir` and, for
+    cargo-fuzz, `project_dir/fuzz`. A workspace member builds into the
+    workspace's target directory, outside the member itself."""
+    dirs = []
+    for directory in (project_dir, os.path.join(project_dir, "fuzz")):
+        if not os.path.exists(os.path.join(directory, "Cargo.toml")):
+            continue
+        try:
+            target = _cargo_metadata(directory).get("target_directory")
+        except AcquireError:
+            continue
+        if target:
+            dirs.append(target)
+    return dirs
+
+
 def _profile_manifest(project_dir):
     directory = os.path.realpath(project_dir)
     fallback = None
@@ -276,13 +293,36 @@ def _compose_rustflags(project_dir, codegen_units=1, optimize=False,
         existing = _config_rustflags(project_dir)
     flags = _emit_flags(codegen_units) + existing
     if not optimize:
-        da, oc = _resolve_assertions(project_dir, profile)
-        flags = flags + [
-            "-Copt-level=0",
-            f"-Cdebug-assertions={'on' if da else 'off'}",
-            f"-Coverflow-checks={'on' if oc else 'off'}",
-        ]
+        flags = flags + _source_faithful_flags(project_dir, profile)
     return flags + _mangling_flags(mangling)
+
+
+def _source_faithful_flags(project_dir, profile):
+    """-Copt-level=0 with debug-assertions and overflow-checks pinned to the
+    profile's values (see _compose_rustflags)."""
+    da, oc = _resolve_assertions(project_dir, profile)
+    return [
+        "-Copt-level=0",
+        f"-Cdebug-assertions={'on' if da else 'off'}",
+        f"-Coverflow-checks={'on' if oc else 'off'}",
+    ]
+
+
+def rllvm_rustc_flags(project_dir, profile="debug", optimize=False,
+                      mangling="auto", codegen_units=None):
+    """Flags appended to every rustc call when rllvm-rustc captures a cargo
+    build. Cargo already applies the profile and the project's own flags, so
+    only the source-faithful and mangling flags are added, plus codegen-units
+    when given explicitly."""
+    flags = [] if codegen_units is None else [f"-Ccodegen-units={codegen_units}"]
+    if not optimize:
+        flags += _source_faithful_flags(project_dir, profile)
+    return flags + _mangling_flags(mangling)
+
+
+def native_rustc_flags(optimize=False, mangling="auto"):
+    """Flags appended to every rustc call of a fuzzing tool's own build."""
+    return ([] if optimize else ["-Copt-level=0"]) + _mangling_flags(mangling)
 
 
 def _mangling_flags(mangling):
@@ -736,7 +776,7 @@ def acquire_rust_bitcode_native(project_dir, build_cmd, shell=False, verbose=Fal
     except OSError as exc:
         raise AcquireError(f"cannot create rustc bitcode wrapper: {exc}") from exc
 
-    extra = ([] if optimize else ["-Copt-level=0"]) + _mangling_flags(mangling)
+    extra = native_rustc_flags(optimize, mangling)
 
     env = dict(os.environ)
     env["RUSTC_WRAPPER"] = wrapper

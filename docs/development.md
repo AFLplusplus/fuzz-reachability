@@ -6,7 +6,9 @@
 bash scripts/setup.sh     # gllvm 1.3.1, rust-src, .venv, analyzer build
 ```
 
-`scripts/setup.sh` installs gllvm with `go install`, adds the `rust-src`
+`scripts/setup.sh` installs gllvm with `go install` (with
+`REACHABILITY_CAPTURE=rllvm`, rllvm 0.7.1 or newer with `brew install`, or
+`cargo install` without Homebrew, unless a new enough one is on `PATH`), adds the `rust-src`
 component, creates `.venv` with the driver (editable) and the pinned test
 dependencies from `requirements-dev.txt`, and builds the analyzer. It does not
 upgrade pip. `make venv` only creates the virtual environment.

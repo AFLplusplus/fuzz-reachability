@@ -9,8 +9,32 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LLVM_MAJOR="${LLVM_MAJOR:-$(bash "$ROOT/scripts/select_llvm.sh")}"
 LLVM_CONFIG="llvm-config-${LLVM_MAJOR}"
 
-# 1. gllvm (C/C++ whole-program bitcode extraction) via Go.
-if ! command -v gclang >/dev/null 2>&1; then
+# 1. The bitcode capture `reachability run` uses by default: gllvm via Go, or
+#    with REACHABILITY_CAPTURE=rllvm, rllvm via Homebrew or else cargo.
+RLLVM_MIN=0.7.1
+rllvm_ok() {
+  local have
+  have="$(rllvm-cc --rllvm-version 2>/dev/null | awk '{print $2}')" || return 1
+  [ -n "$have" ] \
+    && [ "$(printf '%s\n' "$RLLVM_MIN" "$have" | sort -V | head -n 1)" = "$RLLVM_MIN" ]
+}
+if [ "${REACHABILITY_CAPTURE:-gllvm}" = rllvm ]; then
+  if ! rllvm_ok; then
+    if command -v brew >/dev/null 2>&1; then
+      echo "[setup] installing rllvm via brew install..."
+      brew install h1994st/tap/rllvm
+    elif command -v cargo >/dev/null 2>&1; then
+      echo "[setup] installing rllvm >= ${RLLVM_MIN} via cargo install..."
+      cargo install --locked rllvm --version ">=${RLLVM_MIN}"
+    else
+      echo "error: Homebrew or cargo is required to install rllvm" >&2
+      exit 1
+    fi
+    if ! rllvm_ok; then
+      echo "warning: the rllvm-cc on PATH is still older than ${RLLVM_MIN}" >&2
+    fi
+  fi
+elif ! command -v gclang >/dev/null 2>&1; then
   if ! command -v go >/dev/null 2>&1; then
     echo "error: Go is required to install gllvm; install go and re-run setup" >&2
     exit 1
