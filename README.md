@@ -249,8 +249,15 @@ show which reachable functions the corpus has not reached yet, and which
 functions the harness cannot reach at all:
 
 ```bash
-cov-analysis report -d ../target-afl/out -e ./harness-cov -T 4 --reachability reachability.json
+cov-analysis report -d ../target-afl/out -e ./harness-cov -T 4 --reachability reachability.json -o cov-analysis-out
+reachability verify --reachability reachability.json --coverage cov-analysis-out/coverage.json
 ```
+
+Pass the actual `coverage.json` path from the cov-analysis report directory.
+`verify` checks every executed function, exits nonzero if the static report
+called one unreachable,
+and warns about functions it cannot match. Use `--strict-unknown` to make those
+warnings fail the check too. It reads existing reports and preserves them.
 
 How it matches functions is described in
 [docs/output.md](docs/output.md#how-cov-analysis-joins).

@@ -1,6 +1,6 @@
 # Usage
 
-`reachability` has two commands: `check-toolchain` and `run`. Rust-specific
+`reachability` has three commands: `check-toolchain`, `run`, and `verify`. Rust-specific
 build details are in [rust.md](rust.md), and every error and warning is
 explained in [troubleshooting.md](troubleshooting.md).
 
@@ -30,6 +30,36 @@ It exits non-zero when the versions do not fit. Without `rustc` it prints
 
 Tests: `test_cli.py::test_check_toolchain_ok`,
 `::test_check_toolchain_without_rustc_is_ok`, and `test_toolchain.py`.
+
+## `reachability verify`
+
+After a corpus replay has produced an llvm-cov export, compare its executed
+functions with the static report:
+
+```bash
+cov-analysis report -d corpus -e './harness-cov @@' --reachability reachability.json -o covout
+reachability verify --reachability reachability.json --coverage covout/coverage.json
+```
+
+`--coverage` accepts an llvm-cov export JSON file, including the `coverage.json`
+that cov-analysis writes. `verify` reads both files; it does not build, replay,
+or change either report. It checks functions with a positive function or region
+execution count, prints every confirmed executed-yet-unreachable function, and
+exits 1 if any exist. Unmatched or ambiguous executed functions are printed as
+unknown and exit 0 by default. Add `--strict-unknown` to exit 1 for unknowns
+too. Malformed inputs or coverage with no executed functions also exit 1, so an
+empty replay cannot silently pass. A clean comparison exits 0.
+
+Matching uses exact symbol names first, then report keys for Rust names whose
+build-dependent suffix changed. File-qualified local symbols are restricted to
+the matching source basename when the static report has source file data. A
+name that the report classifies both ways remains unknown. The command cannot
+prove that the corpus exercised every path or that the two reports came from
+the same build. Use `--strict-unknown` when the coverage build should be fully
+represented in the static report.
+
+Tests: `test_verify.py`, `test_cli.py::test_verify_reports_all_contradictions_and_fails`,
+and the C++ cov-analysis round trip.
 
 ## `reachability run`
 

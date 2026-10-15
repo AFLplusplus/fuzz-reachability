@@ -2,6 +2,7 @@
 
   reachability check-toolchain
   reachability run --project DIR --lang {c,cpp,rust,mixed,libfuzzer,ziggy,afl} [--out FILE] [...]
+  reachability verify --reachability FILE --coverage FILE [--strict-unknown]
 """
 
 import argparse
@@ -14,7 +15,7 @@ import sys
 import tempfile
 
 from . import (__version__, acquire_c, acquire_rust, analyze, link, outputs,
-               report, toolchain)
+               report, toolchain, verify)
 
 # --lang selects a target type: a source language (how to acquire bitcode) or a
 # fuzz-harness shape (which also implies the default entry point). Each maps to
@@ -517,6 +518,18 @@ def cmd_check_toolchain(args):
     return 0
 
 
+def cmd_verify(args):
+    result = verify.verify_files(args.reachability, args.coverage)
+    print(f"verified {result.executed} executed function(s): "
+          f"{len(result.violations)} contradiction(s), "
+          f"{len(result.unknown)} unknown")
+    for name in result.violations:
+        print(f"contradiction: executed but reported unreachable: {name}")
+    for name in result.unknown:
+        print(f"warning: executed function not classified unambiguously: {name}")
+    return 1 if result.violations or (args.strict_unknown and result.unknown) else 0
+
+
 def build_parser():
     p = argparse.ArgumentParser(
         prog="reachability",
@@ -527,6 +540,15 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("check-toolchain").set_defaults(func=cmd_check_toolchain)
+
+    v = sub.add_parser("verify", help="compare executed coverage functions with a static report")
+    v.add_argument("--reachability", required=True,
+                   help="reachability run JSON report")
+    v.add_argument("--coverage", required=True,
+                   help="llvm-cov export JSON, including cov-analysis coverage.json")
+    v.add_argument("--strict-unknown", action="store_true",
+                   help="fail when an executed function cannot be classified unambiguously")
+    v.set_defaults(func=cmd_verify)
 
     r = sub.add_parser("run")
     r.add_argument("--project", required=True)
@@ -660,7 +682,7 @@ def main(argv=None):
         return args.func(args)
     except (toolchain.ToolchainError, acquire_c.AcquireError,
             acquire_rust.AcquireError, link.LinkError, analyze.AnalyzeError,
-            outputs.OutputError) as e:
+            outputs.OutputError, verify.VerifyError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 1
 

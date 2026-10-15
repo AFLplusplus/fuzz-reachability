@@ -128,6 +128,8 @@ make ci
 tool's output and computes `key` the same way. A change to that contract then
 fails in both repositories. It expects cov-analysis next to this checkout, or
 at `COV_ANALYSIS_DIR`. `SKIP_CROSS_REPO=1` skips that part on purpose.
+The C++ end-to-end test also runs `reachability verify` against the real
+corpus replay's `coverage.json` and requires zero contradictions.
 
 ## Continuous integration
 

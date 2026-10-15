@@ -1,7 +1,8 @@
 # Troubleshooting
 
-Errors end the run with `error: …` on stderr and exit status 1, without a
-Python traceback. Warnings and notes do not stop the run. Run with `-v` to see
+Input and pipeline errors end the command with `error: …` on stderr and exit
+status 1, without a Python traceback. `verify` also exits 1 for a contradiction
+or for an unknown function in strict mode. Run `reachability run -v` to see
 each stage, the commands it runs and the live build output.
 
 Test: `test_cli.py::test_expected_cli_error_has_no_traceback`.
@@ -368,3 +369,22 @@ warning: --backend is deprecated and ignored; the type-based backend is always u
 Remove the option.
 
 Test: `test_cli.py::test_backend_flag_deprecated_warns`.
+
+## Verification
+
+`contradiction: executed but reported unreachable: NAME` means the supplied
+coverage export executed a function that the supplied static report placed in
+`unreachable_defined`. `verify` prints all such names and exits 1. Check that
+both files describe the same target and build, then inspect the missing root or
+call edge before using the ignorelist.
+
+`warning: executed function not classified unambiguously: NAME` means the
+function was absent from the report or its identity matched conflicting
+classifications. The default check exits 0 if these are the only findings;
+`--strict-unknown` exits 1. Compare build profiles, Rust mangling, captured
+modules, and source paths if the function should have appeared in the report.
+
+`error: coverage contains no executed functions` means the replay produced no
+usable execution evidence. Check the corpus, coverage binary, and profile
+merge before running `verify` again. Invalid JSON or missing report fields also
+exit 1 with an `error:` message. `verify` preserves both input files.

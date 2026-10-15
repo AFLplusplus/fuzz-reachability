@@ -12,6 +12,11 @@
 How the files are staged and replaced is described in
 [usage.md](usage.md#output-files).
 
+`reachability verify` reads the JSON report and an llvm-cov export JSON file.
+It prints a count of executed functions, confirmed contradictions, and unknowns,
+followed by the names in each group. It writes no file. Its exit status is
+documented in [usage.md](usage.md#reachability-verify).
+
 ## JSON report
 
 The current schema version is 2. `reachable`, `unreachable_defined`,

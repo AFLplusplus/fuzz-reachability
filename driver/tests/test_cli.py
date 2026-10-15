@@ -13,6 +13,59 @@ HAVE_GLLVM = shutil.which("gclang") is not None
 HAVE_RLLVM = shutil.which("rllvm-cc") is not None
 
 
+def test_verify_reports_all_contradictions_and_fails(tmp_path, capsys):
+    reach = tmp_path / "reachability.json"
+    coverage = tmp_path / "coverage.json"
+    reach.write_text(json.dumps({"reachable": [{"mangled": "live"}],
+                                 "unreachable_defined": [{"mangled": "dead_a"},
+                                                         {"mangled": "dead_b"}]}))
+    coverage.write_text(json.dumps({"data": [{"functions": [
+        {"name": "live", "count": 1}, {"name": "dead_a", "count": 1},
+        {"name": "dead_b", "count": 1}]}]}))
+    assert cli.main(["verify", "--reachability", str(reach),
+                     "--coverage", str(coverage)]) == 1
+    output = capsys.readouterr().out
+    assert "dead_a" in output and "dead_b" in output
+    assert "2 contradiction" in output
+    assert reach.is_file() and coverage.is_file()
+
+
+def test_verify_unknown_warns_by_default_and_strict_fails(tmp_path, capsys):
+    reach = tmp_path / "reachability.json"
+    coverage = tmp_path / "coverage.json"
+    reach.write_text(json.dumps({"reachable": [{"mangled": "live"}],
+                                 "unreachable_defined": []}))
+    coverage.write_text(json.dumps({"data": [{"functions": [
+        {"name": "live", "count": 1}, {"name": "outside", "count": 1}]}]}))
+    args = ["verify", "--reachability", str(reach), "--coverage", str(coverage)]
+    assert cli.main(args) == 0
+    assert "outside" in capsys.readouterr().out
+    assert cli.main(args + ["--strict-unknown"]) == 1
+    assert "outside" in capsys.readouterr().out
+
+
+def test_verify_clean_result_passes(tmp_path, capsys):
+    reach = tmp_path / "reachability.json"
+    coverage = tmp_path / "coverage.json"
+    reach.write_text(json.dumps({"reachable": [{"mangled": "live"}],
+                                 "unreachable_defined": []}))
+    coverage.write_text(json.dumps({"data": [{"functions": [
+        {"name": "live", "count": 1}]}]}))
+    assert cli.main(["verify", "--reachability", str(reach),
+                     "--coverage", str(coverage)]) == 0
+    assert "1 executed" in capsys.readouterr().out
+
+
+def test_verify_invalid_evidence_fails_with_error(tmp_path, capsys):
+    reach = tmp_path / "reachability.json"
+    coverage = tmp_path / "coverage.json"
+    reach.write_text("{}")
+    coverage.write_text("{}")
+    assert cli.main(["verify", "--reachability", str(reach),
+                     "--coverage", str(coverage)]) == 1
+    assert "error:" in capsys.readouterr().err
+
+
 class _Ok:
     returncode = 0
     stdout = ""
