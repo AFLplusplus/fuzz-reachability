@@ -72,7 +72,9 @@ _build_looks_cached = build_looks_cached
 
 
 _BITCODE_NO_INLINE_FLAGS = "-fno-inline -fno-inline-functions"
-_BITCODE_SOURCE_FAITHFUL_FLAGS = "-O0 " + _BITCODE_NO_INLINE_FLAGS
+_BITCODE_SOURCE_FAITHFUL_FLAGS = (
+    "-O0 -Xclang -disable-llvm-passes " + _BITCODE_NO_INLINE_FLAGS
+)
 _OPT_LEVEL_FLAG = re.compile(r"(?:\A|\s)-O")
 
 
@@ -91,8 +93,8 @@ def _build_env(clang_bindir: str, optimize: bool = False) -> dict:
     to emit source-faithful bitcode via LLVM_BITCODE_GENERATION_FLAGS, which gllvm
     applies only to the bitcode compile (never the native object), so the analyzer
     reads the functions the source defines: -O0 keeps the project's own -Ox from
-    deleting them through inlining, dead-code elimination or devirtualization, and
-    -fno-inline covers what -O0 still honours (always_inline). An inherited
+    deleting them through inlining, dead-code elimination or devirtualization,
+    and -disable-llvm-passes preserves always_inline definitions. An inherited
     LLVM_BITCODE_GENERATION_FLAGS that already carries an -O level keeps it -- the
     escape hatch for a unit that only compiles optimized -- and only the
     no-inlining flags are added. optimize=True leaves the build's own flags alone."""
@@ -719,8 +721,9 @@ def acquire_c_bitcode(project_dir, tc, artifact=None, build_cmd=None,
     the target links; "none" keeps only the linker's view; "all" pulls in every
     bitcode archive in the tree (see the module docstring).
     verbose: stream the build's output live instead of capturing it silently.
-    optimize: when False (default) emit source-faithful bitcode (-O0 plus
-    -fno-inline in the bitcode compile only, via LLVM_BITCODE_GENERATION_FLAGS, so
+    optimize: when False (default) emit source-faithful bitcode (-O0,
+    -disable-llvm-passes and -fno-inline in the bitcode compile only, via
+    LLVM_BITCODE_GENERATION_FLAGS, so
     no function the source defines is optimized away); when True leave the build's
     own optimization in place.
     capture: "gllvm" (default) or "rllvm", the wrappers that record bitcode.

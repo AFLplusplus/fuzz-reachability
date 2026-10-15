@@ -133,7 +133,8 @@ def test_rllvm_env_pins_exact_tools(tmp_path):
     assert config["llvm_ar_filepath"] == str(bindir / "llvm-ar")
     assert config["llvm_objcopy_filepath"] == str(bindir / "llvm-objcopy")
     assert config["bitcode_generation_flags"] == [
-        "-O0", "-fno-inline", "-fno-inline-functions"]
+        "-O0", "-Xclang", "-disable-llvm-passes", "-fno-inline",
+        "-fno-inline-functions"]
 
 
 def test_rllvm_env_keeps_inherited_opt_level(tmp_path):

@@ -132,6 +132,10 @@ detected, and the report goes to `reachability.json` in the project, with
 `reached.txt` and `not_reached.txt` next to it. All options are in
 [docs/usage.md](docs/usage.md).
 
+The default analysis includes process constructors, destructors and ifunc
+resolvers as roots, so startup and shutdown code stays out of the ignorelist.
+Use `--no-process-lifecycle-roots` for the narrower entry-and-callback scope.
+
 The outputs below come from reachability 1.2-dev (commit `f5adeab`) with
 LLVM 23 and rustc 1.99.0-nightly (2026-07-12). The `wrote …` lines are left
 out.

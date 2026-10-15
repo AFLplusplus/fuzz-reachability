@@ -614,6 +614,57 @@ def test_run_c_direct(analyzer, tmp_path, monkeypatch):
     assert "dead_fn" not in reachable
 
 
+@pytest.mark.skipif(not HAVE_GLLVM, reason="gllvm not installed")
+def test_run_c_lifecycle_scope(analyzer, tmp_path, monkeypatch):
+    monkeypatch.setenv("REACHABILITY_ANALYZER", analyzer)
+    for label, extra, expected in (
+        ("default", [], True),
+        ("no_lifecycle", ["--no-process-lifecycle-roots"], False),
+    ):
+        work = tmp_path / label
+        shutil.copytree(os.path.join(FIXTURES, "c_direct"), work)
+        with open(work / "main.c", "a") as source:
+            source.write(
+                "\nstatic volatile int startup_state;\n"
+                "static void startup_leaf(void) { startup_state++; }\n"
+                "__attribute__((constructor)) static void startup(void) "
+                "{ startup_leaf(); }\n"
+            )
+        output = work / "reachability.json"
+        assert cli.main([
+            "run", "--project", str(work), "--lang", "c", "--out", str(output),
+            *extra,
+        ]) == 0
+        result = json.loads(output.read_text())
+        reachable = {f["mangled"] for f in result["reachable"]}
+        ignored = (work / "not_reached.txt").read_text().splitlines()
+        assert ("startup" in reachable) is expected
+        assert ("startup_leaf" in reachable) is expected
+        assert ("fun:startup" in ignored) is not expected
+        assert result["run"]["include_process_lifecycle_roots"] is expected
+
+
+@pytest.mark.skipif(not HAVE_GLLVM, reason="gllvm not installed")
+def test_run_c_keeps_always_inline_helper(analyzer, tmp_path, monkeypatch):
+    monkeypatch.setenv("REACHABILITY_ANALYZER", analyzer)
+    work = tmp_path / "c_direct"
+    shutil.copytree(os.path.join(FIXTURES, "c_direct"), work)
+    source = work / "main.c"
+    body = source.read_text().replace(
+        "int LLVMFuzzerTestOneInput",
+        "static inline __attribute__((always_inline)) int helper(int x) "
+        "{ return x + 3; }\nint LLVMFuzzerTestOneInput",
+        1,
+    ).replace("return used_a((int)d[0]);", "return helper(used_a((int)d[0]));", 1)
+    source.write_text(body)
+    output = work / "reachability.json"
+    assert cli.main(["run", "--project", str(work), "--lang", "c",
+                     "--out", str(output)]) == 0
+    reachable = {f["mangled"] for f in json.loads(output.read_text())["reachable"]}
+    assert "helper" in reachable
+    assert "fun:helper" in (work / "reached.txt").read_text().splitlines()
+
+
 @pytest.mark.parametrize("capture", [
     pytest.param("gllvm", marks=pytest.mark.skipif(
         not HAVE_GLLVM, reason="gllvm not installed")),

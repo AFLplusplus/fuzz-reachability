@@ -73,7 +73,11 @@ static cl::opt<std::string> RunInfo(
 static cl::opt<bool> IncludeProcessLifecycleRoots(
     "include-process-lifecycle-roots",
     cl::desc("include constructors, destructors, ifunc resolvers, and a defined "
-             "LLVMFuzzerInitialize as roots (default off)"));
+             "LLVMFuzzerInitialize as roots (already on by default)"));
+static cl::opt<bool> NoProcessLifecycleRoots(
+    "no-process-lifecycle-roots",
+    cl::desc("exclude constructor, destructor and ifunc roots; keep harness "
+             "initialization and callbacks registered before input"));
 
 namespace {
 
@@ -448,6 +452,11 @@ int main(int argc, char **argv) {
     errs() << "\n";
   }
 
+  if (entries.empty()) {
+    suggestEntries(*mod, requested);
+    return 1;
+  }
+
   std::vector<std::string> roots = entries;
   std::set<std::string> have(roots.begin(), roots.end());
   if (have.count("LLVMFuzzerTestOneInput")) {
@@ -472,7 +481,7 @@ int main(int argc, char **argv) {
       errs() << "\n";
     }
   }
-  if (IncludeProcessLifecycleRoots) {
+  if (!NoProcessLifecycleRoots || IncludeProcessLifecycleRoots) {
     std::vector<std::string> added =
         collectProcessLifecycleRoots(*mod, have, roots);
     if (!added.empty()) {
@@ -482,7 +491,7 @@ int main(int argc, char **argv) {
       errs() << "\n";
     }
   }
-  if (!IncludeProcessLifecycleRoots && !roots.empty()) {
+  if (NoProcessLifecycleRoots && !IncludeProcessLifecycleRoots) {
     std::vector<std::string> added =
         collectConstructorEscapeRoots(*mod, graph, have, roots);
     if (!added.empty()) {

@@ -71,7 +71,7 @@ unless you pass `--run-info`.
 | `lang` | string | `--lang` |
 | `entries` | array of strings | `--entry` values, or the `--lang` default |
 | `optimize` | boolean | `--optimize` |
-| `include_process_lifecycle_roots` | boolean | `--include-process-lifecycle-roots` |
+| `include_process_lifecycle_roots` | boolean | `true` by default; `false` with `--no-process-lifecycle-roots` |
 | `no_name_roots` | boolean | `--no-name-roots` |
 | `artifact` | string or null | `--artifact`; only for `c`, `cpp` and `mixed` |
 | `static_libs` | string | `--static-libs`; only for `c`, `cpp` and `mixed` |

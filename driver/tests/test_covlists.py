@@ -11,12 +11,14 @@ allowlist) and that clang matches the *mangled* names we write.
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 
 import pytest
 
 from conftest import FIXTURES
+from reachability import acquire_c
 
 CLANG = shutil.which("clang-21") or shutil.which("clang")
 CLANGXX = shutil.which("clang++-21") or shutil.which("clang++")
@@ -82,6 +84,33 @@ def test_c_allowlist_and_ignorelist(analyzer, tmp_path):
     ig = _sancov_ir(CLANG, src, "-fsanitize-coverage-ignorelist", notr, tmp_path / "i.ll")
     assert "dead_fn" not in ig
     assert {"used_a", "used_b", "LLVMFuzzerTestOneInput"} <= ig
+
+
+@pytest.mark.skipif(not CLANG, reason="clang not installed")
+def test_source_faithful_bitcode_keeps_always_inline_helper(analyzer, tmp_path,
+                                                             monkeypatch):
+    source = tmp_path / "inline.c"
+    source.write_text(
+        "static inline __attribute__((always_inline)) int helper(int x) { return x + 1; }\n"
+        "int LLVMFuzzerTestOneInput(const unsigned char *data, unsigned long size) "
+        "{ return size ? helper(data[0]) : 0; }\n"
+    )
+    monkeypatch.delenv("LLVM_BITCODE_GENERATION_FLAGS", raising=False)
+    flags = shlex.split(acquire_c._build_env("/usr/lib/llvm-21/bin")[
+        "LLVM_BITCODE_GENERATION_FLAGS"])
+    bitcode = tmp_path / "inline.bc"
+    subprocess.run([CLANG, *flags, "-g", "-emit-llvm", "-c", str(source),
+                    "-o", str(bitcode)], check=True)
+    reached = tmp_path / "reached.txt"
+    ignored = tmp_path / "not_reached.txt"
+    report = tmp_path / "report.json"
+    subprocess.run([analyzer, str(bitcode), "--entry", "LLVMFuzzerTestOneInput",
+                    "--reached-out", str(reached), "--not-reached-out", str(ignored),
+                    "--out", str(report)], check=True)
+    names = {f["mangled"] for f in json.loads(report.read_text())["reachable"]}
+    assert "helper" in names
+    assert "fun:helper" in reached.read_text().splitlines()
+    assert "fun:helper" not in ignored.read_text().splitlines()
 
 
 @pytest.mark.skipif(not CLANGXX, reason="clang++ not installed")

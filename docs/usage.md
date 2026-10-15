@@ -58,7 +58,8 @@ reachability run --lang <target> --project <dir> [options]
 | `--codegen-units N` | detected | `rust` and `mixed`: rustc `-Ccodegen-units`, see [rust.md](rust.md#profile-and-codegen-units) |
 | `--mangling {auto,legacy,v0}` | `auto` | Rust symbol mangling of the analysis build, see [rust.md](rust.md#mangling) |
 | `--build-std` | off | `rust` and `mixed`: build the standard library from source, see [rust.md](rust.md#standard-library) |
-| `--include-process-lifecycle-roots` | off | Also start from constructors, destructors and ifunc resolvers, see [Process-lifecycle roots](#process-lifecycle-roots) |
+| `--include-process-lifecycle-roots` | not needed | Retained for compatibility; process roots are included by default |
+| `--no-process-lifecycle-roots` | off | Exclude constructor, destructor and ifunc roots, see [Process-lifecycle roots](#process-lifecycle-roots) |
 | `--no-name-roots` | off | Do not start from functions found by runtime name lookup; can under-report, see [analysis.md](analysis.md#runtime-name-lookup) |
 | `--clean` | off | Remove earlier outputs and build state first, see [Clean builds](#clean-builds) |
 | `--backend NAME` | none | Ignored; prints a warning |
@@ -118,9 +119,15 @@ Tests: `test_analyzer_core.py::test_entry_main_resolves_rust_and_c`,
 
 ### Process-lifecycle roots
 
-Besides the entries and the [runtime name lookup](analysis.md#runtime-name-lookup)
-roots, the analysis always starts from two kinds of code that a fuzzer runs
-before the first input:
+By default the analysis starts from the requested entries, constructors,
+destructors, ifunc resolvers, a defined `LLVMFuzzerInitialize`, and
+[runtime name lookup](analysis.md#runtime-name-lookup) roots. This includes
+code executed before the first input and during process shutdown, so an
+ignorelist does not exclude those functions merely because the harness entry
+does not call them.
+
+`--no-process-lifecycle-roots` restores the narrower root set. It still
+includes two kinds of code used by a fuzzer before or during input processing:
 
 - **`LLVMFuzzerInitialize`**, whenever `LLVMFuzzerTestOneInput` is an entry.
   libFuzzer and AFL++'s libFuzzer driver call it once at startup, and harnesses
@@ -128,23 +135,25 @@ before the first input:
 - **Callbacks that constructors hand to external code.** A constructor in
   `llvm.global_ctors` (C++ static registration, `__attribute__((constructor))`)
   that passes a function to code outside the bitcode makes that function
-  callable later. The callback becomes a root; the constructor itself does not.
+  callable later. The callback becomes a root; the constructor itself does not
+  in this narrower mode.
   Exit-time registrations (`atexit`, `__cxa_atexit` for static destructors,
   `at_quick_exit`, `on_exit`, `__cxa_thread_atexit`) are shutdown code and are
   not rooted this way.
 
-Both appear in the report's `entries` and are noted on stderr.
+In the narrower mode, both become report `entries` and are noted on stderr.
 
-`--include-process-lifecycle-roots` is for when process start and shutdown
-belong to what you analyze. It also roots the constructors, destructors and
-ifunc resolvers themselves (and with them everything constructors register,
-exit handlers included), and `LLVMFuzzerInitialize` even without
-`LLVMFuzzerTestOneInput`. Malformed lifecycle records produce a warning.
+The default roots the constructors, destructors and ifunc resolvers themselves
+(and with them everything constructors register, exit handlers included), and
+`LLVMFuzzerInitialize` even without `LLVMFuzzerTestOneInput`.
+`--include-process-lifecycle-roots` remains accepted for older commands and
+has the same effect as the default. Malformed lifecycle records produce a
+warning.
 
-Tests: `test_analyzer_core.py::test_callbacks_handed_out_before_the_first_input`,
+Tests: `test_analyzer_core.py::test_callbacks_handed_out_before_the_first_input_per_input_scope`,
 `::test_initialize_is_rooted_only_for_libfuzzer_harnesses`,
-`::test_constructor_bodies_are_rooted_only_on_request` and
-`::test_process_lifecycle_roots_are_opt_in`.
+`::test_constructor_bodies_are_rooted_by_default` and
+`::test_process_lifecycle_roots_are_default`.
 
 ## C and C++ builds
 
@@ -263,20 +272,21 @@ and `::test_thin_archive_*` tests.
 
 ### Source-faithful build
 
-The report must describe the same functions as the binary you instrument.
+The report must include the functions present in the binary you instrument.
 Optimization changes which functions exist: inlining, dead-code elimination
 and devirtualization delete functions the source defines.
 
-So by default the driver compiles the bitcode at `-O0 -fno-inline
--fno-inline-functions`. It sets these in `LLVM_BITCODE_GENERATION_FLAGS`, which
-gllvm applies to the bitcode compile only; the native object keeps the
-project's own `-Ox`. The report then lists the functions the source defines,
-which is what `llvm-cov` reports too. `-fno-inline` alone is not enough: at
+So by default the driver compiles the bitcode at `-O0 -Xclang
+-disable-llvm-passes -fno-inline -fno-inline-functions`. It sets these in
+`LLVM_BITCODE_GENERATION_FLAGS`, which gllvm applies to the bitcode compile
+only; the native object keeps the project's own `-Ox`. The report then keeps
+functions that source-level coverage tools can report even when the native
+object inlines them. `-fno-inline` alone is not enough: at
 `-O3` the optimizer still deletes functions through dead-code elimination and
-devirtualization of constant function-pointer tables. One case remains even at
-`-O0`: clang always inlines `static` functions marked `always_inline` and then
-drops them, so they are not in the report. `-O0` bitcode is larger, so merging
-and analysis need more time and memory.
+devirtualization of constant function-pointer tables. Clang's always-inliner
+also runs at `-O0`; disabling LLVM passes preserves `static` `always_inline`
+definitions. The less-optimized bitcode is larger, so merging and analysis
+need more time and memory.
 
 If `LLVM_BITCODE_GENERATION_FLAGS` already sets an `-O` level, that level is
 kept and only the no-inline flags are added. This is the way out for a file
@@ -449,7 +459,8 @@ reachability-analyzer merged.bc --entry main --out report.json \
 | `--dot FILE` | none | Graphviz DOT graph |
 | `--no-edges` | off | Leave out the `edges` array |
 | `--run-info JSON` | none | JSON object copied into the report's `run` field |
-| `--include-process-lifecycle-roots` | off | As on `reachability run` |
+| `--include-process-lifecycle-roots` | not needed | Retained for compatibility |
+| `--no-process-lifecycle-roots` | off | As on `reachability run` |
 | `--no-name-roots` | off | As on `reachability run` |
 | `--indirect-any` | off | Debugging: every indirect call can reach every address-taken function |
 | `--dump-edges` | off | Debugging: print every call edge, sorted, and exit |

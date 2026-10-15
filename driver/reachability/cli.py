@@ -413,7 +413,7 @@ def _run_info(args):
         "entries": list(args.entry),
         "optimize": bool(args.optimize),
         "include_process_lifecycle_roots": bool(
-            getattr(args, "include_process_lifecycle_roots", False)),
+            getattr(args, "include_process_lifecycle_roots", True)),
         "no_name_roots": bool(getattr(args, "no_name_roots", False)),
     }
     if mode in ("c", "cpp", "mixed"):
@@ -478,7 +478,7 @@ def cmd_run(args):
                     not_reached_out=transaction.path("--not-reached"),
                     out_path=transaction.path("--out"), verbose=v,
                     include_process_lifecycle_roots=(
-                        getattr(args, "include_process_lifecycle_roots", False)
+                        getattr(args, "include_process_lifecycle_roots", True)
                     ),
                     no_name_roots=getattr(args, "no_name_roots", False),
                     no_edges=getattr(args, "no_edges", False),
@@ -564,10 +564,16 @@ def build_parser():
                    help="entry function (repeatable; overrides the --lang default). "
                         "Accepts a mangled symbol, a demangled name, a '::name' "
                         "suffix like 'main', or the alias 'fuzz_target!'")
-    r.add_argument("--include-process-lifecycle-roots", action="store_true",
-                   dest="include_process_lifecycle_roots",
-                   help="also root constructors, destructors, ifunc resolvers, "
-                        "and a defined LLVMFuzzerInitialize (default: off)")
+    lifecycle = r.add_mutually_exclusive_group()
+    lifecycle.add_argument("--include-process-lifecycle-roots", action="store_true",
+                           dest="include_process_lifecycle_roots",
+                           help="root constructors, destructors, ifunc resolvers, and "
+                                "a defined LLVMFuzzerInitialize (already on by default)")
+    lifecycle.add_argument("--no-process-lifecycle-roots", action="store_false",
+                           dest="include_process_lifecycle_roots",
+                           help="exclude constructor, destructor and ifunc "
+                                "roots; keep harness initialization and callbacks")
+    r.set_defaults(include_process_lifecycle_roots=True)
     r.add_argument("--no-name-roots", action="store_true", dest="no_name_roots",
                    help="do not root a defined, externally-visible function whose "
                         "symbol name appears as a string constant in a module that "
@@ -609,7 +615,8 @@ def build_parser():
         "--optimize", action="store_true", dest="optimize",
         help="build at the target's real optimization (post-inline). By default "
              "the analysis build is source-faithful (C/C++ bitcode compiled with "
-             "-O0 -fno-inline -fno-inline-functions; Rust with -Copt-level=0), so "
+             "-O0 -Xclang -disable-llvm-passes -fno-inline; Rust with "
+             "-Copt-level=0), so "
              "no source function is optimized away, reachability matches llvm-cov, "
              "and the allowlist is a safe superset. LTO is stripped either way.")
     r.add_argument("--clean", action="store_true",

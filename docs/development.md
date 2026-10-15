@@ -64,7 +64,8 @@ they need (gllvm, cargo, cargo-ziggy, the AFL++ plugins) is missing.
 
 1. Write a small module, `analyzer/test/<name>.ll`. Hand-written IR is fine;
    for C, start from
-   `clang-23 -O0 -fno-inline -fno-inline-functions -g -emit-llvm -S x.c`.
+   `clang-23 -O0 -Xclang -disable-llvm-passes -fno-inline
+   -fno-inline-functions -g -emit-llvm -S x.c`.
 2. Add a test to `driver/tests/test_analyzer_core.py` that runs the analyzer on
    `ll("<name>.ll")` through the `run_analyzer` fixture and checks the JSON.
 3. Make sure the test fails without your analyzer change.

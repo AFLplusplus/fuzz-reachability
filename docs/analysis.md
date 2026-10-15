@@ -36,8 +36,10 @@ The **analyzer** (`analyzer/src/`) works on the merged module in these steps:
 4. Add edges for callbacks handed to external code
    ([Escapes](#callbacks-handed-to-external-code)).
 5. Add edges for indirect calls ([Indirect calls](#indirect-calls)).
-6. Collect the roots: the entries, `LLVMFuzzerInitialize`, functions found by
-   [runtime name lookup](#runtime-name-lookup), and callbacks that
+6. Collect the roots: the entries, process constructors and destructors, ifunc
+   resolvers, `LLVMFuzzerInitialize`, and functions found by
+   [runtime name lookup](#runtime-name-lookup). The narrower
+   `--no-process-lifecycle-roots` mode still includes callbacks that
    constructors hand out ([usage.md](usage.md#process-lifecycle-roots)).
 7. Walk the call graph breadth-first from the roots. The walk also records
    each function's `depth`.

@@ -437,25 +437,40 @@ def test_alias_chains_resolve_to_direct_callee(run_analyzer):
     assert "entry -> external [direct]" in edges.stdout
 
 
-def test_process_lifecycle_roots_are_opt_in(run_analyzer):
+def test_process_lifecycle_roots_are_default(run_analyzer, tmp_path):
+    ignored = tmp_path / "not_reached.txt"
     base = run_analyzer([ll("lifecycle.ll"), "--entry", "entry"])
     assert base.returncode == 0, base.stderr
-    base_names = {f["mangled"] for f in json.loads(base.stdout)["reachable"]}
+    report = json.loads(base.stdout)
+    base_names = {f["mangled"] for f in report["reachable"]}
     expected = {
         "constructor", "constructor_leaf", "destructor", "ifunc_resolver",
         "LLVMFuzzerInitialize",
     }
-    assert not expected & base_names
-    enabled = run_analyzer([
-        ll("lifecycle.ll"), "--entry", "entry",
-        "--include-process-lifecycle-roots",
-    ])
-    assert enabled.returncode == 0, enabled.stderr
-    report = json.loads(enabled.stdout)
-    names = {f["mangled"] for f in report["reachable"]}
-    assert expected <= names
+    assert expected <= base_names
     assert expected - {"constructor_leaf"} <= set(report["entries"])
-    assert "malformed llvm.global_ctors lifecycle record" in enabled.stderr
+    assert "malformed llvm.global_ctors lifecycle record" in base.stderr
+    with_list = run_analyzer([
+        ll("lifecycle.ll"), "--entry", "entry", "--not-reached-out", str(ignored),
+    ])
+    assert with_list.returncode == 0, with_list.stderr
+    assert "fun:constructor" not in ignored.read_text()
+    assert "fun:constructor_leaf" not in ignored.read_text()
+
+
+def test_no_process_lifecycle_roots_excludes_lifecycle_bodies(run_analyzer):
+    result = run_analyzer([
+        ll("lifecycle.ll"), "--entry", "entry", "--no-process-lifecycle-roots",
+    ])
+    assert result.returncode == 0, result.stderr
+    names = {f["mangled"] for f in json.loads(result.stdout)["reachable"]}
+    assert not {"constructor", "constructor_leaf", "destructor", "ifunc_resolver"} & names
+
+
+def test_missing_entry_is_not_masked_by_lifecycle_roots(run_analyzer):
+    result = run_analyzer([ll("lifecycle.ll"), "--entry", "missing"])
+    assert result.returncode != 0
+    assert "no entry symbol resolved" in result.stderr
 
 
 def test_type_punned_flow_is_unioned_with_exact_candidates(run_analyzer):
@@ -657,11 +672,11 @@ def test_heap_callback_with_mismatched_type_is_reachable_at_O0(run_analyzer, tmp
     assert "fun:free_entry" not in ignored.read_text()
 
 
-def test_callbacks_handed_out_before_the_first_input(run_analyzer, tmp_path):
+def test_callbacks_handed_out_before_the_first_input_per_input_scope(run_analyzer, tmp_path):
     ignored = tmp_path / "ignored.txt"
     r = run_analyzer([
         ll("harness_callbacks.ll"), "--entry", "LLVMFuzzerTestOneInput",
-        "--not-reached-out", str(ignored),
+        "--not-reached-out", str(ignored), "--no-process-lifecycle-roots",
     ])
     assert r.returncode == 0, r.stderr
     report = json.loads(r.stdout)
@@ -676,7 +691,10 @@ def test_callbacks_handed_out_before_the_first_input(run_analyzer, tmp_path):
 
 
 def test_initialize_is_rooted_only_for_libfuzzer_harnesses(run_analyzer):
-    r = run_analyzer([ll("harness_callbacks.ll"), "--entry", "other_entry"])
+    r = run_analyzer([
+        ll("harness_callbacks.ll"), "--entry", "other_entry",
+        "--no-process-lifecycle-roots",
+    ])
     assert r.returncode == 0, r.stderr
     names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
     assert "LLVMFuzzerInitialize" not in names
@@ -684,10 +702,9 @@ def test_initialize_is_rooted_only_for_libfuzzer_harnesses(run_analyzer):
     assert "on_ctor_record" in names
 
 
-def test_constructor_bodies_are_rooted_only_on_request(run_analyzer):
+def test_constructor_bodies_are_rooted_by_default(run_analyzer):
     r = run_analyzer([
         ll("harness_callbacks.ll"), "--entry", "LLVMFuzzerTestOneInput",
-        "--include-process-lifecycle-roots",
     ])
     assert r.returncode == 0, r.stderr
     names = {f["mangled"] for f in json.loads(r.stdout)["reachable"]}
