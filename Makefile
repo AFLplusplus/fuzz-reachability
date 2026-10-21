@@ -7,10 +7,11 @@
 #   make matrix                # LLVM 21/22/23(+) compatibility matrix
 #   make clean
 
-# Default LLVM major: the newest installed llvm-config-N with N >= 21 (see
-# scripts/select_llvm.sh). Override with e.g. `make build LLVM_MAJOR=21`.
+# Default LLVM major: the newest installed llvm-config-N with N >= 21, or an
+# unversioned llvm-config when no supported versioned executable exists.
+# Override with e.g. `make build LLVM_MAJOR=21`.
 LLVM_MAJOR  ?= $(shell bash $(CURDIR)/scripts/select_llvm.sh)
-LLVM_CONFIG ?= llvm-config-$(LLVM_MAJOR)
+LLVM_CONFIG ?= $(shell bash $(CURDIR)/scripts/select_llvm.sh --config $(LLVM_MAJOR))
 
 GOBIN       := $(shell go env GOPATH 2>/dev/null)/bin
 PY          := $(CURDIR)/.venv/bin/python

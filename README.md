@@ -15,6 +15,8 @@ in [TODO.md](TODO.md). They are described under
 
 Version: 1.2-dev
 
+Platforms: Linux, NixOS
+
 Author: Marc "vanHauser" Heuse
 
 License: GNU AGPL v3 or newer

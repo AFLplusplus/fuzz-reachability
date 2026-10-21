@@ -6,8 +6,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Which LLVM to build the analyzer against (>= 21). Default: the newest installed
 # major, since newer LLVM tools can read older bitcode (including rustc's) but not
 # newer -- see select_llvm.sh.
-LLVM_MAJOR="${LLVM_MAJOR:-$(bash "$ROOT/scripts/select_llvm.sh")}"
-LLVM_CONFIG="llvm-config-${LLVM_MAJOR}"
+LLVM_CONFIG="${LLVM_CONFIG:-$(bash "$ROOT/scripts/select_llvm.sh" --config "${LLVM_MAJOR:-}")}"
+LLVM_MAJOR="$("$LLVM_CONFIG" --version | cut -d. -f1)"
 
 # 1. The bitcode capture `reachability run` uses by default: gllvm via Go, or
 #    with REACHABILITY_CAPTURE=rllvm, rllvm via Homebrew or else cargo.

@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # LLVM version-compatibility matrix: build + test the analyzer against every
-# installed llvm-config-NN with NN >= MIN_LLVM. Prints a matrix and exits
-# non-zero if any build/test fails -- this is the early-warning system for
-# breakage on future LLVMs.
+# installed llvm-config-NN with NN >= MIN_LLVM, or an unversioned llvm-config
+# if none is found. Prints a matrix and exits non-zero if any build/test fails.
 #
 #   scripts/test_matrix.sh
 set -uo pipefail
@@ -37,6 +36,14 @@ while IFS= read -r cfg; do
   [ "$major" -ge "$MIN_LLVM" ] || continue
   CONFIG[$major]="$cfg"
 done < <(printf '%s\n' "${configs[@]}" | sort -V)
+
+if [ "${#CONFIG[@]}" -eq 0 ] && command -v llvm-config >/dev/null 2>&1; then
+  cfg="$(command -v llvm-config)"
+  major="$("$cfg" --version 2>/dev/null | cut -d. -f1)"
+  if [[ "$major" =~ ^[0-9]+$ ]] && [ "$major" -ge "$MIN_LLVM" ]; then
+    CONFIG[$major]="$cfg"
+  fi
+fi
 
 if [ "${#CONFIG[@]}" -eq 0 ]; then
   if [ "${MATRIX_ALLOW_EMPTY:-0}" = 1 ]; then

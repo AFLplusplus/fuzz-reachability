@@ -25,9 +25,11 @@ make clean
 ```
 
 `scripts/select_llvm.sh` picks the newest `llvm-config-N` with `N >= 21`.
-Newer LLVM reads older bitcode but not newer, so the newest is the safest
-default. To keep several builds side by side, build into a version
-directory:
+If no supported versioned executable is present, it accepts an unversioned
+`llvm-config` reporting LLVM 21 or newer. `LLVM_CONFIG` can select an exact
+executable for `scripts/setup.sh` or `make build`. Newer LLVM reads older
+bitcode but not newer, so the newest is the safest default. To keep several
+builds side by side, build into a version directory:
 
 ```bash
 make -C analyzer LLVM_CONFIG=llvm-config-22 BUILD=build/22
@@ -105,8 +107,9 @@ make matrix
 ```
 
 `scripts/test_matrix.sh` builds and tests the analyzer against every
-`llvm-config-N` with `N >= 21` on `PATH`, each in `analyzer/build/N`, and fails
-if any of them fails. It also fails when it finds none; `MATRIX_ALLOW_EMPTY=1`
+`llvm-config-N` with `N >= 21` on `PATH`, each in `analyzer/build/N`. If none
+is present, it tries an unversioned `llvm-config`. It fails if any build or
+test fails. It also fails when it finds none; `MATRIX_ALLOW_EMPTY=1`
 turns that into a skip for optional local runs. Results are in
 [llvm-support.md](llvm-support.md).
 

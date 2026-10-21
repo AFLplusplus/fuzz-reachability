@@ -23,7 +23,8 @@ analyzer.** The rules enforced by `reachability check-toolchain`
    PATH (Rust targets unavailable; C/C++ ready)` and exits zero.
 
 The default build LLVM is chosen by `scripts/select_llvm.sh`: the newest
-installed `llvm-config-N` with `N ≥ 21`. Newer tools read older bitcode but not
+installed `llvm-config-N` with `N ≥ 21`, or an unversioned `llvm-config` if no
+supported versioned executable is found. Newer tools read older bitcode but not
 newer, so the newest toolchain is the safest default. For Rust targets make sure
 the chosen LLVM's **full** version is no older than rustc's bundled LLVM, or it
 cannot read rustc's bitcode; override it explicitly at build time:
@@ -35,8 +36,9 @@ make build LLVM_MAJOR=23      # analyzer on LLVM 23 (uses llvm-config-23, clang-
 ## Compatibility matrix
 
 `make matrix` (a.k.a. `scripts/test_matrix.sh`) builds and tests the analyzer
-against **every** installed `llvm-config-NN` with `NN ≥ 21`, and **fails if any
-build/test fails** — this is the early-warning system for breakage on future
+against **every** installed `llvm-config-NN` with `NN ≥ 21`, or a supported
+unversioned `llvm-config` if there are no versioned executables, and **fails if
+any build/test fails** — this is the early-warning system for breakage on future
 LLVM releases.
 
 Discovery follows `PATH`, not only `/usr/bin`. With no supported installation,
