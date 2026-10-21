@@ -15,7 +15,7 @@ in [TODO.md](TODO.md). They are described under
 
 Version: 1.2-dev
 
-Platforms: Linux, NixOS
+Platforms: Linux, macOS, nixOS
 
 Author: Marc "vanHauser" Heuse
 
