@@ -3,15 +3,16 @@
 ## Setup
 
 ```bash
-bash scripts/setup.sh     # gllvm 1.3.1, rust-src, .venv, analyzer build
+bash scripts/setup.sh     # gllvm 1.3.1, optional rust-src, .venv, analyzer build
 ```
 
 `scripts/setup.sh` installs gllvm with `go install` (with
 `REACHABILITY_CAPTURE=rllvm`, rllvm 0.7.1 or newer with `brew install`, or
-`cargo install` without Homebrew, unless a new enough one is on `PATH`), adds the `rust-src`
-component, creates `.venv` with the driver (editable) and the pinned test
-dependencies from `requirements-dev.txt`, and builds the analyzer. It does not
-upgrade pip. `make venv` only creates the virtual environment.
+`cargo install` without Homebrew, unless a new enough one is on `PATH`), adds
+the `rust-src` component when `rustup` is available, creates `.venv` with the
+driver (editable) and the pinned test dependencies from `requirements-dev.txt`,
+and builds the analyzer. It does not upgrade pip. `make venv` only creates the
+virtual environment.
 
 ## Building the analyzer
 
@@ -28,8 +29,14 @@ make clean
 If no supported versioned executable is present, it accepts an unversioned
 `llvm-config` reporting LLVM 21 or newer. `LLVM_CONFIG` can select an exact
 executable for `scripts/setup.sh` or `make build`. Newer LLVM reads older
-bitcode but not newer, so the newest is the safest default. To keep several
-builds side by side, build into a version directory:
+bitcode but not newer, so the newest is the safest default.
+
+The analyzer uses `clang++` from `llvm-config --bindir` when present. If LLVM
+and Clang are separate packages, as on NixOS, it looks for `clang++-M` and then
+`clang++` on `PATH`, and checks that the compiler's major version matches LLVM
+major `M`. Set `CXX` explicitly to a matching compiler if needed.
+
+To keep several builds side by side, build into a version directory:
 
 ```bash
 make -C analyzer LLVM_CONFIG=llvm-config-22 BUILD=build/22

@@ -45,8 +45,12 @@ elif ! command -v gclang >/dev/null 2>&1; then
 fi
 
 # 2. rust-src component (only needed for the optional --build-std path).
-echo "[setup] adding rust-src component (for --build-std)..."
-rustup component add rust-src || true
+if command -v rustup >/dev/null 2>&1; then
+  echo "[setup] adding rust-src component (for --build-std)..."
+  rustup component add rust-src || true
+else
+  echo "[setup] rustup unavailable; skipping optional rust-src installation"
+fi
 
 # 3. create the Python venv with the driver + test deps.
 echo "[setup] creating .venv..."

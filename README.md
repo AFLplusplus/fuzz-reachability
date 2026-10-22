@@ -105,13 +105,17 @@ see [docs/analysis.md](docs/analysis.md).
 ## Install
 
 ```bash
-bash scripts/setup.sh        # gllvm, rust-src, .venv, analyzer build
+bash scripts/setup.sh        # gllvm, optional rust-src, .venv, analyzer build
 REACHABILITY_CAPTURE=rllvm bash scripts/setup.sh   # rllvm instead of gllvm
 ```
 
 Or step by step: `make venv`, then `make build` (or `make build LLVM_MAJOR=23`).
 `make help` lists all targets; [docs/development.md](docs/development.md) has
 the details.
+On NixOS, `llvm-config` and `clang++` may be in separate store paths. The build
+accepts a matching `clang++` on `PATH`; set `LLVM_CONFIG` if needed to select
+the desired LLVM package. `rustup` is optional, and setup skips installing
+`rust-src` when it is absent.
 
 To use the CLI, point it at the analyzer and put gllvm on `PATH`:
 

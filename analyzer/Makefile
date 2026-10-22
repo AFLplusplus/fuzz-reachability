@@ -19,9 +19,10 @@ LLVM_CPPFLAGS    := $(if $(LLVM_CONFIG_PATH),$(shell '$(LLVM_CONFIG_PATH)' --cpp
 LLVM_LDFLAGS     := $(if $(LLVM_CONFIG_PATH),$(shell '$(LLVM_CONFIG_PATH)' --ldflags 2>/dev/null))
 LLVM_LDLIBS      := $(if $(LLVM_CONFIG_PATH),$(shell '$(LLVM_CONFIG_PATH)' --link-shared --libs 2>/dev/null))
 
-# Use the clang++ that ships with the chosen LLVM (Make pre-defines CXX=g++, so
-# assign unconditionally; `make CXX=...` on the command line still overrides).
-CXX  := $(if $(LLVM_BINDIR),$(LLVM_BINDIR)/clang++,clang++)
+# Prefer clang++ in LLVM's bindir, then a matching versioned clang++, then the
+# unversioned clang++ on PATH; `make CXX=...` still overrides the selection.
+CXX  := $(or $(wildcard $(LLVM_BINDIR)/clang++),$(shell command -v clang++-$(LLVM_MAJOR) 2>/dev/null),$(shell command -v clang++ 2>/dev/null))
+CXX_VERSION := $(shell '$(CXX)' --version 2>/dev/null | sed -nE '1s/^.*clang version ([0-9]+).*/\1/p')
 SCAN_BUILD := $(if $(wildcard $(LLVM_BINDIR)/scan-build),$(LLVM_BINDIR)/scan-build,scan-build-$(LLVM_MAJOR))
 BIN  := $(BUILD)/reachability-analyzer
 SRC  := $(wildcard src/*.cpp)
@@ -34,7 +35,7 @@ GEN_INC   := $(BUILD)/DangerousFunctions.inc
 # Rebuild objects when LLVM_CONFIG changes, not only when sources change --
 # otherwise switching LLVM_MAJOR silently relinks stale objects from the old LLVM.
 STAMP := $(BUILD)/.llvm-config-stamp
-STAMP_VALUE := $(LLVM_CONFIG_PATH)|$(LLVM_VERSION)|$(LLVM_BINDIR)
+STAMP_VALUE := $(LLVM_CONFIG_PATH)|$(LLVM_VERSION)|$(LLVM_BINDIR)|$(CXX)|$(CXX_VERSION)
 
 # -Wno-error: never treat warnings as errors, even if a flag source adds -Werror
 # (keeps builds resilient across LLVM versions).
@@ -48,7 +49,7 @@ all: $(BIN)
 check-llvm:
 	@if [ -z '$(LLVM_CONFIG_PATH)' ]; then echo 'error: LLVM_CONFIG=$(LLVM_CONFIG) was not found on PATH' >&2; exit 1; fi
 	@if ! printf '%s' '$(LLVM_MAJOR)' | grep -Eq '^[0-9]+$$' || [ '$(LLVM_MAJOR)' -lt 21 ]; then echo 'error: LLVM >= 21 is required; $(LLVM_CONFIG_PATH) reports $(LLVM_VERSION)' >&2; exit 1; fi
-	@if [ ! -x '$(LLVM_BINDIR)/clang++' ]; then echo 'error: clang++ not found in LLVM bindir $(LLVM_BINDIR)' >&2; exit 1; fi
+	@if [ '$(CXX_VERSION)' != '$(LLVM_MAJOR)' ]; then echo 'error: clang++ for LLVM $(LLVM_MAJOR) not found (selected CXX=$(CXX), reports LLVM $(CXX_VERSION)); install matching clang++ or set CXX' >&2; exit 1; fi
 
 $(BIN): $(OBJ) | $(BUILD)
 	$(CXX) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS)
@@ -70,7 +71,7 @@ $(BUILD):
 	mkdir -p $(BUILD)
 
 print-config:
-	@echo "LLVM_CONFIG=$(LLVM_CONFIG_PATH) version=$(LLVM_VERSION) BUILD=$(BUILD)"
+	@echo "LLVM_CONFIG=$(LLVM_CONFIG_PATH) version=$(LLVM_VERSION) CXX=$(CXX) BUILD=$(BUILD)"
 
 compdb: check-llvm $(GEN_INC) | $(BUILD)
 	@rm -rf $(BUILD)/compdb
