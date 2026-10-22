@@ -22,7 +22,8 @@ LLVM_LDLIBS      := $(if $(LLVM_CONFIG_PATH),$(shell '$(LLVM_CONFIG_PATH)' --lin
 # Prefer clang++ in LLVM's bindir, then a matching versioned clang++, then the
 # unversioned clang++ on PATH; `make CXX=...` still overrides the selection.
 CXX  := $(or $(wildcard $(LLVM_BINDIR)/clang++),$(shell command -v clang++-$(LLVM_MAJOR) 2>/dev/null),$(shell command -v clang++ 2>/dev/null))
-CXX_VERSION := $(shell '$(CXX)' --version 2>/dev/null | sed -nE '1s/^.*clang version ([0-9]+).*/\1/p')
+REAL_CXX ?= $(CXX)
+CXX_VERSION := $(shell '$(REAL_CXX)' --version 2>/dev/null | sed -nE '1s/^.*clang version ([0-9]+).*/\1/p')
 SCAN_BUILD := $(if $(wildcard $(LLVM_BINDIR)/scan-build),$(LLVM_BINDIR)/scan-build,scan-build-$(LLVM_MAJOR))
 BIN  := $(BUILD)/reachability-analyzer
 SRC  := $(wildcard src/*.cpp)
@@ -35,7 +36,7 @@ GEN_INC   := $(BUILD)/DangerousFunctions.inc
 # Rebuild objects when LLVM_CONFIG changes, not only when sources change --
 # otherwise switching LLVM_MAJOR silently relinks stale objects from the old LLVM.
 STAMP := $(BUILD)/.llvm-config-stamp
-STAMP_VALUE := $(LLVM_CONFIG_PATH)|$(LLVM_VERSION)|$(LLVM_BINDIR)|$(CXX)|$(CXX_VERSION)
+STAMP_VALUE := $(LLVM_CONFIG_PATH)|$(LLVM_VERSION)|$(LLVM_BINDIR)|$(CXX)|$(REAL_CXX)|$(CXX_VERSION)
 
 # -Wno-error: never treat warnings as errors, even if a flag source adds -Werror
 # (keeps builds resilient across LLVM versions).
@@ -49,7 +50,7 @@ all: $(BIN)
 check-llvm:
 	@if [ -z '$(LLVM_CONFIG_PATH)' ]; then echo 'error: LLVM_CONFIG=$(LLVM_CONFIG) was not found on PATH' >&2; exit 1; fi
 	@if ! printf '%s' '$(LLVM_MAJOR)' | grep -Eq '^[0-9]+$$' || [ '$(LLVM_MAJOR)' -lt 21 ]; then echo 'error: LLVM >= 21 is required; $(LLVM_CONFIG_PATH) reports $(LLVM_VERSION)' >&2; exit 1; fi
-	@if [ '$(CXX_VERSION)' != '$(LLVM_MAJOR)' ]; then echo 'error: clang++ for LLVM $(LLVM_MAJOR) not found (selected CXX=$(CXX), reports LLVM $(CXX_VERSION)); install matching clang++ or set CXX' >&2; exit 1; fi
+	@if [ '$(CXX_VERSION)' != '$(LLVM_MAJOR)' ]; then echo 'error: clang++ for LLVM $(LLVM_MAJOR) not found (selected compiler=$(REAL_CXX), reports LLVM $(CXX_VERSION)); install matching clang++ or set CXX' >&2; exit 1; fi
 
 $(BIN): $(OBJ) | $(BUILD)
 	$(CXX) $(OBJ) -o $@ $(LDFLAGS) $(LDLIBS)
@@ -83,7 +84,7 @@ cppcheck:
 	cppcheck --enable=warning,performance,portability --std=c++17 --error-exitcode=1 --suppress=missingIncludeSystem src
 
 scan-build: check-llvm
-	$(SCAN_BUILD) --status-bugs $(MAKE) LLVM_CONFIG=$(LLVM_CONFIG_PATH) BUILD=$(BUILD)/scan-build clean all
+	$(SCAN_BUILD) --status-bugs --use-c++=$(CXX) $(MAKE) LLVM_CONFIG=$(LLVM_CONFIG_PATH) REAL_CXX=$(CXX) BUILD=$(BUILD)/scan-build clean all
 
 clean:
 	rm -rf $(BUILD) compile_commands.json
