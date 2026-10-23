@@ -114,8 +114,9 @@ Or step by step: `make venv`, then `make build` (or `make build LLVM_MAJOR=23`).
 the details.
 On NixOS, `llvm-config` and `clang++` may be in separate store paths. The build
 accepts a matching `clang++` on `PATH`; set `LLVM_CONFIG` if needed to select
-the desired LLVM package. `rustup` is optional, and setup skips installing
-`rust-src` when it is absent.
+the desired LLVM package. The driver compiles with the plain `clang` and
+`clang++` cc-wrappers, not the unwrapped `clang-M`. `rustup` is optional, and
+setup skips installing `rust-src` when it is absent.
 
 To use the CLI, point it at the analyzer and put gllvm on `PATH`:
 

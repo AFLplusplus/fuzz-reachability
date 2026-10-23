@@ -55,6 +55,50 @@ def test_check_coherence_rejects_rustc_newer_than_toolchain(monkeypatch):
         toolchain.check_coherence("/fake/analyzer", require_rust=True)
 
 
+def _fake_tool(directory, name, major):
+    path = directory / name
+    path.write_text(f"#!/bin/sh\necho 'clang version {major}.1.8'\n")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_find_tool_prefers_plain_name_of_matching_major(monkeypatch, tmp_path):
+    plain = _fake_tool(tmp_path, "clang", 21)
+    _fake_tool(tmp_path, "clang-21", 21)
+    monkeypatch.delenv("CLANG", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert toolchain.find_tool("clang", "CLANG", "clang-21", 21) == plain
+
+
+def test_find_tool_falls_back_to_versioned_name_of_matching_major(monkeypatch, tmp_path):
+    _fake_tool(tmp_path, "clang", 18)
+    versioned = _fake_tool(tmp_path, "clang-21", 21)
+    monkeypatch.delenv("CLANG", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert toolchain.find_tool("clang", "CLANG", "clang-21", 21) == versioned
+
+
+def test_find_tool_returns_plain_name_when_no_major_matches(monkeypatch, tmp_path):
+    plain = _fake_tool(tmp_path, "clang", 18)
+    _fake_tool(tmp_path, "clang-21", 19)
+    monkeypatch.delenv("CLANG", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert toolchain.find_tool("clang", "CLANG", "clang-21", 21) == plain
+
+
+def test_check_coherence_selects_plain_tools_of_analyzer_major(monkeypatch, tmp_path):
+    for name in ("clang", "clang-21", "clang++", "clang++-21",
+                 "llvm-link", "llvm-link-21"):
+        _fake_tool(tmp_path, name, 21)
+    for var in ("CLANG", "CLANGXX", "LLVM_LINK"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(toolchain, "analyzer_llvm_major", lambda p: 21)
+    tc = toolchain.check_coherence("/fake/analyzer")
+    assert (tc.clang, tc.clangxx, tc.llvm_link) == tuple(
+        str(tmp_path / name) for name in ("clang", "clang++", "llvm-link"))
+
+
 def test_check_coherence_c_only_skips_rustc(monkeypatch):
     _patch(monkeypatch, analyzer=21, tools=21, rustc=99)
     monkeypatch.setattr(

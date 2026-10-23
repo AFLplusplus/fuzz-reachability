@@ -27,13 +27,14 @@ error: toolchain LLVM major mismatch (analyzer = M): …
 ```
 
 `clang`, `clang++` and `llvm-link` must have the same LLVM major version as
-the analyzer. The driver looks for `clang-23` and so on first, then the plain
-names. Install the matching tools, or set `CLANG`, `CLANGXX` and `LLVM_LINK`.
-An analyzer built against LLVM 20 or older is rejected; rebuild it against
-LLVM 21 or newer.
+the analyzer. The driver uses the plain names when they report that major,
+otherwise `clang-23` and so on. Install the matching tools, or set `CLANG`,
+`CLANGXX` and `LLVM_LINK`. An analyzer built against LLVM 20 or older is
+rejected; rebuild it against LLVM 21 or newer.
 
-Tests: `test_toolchain.py::test_check_coherence_raises_on_tool_mismatch` and
-`::test_check_coherence_rejects_below_minimum`.
+Tests: `test_toolchain.py::test_check_coherence_raises_on_tool_mismatch`,
+`::test_check_coherence_rejects_below_minimum` and
+`::test_find_tool_falls_back_to_versioned_name_of_matching_major`.
 
 ### rustc's LLVM is newer than the analyzer's
 
@@ -80,6 +81,23 @@ error: build failed (exit N):
 The build command failed. The error shows the build output; `-v` streams it
 live. Older projects may need extra configure flags on a new system, for
 example `--without-lzma`; pass the whole command with `--build-cmd`.
+
+### 'stdlib.h' file not found on NixOS
+
+```
+./main.c:1:10: fatal error: 'stdlib.h' file not found
+ERROR:Failed to compile using given arguments:
+…/gllvm-tools/clang […]
+```
+
+`gllvm-tools/clang` links to the clang that `reachability check-toolchain`
+lists. On NixOS only the plain `clang` and `clang++` are the cc-wrapper that
+adds the libc include paths; `clang-M` is the unwrapped compiler, which finds
+no system headers. The driver prefers the plain names, so do not point `CLANG`
+or `CLANGXX` at an unwrapped compiler.
+
+Tests: `test_toolchain.py::test_find_tool_prefers_plain_name_of_matching_major`
+and `::test_check_coherence_selects_plain_tools_of_analyzer_major`.
 
 ### Several artifacts are equally plausible
 

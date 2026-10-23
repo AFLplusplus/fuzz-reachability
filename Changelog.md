@@ -174,6 +174,10 @@
 - C/C++ runs check for `gclang`, `gclang++` and `get-bc` before building, so a
   missing `get-bc` no longer fails only after a complete build. The error
   names the missing tools and the `PATH` export.
+- `clang`, `clang++` and `llvm-link` are taken by their plain names when these
+  report the analyzer's LLVM major, and by `clang-M` and so on otherwise. On
+  NixOS `clang-M` is the unwrapped compiler, so C builds failed with
+  `'stdlib.h' file not found`.
 
 
 ### v1.1

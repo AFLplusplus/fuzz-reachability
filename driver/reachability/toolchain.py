@@ -95,15 +95,27 @@ def rustc_llvm_version() -> tuple:
     return _version_tuple(m)
 
 
-def find_tool(name: str, env_var: str, versioned: str | None) -> str:
-    """Resolve a tool path: explicit env var -> versioned name -> plain name."""
+def find_tool(name: str, env_var: str, versioned: str | None,
+              major: int | None = None) -> str:
+    """Resolve a tool path: explicit env var -> plain name -> versioned name.
+
+    With `major`, the first name that reports that LLVM major wins. The plain
+    name is what the user's own builds run; on NixOS only it is the cc-wrapper
+    that adds the libc include paths, `clang-M` being the unwrapped compiler.
+    With no match, the first name found is returned for the coherence check to
+    report."""
     if env_var and os.environ.get(env_var):
         return os.environ[env_var]
-    for cand in ([versioned] if versioned else []) + [name]:
-        p = shutil.which(cand)
-        if p:
-            return p
-    raise ToolchainError(f"required tool not found: {name} (set ${env_var})")
+    found = [p for p in (shutil.which(cand)
+                         for cand in [name] + ([versioned] if versioned else []))
+             if p]
+    if not found:
+        raise ToolchainError(f"required tool not found: {name} (set ${env_var})")
+    if major is not None:
+        for p in found:
+            if tool_llvm_major(p) == major:
+                return p
+    return found[0]
 
 
 def tool_llvm_major(path: str) -> int:
@@ -144,7 +156,8 @@ def check_coherence(analyzer_path: str, require_rust: bool = False) -> Toolchain
     version policy (see module docstring).
 
     The analyzer's own LLVM major M is authoritative; clang/clang++/llvm-link
-    are resolved for M (versioned names preferred) and must all match it. When
+    are resolved for M (plain names preferred when they report M, else the
+    versioned names, see find_tool) and must all match it. When
     require_rust is true, rustc's LLVM major must not exceed M. Raises
     ToolchainError on any violation.
     """
@@ -155,9 +168,9 @@ def check_coherence(analyzer_path: str, require_rust: bool = False) -> Toolchain
             f"{MIN_LLVM_MAJOR}. Rebuild it against LLVM >= {MIN_LLVM_MAJOR}."
         )
 
-    clang = find_tool("clang", "CLANG", f"clang-{M}")
-    clangxx = find_tool("clang++", "CLANGXX", f"clang++-{M}")
-    llvm_link = find_tool("llvm-link", "LLVM_LINK", f"llvm-link-{M}")
+    clang = find_tool("clang", "CLANG", f"clang-{M}", M)
+    clangxx = find_tool("clang++", "CLANGXX", f"clang++-{M}", M)
+    llvm_link = find_tool("llvm-link", "LLVM_LINK", f"llvm-link-{M}", M)
 
     mismatches = []
     for label, path, major in [
