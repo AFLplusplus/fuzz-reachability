@@ -12,18 +12,38 @@ import json
 import os
 import re
 import shlex
-import shutil
 import subprocess
+import types
 
 import pytest
 
 from conftest import FIXTURES
-from reachability import acquire_c
+from reachability import acquire_c, toolchain
 
-CLANG = shutil.which("clang-21") or shutil.which("clang")
-CLANGXX = shutil.which("clang++-21") or shutil.which("clang++")
-LLVM_LINK = (shutil.which("llvm-link-21") if CLANG and CLANG.endswith("-21")
-             else shutil.which("llvm-link"))
+
+@pytest.fixture(scope="module")
+def llvm(analyzer):
+    """clang, clang++ and llvm-link of the analyzer's LLVM major, each None
+    when not installed: the analyzer cannot read newer bitcode, and Apple
+    clang never matches."""
+    major = toolchain.analyzer_llvm_major(analyzer)
+
+    def resolve(name, env_var):
+        try:
+            path = toolchain.find_tool(name, env_var, f"{name}-{major}", major)
+            return path if toolchain.tool_llvm_major(path) == major else None
+        except toolchain.ToolchainError:
+            return None
+
+    return types.SimpleNamespace(
+        clang=resolve("clang", "CLANG"), clangxx=resolve("clang++", "CLANGXX"),
+        llvm_link=resolve("llvm-link", "LLVM_LINK"), major=major)
+
+
+def _need(llvm, *names):
+    missing = [n for n in names if getattr(llvm, n) is None]
+    if missing:
+        pytest.skip(f"{', '.join(missing)} for LLVM {llvm.major} not installed")
 
 
 def _instrumented(ll_path):
@@ -67,28 +87,28 @@ def _sancov_ir(compiler, src, list_flag, list_path, out_ll):
     return _instrumented(out_ll)
 
 
-@pytest.mark.skipif(not CLANG, reason="clang not installed")
-def test_c_allowlist_and_ignorelist(analyzer, tmp_path):
+def test_c_allowlist_and_ignorelist(analyzer, llvm, tmp_path):
+    _need(llvm, "clang")
     src = os.path.join(FIXTURES, "c_direct", "main.c")
-    reached, notr = _gen_lists(analyzer, CLANG, src, tmp_path)
+    reached, notr = _gen_lists(analyzer, llvm.clang, src, tmp_path)
     assert "src:*" in reached.read_text()           # allowlist needs the src line
     assert "fun:used_a" in reached.read_text()
     assert "fun:dead_fn" in notr.read_text()
 
     # allowlist: only reachable functions are instrumented.
-    al = _sancov_ir(CLANG, src, "-fsanitize-coverage-allowlist", reached, tmp_path / "a.ll")
+    al = _sancov_ir(llvm.clang, src, "-fsanitize-coverage-allowlist", reached, tmp_path / "a.ll")
     assert {"used_a", "used_b", "LLVMFuzzerTestOneInput"} <= al
     assert "dead_fn" not in al
 
     # ignorelist: unreachable functions are NOT instrumented; the rest are.
-    ig = _sancov_ir(CLANG, src, "-fsanitize-coverage-ignorelist", notr, tmp_path / "i.ll")
+    ig = _sancov_ir(llvm.clang, src, "-fsanitize-coverage-ignorelist", notr, tmp_path / "i.ll")
     assert "dead_fn" not in ig
     assert {"used_a", "used_b", "LLVMFuzzerTestOneInput"} <= ig
 
 
-@pytest.mark.skipif(not CLANG, reason="clang not installed")
-def test_source_faithful_bitcode_keeps_always_inline_helper(analyzer, tmp_path,
+def test_source_faithful_bitcode_keeps_always_inline_helper(analyzer, llvm, tmp_path,
                                                              monkeypatch):
+    _need(llvm, "clang")
     source = tmp_path / "inline.c"
     source.write_text(
         "static inline __attribute__((always_inline)) int helper(int x) { return x + 1; }\n"
@@ -99,7 +119,7 @@ def test_source_faithful_bitcode_keeps_always_inline_helper(analyzer, tmp_path,
     flags = shlex.split(acquire_c._build_env("/usr/lib/llvm-21/bin")[
         "LLVM_BITCODE_GENERATION_FLAGS"])
     bitcode = tmp_path / "inline.bc"
-    subprocess.run([CLANG, *flags, "-g", "-emit-llvm", "-c", str(source),
+    subprocess.run([llvm.clang, *flags, "-g", "-emit-llvm", "-c", str(source),
                     "-o", str(bitcode)], check=True)
     reached = tmp_path / "reached.txt"
     ignored = tmp_path / "not_reached.txt"
@@ -113,20 +133,20 @@ def test_source_faithful_bitcode_keeps_always_inline_helper(analyzer, tmp_path,
     assert "fun:helper" not in ignored.read_text().splitlines()
 
 
-@pytest.mark.skipif(not CLANGXX, reason="clang++ not installed")
-def test_cpp_allowlist_matches_mangled(analyzer, tmp_path):
+def test_cpp_allowlist_matches_mangled(analyzer, llvm, tmp_path):
+    _need(llvm, "clangxx")
     # Proves clang matches the *mangled* names we emit (A::run -> _ZN1A3runEi).
     src = os.path.join(FIXTURES, "cpp_virtual", "main.cpp")
-    reached, _ = _gen_lists(analyzer, CLANGXX, src, tmp_path)
+    reached, _ = _gen_lists(analyzer, llvm.clangxx, src, tmp_path)
     text = reached.read_text()
     assert "fun:_ZN1A3runEi" in text and "fun:_ZN1B3runEi" in text  # mangled
 
-    al = _sancov_ir(CLANGXX, src, "-fsanitize-coverage-allowlist", reached, tmp_path / "a.ll")
+    al = _sancov_ir(llvm.clangxx, src, "-fsanitize-coverage-allowlist", reached, tmp_path / "a.ll")
     assert {"_ZN1A3runEi", "_ZN1B3runEi"} <= al  # both overrides instrumented
 
 
-@pytest.mark.skipif(not (CLANG and LLVM_LINK), reason="clang/llvm-link not installed")
-def test_static_name_collision_stays_instrumented(analyzer, tmp_path):
+def test_static_name_collision_stays_instrumented(analyzer, llvm, tmp_path):
+    _need(llvm, "clang", "llvm_link")
     sources = {
         "a.c": "static int helper(int x) { return x + 1; }\n"
                "int a_entry(int x) { return helper(x); }\n",
@@ -141,11 +161,11 @@ def test_static_name_collision_stays_instrumented(analyzer, tmp_path):
         src = tmp_path / name
         src.write_text(sources[name])
         bc = tmp_path / (name + ".bc")
-        subprocess.run([CLANG, "-g", "-O0", "-fno-inline", "-emit-llvm", "-c",
+        subprocess.run([llvm.clang, "-g", "-O0", "-fno-inline", "-emit-llvm", "-c",
                         str(src), "-o", str(bc)], check=True)
         bcs.append(str(bc))
     merged = tmp_path / "merged.bc"
-    subprocess.run([LLVM_LINK, *bcs, "-o", str(merged)], check=True)
+    subprocess.run([llvm.llvm_link, *bcs, "-o", str(merged)], check=True)
     reached, notr = tmp_path / "reached.txt", tmp_path / "not_reached.txt"
     report = tmp_path / "r.json"
     subprocess.run(
@@ -162,9 +182,9 @@ def test_static_name_collision_stays_instrumented(analyzer, tmp_path):
     assert renamed["key"] == "helper"
 
     a_src = str(tmp_path / "a.c")
-    al = _sancov_ir(CLANG, a_src, "-fsanitize-coverage-allowlist", reached,
+    al = _sancov_ir(llvm.clang, a_src, "-fsanitize-coverage-allowlist", reached,
                     tmp_path / "a_allow.ll")
-    ig = _sancov_ir(CLANG, a_src, "-fsanitize-coverage-ignorelist", notr,
+    ig = _sancov_ir(llvm.clang, a_src, "-fsanitize-coverage-ignorelist", notr,
                     tmp_path / "a_ignore.ll")
     assert "helper" in al
     assert "helper" in ig

@@ -1,4 +1,10 @@
 ### v1.2-dev
+- macOS: Homebrew's keg-only LLVM is found without being on `PATH`, by
+  `make build` / `scripts/setup.sh` (`select_llvm.sh`), `make matrix` and the
+  driver's tool lookup. Apple clang is never selected: its version is not an
+  LLVM major. The scripts run on macOS's bash 3.2, the venv picks a Python
+  >= 3.10 when `python3` is older, and setup installs Go with Homebrew when it
+  is missing.
 - `--capture rllvm` (or `REACHABILITY_CAPTURE=rllvm`) records bitcode with
   rllvm 0.7.1 or newer instead of gllvm. Rust and mixed targets then take
   their bitcode from one build and one extraction from the linked artifact,

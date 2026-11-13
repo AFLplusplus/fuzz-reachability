@@ -35,6 +35,11 @@ if [ "${REACHABILITY_CAPTURE:-gllvm}" = rllvm ]; then
     fi
   fi
 elif ! command -v gclang >/dev/null 2>&1; then
+  if ! command -v go >/dev/null 2>&1 && [ "$(uname -s)" = Darwin ] \
+      && command -v brew >/dev/null 2>&1; then
+    echo "[setup] installing Go via brew install (needed for gllvm)..."
+    brew install go
+  fi
   if ! command -v go >/dev/null 2>&1; then
     echo "error: Go is required to install gllvm; install go and re-run setup" >&2
     exit 1

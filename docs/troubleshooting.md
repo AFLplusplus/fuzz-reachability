@@ -28,13 +28,45 @@ error: toolchain LLVM major mismatch (analyzer = M): …
 
 `clang`, `clang++` and `llvm-link` must have the same LLVM major version as
 the analyzer. The driver uses the plain names when they report that major,
-otherwise `clang-23` and so on. Install the matching tools, or set `CLANG`,
-`CLANGXX` and `LLVM_LINK`. An analyzer built against LLVM 20 or older is
-rejected; rebuild it against LLVM 21 or newer.
+otherwise `clang-23` and so on, and then Homebrew's keg-only `llvm@23` and
+`llvm`. Install the matching tools, or set `CLANG`, `CLANGXX` and
+`LLVM_LINK`. An analyzer built against LLVM 20 or older is rejected; rebuild
+it against LLVM 21 or newer.
 
 Tests: `test_toolchain.py::test_check_coherence_raises_on_tool_mismatch`,
 `::test_check_coherence_rejects_below_minimum` and
 `::test_find_tool_falls_back_to_versioned_name_of_matching_major`.
+
+### Apple clang on macOS
+
+```
+error: Apple clang's version is not an LLVM release and its bitcode does not match upstream LLVM; install Homebrew LLVM (`brew install llvm`) or set $CLANG/$CLANGXX/$LLVM_LINK
+```
+
+`/usr/bin/clang` is Apple clang: its version number (for example 21) is not
+an LLVM major, and its bitcode need not be readable by the same upstream LLVM.
+The driver skips it and takes the tools from Homebrew's LLVM, so this error
+means none of the Homebrew kegs has the analyzer's major, or `CLANG` names
+Apple clang. Run `brew install llvm` (or `llvm@M`) and rebuild the analyzer
+with `make build`, which selects the Homebrew LLVM. If `brew` is not on `PATH`,
+set `HOMEBREW_PREFIX`.
+
+Tests: `test_toolchain.py::test_parse_rejects_apple_clang`,
+`::test_find_tool_uses_homebrew_keg_over_apple_clang` and
+`::test_check_coherence_reports_apple_clang`.
+
+### no llvm-config with LLVM >= 21 found
+
+```
+error: no llvm-config with LLVM >= 21 found on PATH or in Homebrew (brew install llvm)
+```
+
+`make build` and `scripts/setup.sh` found no LLVM 21 or newer. Install one (on
+macOS `brew install llvm`), put its `llvm-config` on `PATH`, or set
+`LLVM_CONFIG`.
+
+Tests: `test_llvm_selection.py::test_unsupported_unversioned_llvm_config_is_rejected`
+and `::test_homebrew_keg_is_used_when_path_has_none`.
 
 ### rustc's LLVM is newer than the analyzer's
 

@@ -14,6 +14,7 @@
 #include <iterator>
 #include <memory>
 #include <memory_resource>
+#include <mutex>
 #include <new>
 #include <numeric>
 #include <stdexcept>

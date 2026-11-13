@@ -8,7 +8,28 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV="${VENV:-$ROOT/.venv}"
-PYTHON="${PYTHON:-python3}"
+
+# The default python3 must be >= 3.10 (macOS ships 3.9 as /usr/bin/python3);
+# otherwise use the newest python3.N >= 3.10 on PATH, e.g. Homebrew's.
+py_ok() {
+  "$1" -c 'import sys; sys.exit(sys.version_info < (3, 10))' 2>/dev/null
+}
+if [ -z "${PYTHON:-}" ]; then
+  PYTHON=python3
+  if ! py_ok python3; then
+    for minor in $(seq 30 -1 10); do
+      if command -v "python3.$minor" >/dev/null 2>&1 && py_ok "python3.$minor"; then
+        PYTHON="python3.$minor"
+        break
+      fi
+    done
+  fi
+fi
+if ! py_ok "$PYTHON"; then
+  echo "error: Python >= 3.10 is required ($PYTHON is older or missing);" \
+       "install a newer one (macOS: brew install python) or set PYTHON" >&2
+  exit 1
+fi
 
 if [ ! -x "$VENV/bin/python" ]; then
   echo "[venv] creating $VENV (using $PYTHON)"

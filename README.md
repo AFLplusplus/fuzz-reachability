@@ -89,7 +89,8 @@ see [docs/analysis.md](docs/analysis.md).
   the analyzer share one major version, and rustc's LLVM is not newer than
   that. See [docs/llvm-support.md](docs/llvm-support.md). Distributions often
   ship old LLVM versions, so install it from https://apt.llvm.org/llvm.sh,
-  especially for Rust.
+  especially for Rust. On macOS, Homebrew's LLVM is required (`brew install
+  llvm`); Apple clang is not used.
 - **Go** (to install gllvm), **Python 3.10 or newer**, and a **C++17**
   compiler.
   - Instead of gllvm: [rllvm](https://github.com/h1994st/rllvm) 0.7.1 or
@@ -117,6 +118,13 @@ accepts a matching `clang++` on `PATH`; set `LLVM_CONFIG` if needed to select
 the desired LLVM package. The driver compiles with the plain `clang` and
 `clang++` cc-wrappers, not the unwrapped `clang-M`. `rustup` is optional, and
 setup skips installing `rust-src` when it is absent.
+On macOS, install the prerequisites with `brew install llvm python go`
+(setup installs Go itself when it is missing). Homebrew's LLVM is keg-only and
+need not be on `PATH`: the build and the driver find `llvm@M` and `llvm` under
+the Homebrew prefix (`$HOMEBREW_PREFIX`, or the one of `brew` on `PATH`), and
+never use Apple's `/usr/bin/clang`. The scripts run on the stock bash 3.2, and
+the venv uses the newest `python3.N` on `PATH` when `python3` is older than
+3.10.
 
 To use the CLI, point it at the analyzer and put gllvm on `PATH`:
 

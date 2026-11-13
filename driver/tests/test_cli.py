@@ -2,6 +2,7 @@ import concurrent.futures
 import json
 import os
 import shutil
+import sys
 import types
 
 import pytest
@@ -792,7 +793,9 @@ _COMPLEX_DEAD = {
         "_Z16unreachable_leafv", "_Z15unreachable_midv", "_Z16unreachable_rootv",
         "_Z22unreachable_calls_realv",
     },
-    "cpp_complex2": {"ifunc_resolver_impl_b"},
+    # The fixture defines its ifunc only for ELF targets; Mach-O has no ifunc.
+    "cpp_complex2": ({"ifunc_resolver_impl_b"} if sys.platform != "darwin"
+                     else set()),
 }
 
 

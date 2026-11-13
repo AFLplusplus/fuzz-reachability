@@ -39,6 +39,8 @@ _RUSTC_FULL_RE = re.compile(
 _TOOL_FULL_RE = re.compile(
     r"version\s+(\d+)(?:\.(\d+))?(?:\.(\d+))?", re.IGNORECASE
 )
+# Apple clang numbers its releases independently of LLVM.
+_APPLE_CLANG_RE = re.compile(r"^Apple (?:clang|LLVM) version", re.MULTILINE)
 
 
 def _run_version(cmd, label):
@@ -67,10 +69,38 @@ def _parse_llvm_major_from_rustc(text: str) -> int:
 
 
 def _parse_llvm_major(text: str) -> int:
+    if _APPLE_CLANG_RE.search(text):
+        raise ToolchainError(
+            "Apple clang's version is not an LLVM release and its bitcode does "
+            "not match upstream LLVM; install Homebrew LLVM (`brew install "
+            "llvm`) or set $CLANG/$CLANGXX/$LLVM_LINK")
     m = _TOOL_MAJOR_RE.search(text)
     if not m:
         raise ToolchainError(f"cannot parse version from: {text!r}")
     return int(m.group(1))
+
+
+
+def homebrew_prefixes() -> list:
+    """Homebrew installation prefixes: $HOMEBREW_PREFIX and the prefix of the
+    `brew` on PATH. Homebrew's LLVM is keg-only, so its tools are not on PATH
+    unless the user adds them; they are found under <prefix>/opt/llvm[@M]."""
+    prefixes = []
+    if os.environ.get("HOMEBREW_PREFIX"):
+        prefixes.append(os.environ["HOMEBREW_PREFIX"])
+    brew = shutil.which("brew")
+    if brew:
+        prefixes.append(os.path.dirname(os.path.dirname(os.path.realpath(brew))))
+    return list(dict.fromkeys(os.path.abspath(p) for p in prefixes))
+
+
+def homebrew_llvm_bindirs(major: int | None = None) -> list:
+    """bin directories of the Homebrew LLVM kegs, `llvm@major` before the
+    unversioned `llvm` (whose major changes with each Homebrew upgrade)."""
+    kegs = ([f"llvm@{major}"] if major is not None else []) + ["llvm"]
+    return [d for prefix in homebrew_prefixes() for keg in kegs
+            for d in [os.path.join(prefix, "opt", keg, "bin")]
+            if os.path.isdir(d)]
 
 
 def rustc_available() -> bool:
@@ -97,24 +127,32 @@ def rustc_llvm_version() -> tuple:
 
 def find_tool(name: str, env_var: str, versioned: str | None,
               major: int | None = None) -> str:
-    """Resolve a tool path: explicit env var -> plain name -> versioned name.
+    """Resolve a tool path: explicit env var -> plain name -> versioned name ->
+    Homebrew's keg-only LLVM (llvm@major, then llvm).
 
     With `major`, the first name that reports that LLVM major wins. The plain
     name is what the user's own builds run; on NixOS only it is the cc-wrapper
     that adds the libc include paths, `clang-M` being the unwrapped compiler.
-    With no match, the first name found is returned for the coherence check to
+    Apple clang never matches: its version is not the LLVM major. With no
+    match, the first name found is returned for the coherence check to
     report."""
     if env_var and os.environ.get(env_var):
         return os.environ[env_var]
     found = [p for p in (shutil.which(cand)
                          for cand in [name] + ([versioned] if versioned else []))
              if p]
+    found += [p for d in homebrew_llvm_bindirs(major)
+              for p in [os.path.join(d, name)] if os.access(p, os.X_OK)]
+    found = list(dict.fromkeys(found))
     if not found:
         raise ToolchainError(f"required tool not found: {name} (set ${env_var})")
     if major is not None:
         for p in found:
-            if tool_llvm_major(p) == major:
-                return p
+            try:
+                if tool_llvm_major(p) == major:
+                    return p
+            except ToolchainError:
+                continue
     return found[0]
 
 

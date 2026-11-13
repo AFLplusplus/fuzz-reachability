@@ -66,6 +66,7 @@ def test_find_tool_prefers_plain_name_of_matching_major(monkeypatch, tmp_path):
     plain = _fake_tool(tmp_path, "clang", 21)
     _fake_tool(tmp_path, "clang-21", 21)
     monkeypatch.delenv("CLANG", raising=False)
+    monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))
     assert toolchain.find_tool("clang", "CLANG", "clang-21", 21) == plain
 
@@ -74,6 +75,7 @@ def test_find_tool_falls_back_to_versioned_name_of_matching_major(monkeypatch, t
     _fake_tool(tmp_path, "clang", 18)
     versioned = _fake_tool(tmp_path, "clang-21", 21)
     monkeypatch.delenv("CLANG", raising=False)
+    monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))
     assert toolchain.find_tool("clang", "CLANG", "clang-21", 21) == versioned
 
@@ -82,6 +84,7 @@ def test_find_tool_returns_plain_name_when_no_major_matches(monkeypatch, tmp_pat
     plain = _fake_tool(tmp_path, "clang", 18)
     _fake_tool(tmp_path, "clang-21", 19)
     monkeypatch.delenv("CLANG", raising=False)
+    monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))
     assert toolchain.find_tool("clang", "CLANG", "clang-21", 21) == plain
 
@@ -92,11 +95,58 @@ def test_check_coherence_selects_plain_tools_of_analyzer_major(monkeypatch, tmp_
         _fake_tool(tmp_path, name, 21)
     for var in ("CLANG", "CLANGXX", "LLVM_LINK"):
         monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(toolchain, "analyzer_llvm_major", lambda p: 21)
     tc = toolchain.check_coherence("/fake/analyzer")
     assert (tc.clang, tc.clangxx, tc.llvm_link) == tuple(
         str(tmp_path / name) for name in ("clang", "clang++", "llvm-link"))
+
+
+def _apple_clang(directory, name, major):
+    path = directory / name
+    path.write_text(
+        f"#!/bin/sh\necho 'Apple clang version {major}.0.0 (clang-2100.4.1.1)'\n")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_parse_rejects_apple_clang():
+    with pytest.raises(toolchain.ToolchainError, match="Apple clang"):
+        toolchain._parse_llvm_major(
+            "Apple clang version 21.0.0 (clang-2100.4.1.1)\nTarget: arm64")
+
+
+def test_find_tool_uses_homebrew_keg_over_apple_clang(monkeypatch, tmp_path):
+    path_dir = tmp_path / "bin"
+    path_dir.mkdir()
+    _apple_clang(path_dir, "clang", 21)
+    brew = tmp_path / "brew"
+    keg = brew / "opt" / "llvm@21" / "bin"
+    keg.mkdir(parents=True)
+    other = brew / "opt" / "llvm" / "bin"
+    other.mkdir(parents=True)
+    _fake_tool(other, "clang", 23)
+    expected = _fake_tool(keg, "clang", 21)
+    monkeypatch.delenv("CLANG", raising=False)
+    monkeypatch.setenv("HOMEBREW_PREFIX", str(brew))
+    monkeypatch.setenv("PATH", str(path_dir))
+    assert toolchain.find_tool("clang", "CLANG", "clang-21", 21) == expected
+    assert toolchain.find_tool("clang", "CLANG", "clang-23", 23) == str(
+        other / "clang")
+
+
+def test_check_coherence_reports_apple_clang(monkeypatch, tmp_path):
+    _apple_clang(tmp_path, "clang", 21)
+    for name in ("clang++", "llvm-link"):
+        _fake_tool(tmp_path, name, 21)
+    for var in ("CLANG", "CLANGXX", "LLVM_LINK"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.delenv("HOMEBREW_PREFIX", raising=False)
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setattr(toolchain, "analyzer_llvm_major", lambda p: 21)
+    with pytest.raises(toolchain.ToolchainError, match="brew install llvm"):
+        toolchain.check_coherence("/fake/analyzer")
 
 
 def test_check_coherence_c_only_skips_rustc(monkeypatch):

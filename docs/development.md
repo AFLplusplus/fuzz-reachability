@@ -27,9 +27,16 @@ make clean
 
 `scripts/select_llvm.sh` picks the newest `llvm-config-N` with `N >= 21`.
 If no supported versioned executable is present, it accepts an unversioned
-`llvm-config` reporting LLVM 21 or newer. `LLVM_CONFIG` can select an exact
+`llvm-config` reporting LLVM 21 or newer, and then the newest Homebrew keg
+(`<prefix>/opt/llvm@N` or `<prefix>/opt/llvm`, with the prefix from
+`$HOMEBREW_PREFIX` or the `brew` on `PATH`). `LLVM_CONFIG` can select an exact
 executable for `scripts/setup.sh` or `make build`. Newer LLVM reads older
 bitcode but not newer, so the newest is the safest default.
+
+The scripts are written for bash 3.2, the `/bin/bash` of macOS: no associative
+arrays, `mapfile` or `readlink -f`. `scripts/setup_venv.sh` uses `python3`, or
+the newest `python3.N` on `PATH` when `python3` is older than 3.10 (macOS
+ships 3.9); `PYTHON` overrides it.
 
 The analyzer uses `clang++` from `llvm-config --bindir` when present. If LLVM
 and Clang are separate packages, as on NixOS, it looks for `clang++-M` and then

@@ -24,7 +24,10 @@ analyzer.** The rules enforced by `reachability check-toolchain`
 
 The default build LLVM is chosen by `scripts/select_llvm.sh`: the newest
 installed `llvm-config-N` with `N ≥ 21`, or an unversioned `llvm-config` if no
-supported versioned executable is found. Newer tools read older bitcode but not
+supported versioned executable is found, or else the newest Homebrew keg
+(`llvm@N`, `llvm`), which is how macOS finds its LLVM. The driver looks for
+`clang`, `clang++` and `llvm-link` in the same kegs after `PATH`, and rejects
+Apple clang, whose version numbers are not LLVM's. Newer tools read older bitcode but not
 newer, so the newest toolchain is the safest default. For Rust targets make sure
 the chosen LLVM's **full** version is no older than rustc's bundled LLVM, or it
 cannot read rustc's bitcode; override it explicitly at build time:
@@ -37,7 +40,8 @@ make build LLVM_MAJOR=23      # analyzer on LLVM 23 (uses llvm-config-23, clang-
 
 `make matrix` (a.k.a. `scripts/test_matrix.sh`) builds and tests the analyzer
 against **every** installed `llvm-config-NN` with `NN ≥ 21`, or a supported
-unversioned `llvm-config` if there are no versioned executables, and **fails if
+unversioned `llvm-config` if there are no versioned executables, plus every
+Homebrew LLVM keg (one per major), and **fails if
 any build/test fails** — this is the early-warning system for breakage on future
 LLVM releases.
 

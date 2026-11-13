@@ -14,7 +14,9 @@ def _toolchain_path(tmp_path, versions):
         tool = tmp_path / name
         tool.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\n")
         tool.chmod(0o755)
-    return {**os.environ, "PATH": str(tmp_path)}
+    env = {**os.environ, "PATH": str(tmp_path)}
+    env.pop("HOMEBREW_PREFIX", None)
+    return env
 
 
 def _select(env, *args):
@@ -61,3 +63,39 @@ def test_unsupported_unversioned_llvm_config_is_rejected(tmp_path):
 
     assert result.returncode == 1
     assert "LLVM >= 21" in result.stderr
+
+
+def _brew_keg(prefix, keg, version):
+    bindir = prefix / "opt" / keg / "bin"
+    bindir.mkdir(parents=True)
+    tool = bindir / "llvm-config"
+    tool.write_text(f"#!/bin/sh\nprintf '%s\\n' '{version}'\n")
+    tool.chmod(0o755)
+    return tool
+
+
+def test_homebrew_keg_is_used_when_path_has_none(tmp_path):
+    env = _toolchain_path(tmp_path, {})
+    brew = tmp_path / "brew"
+    _brew_keg(brew, "llvm@21", "21.1.8")
+    newest = _brew_keg(brew, "llvm", "23.1.5")
+    env["HOMEBREW_PREFIX"] = str(brew)
+
+    major = _select(env)
+    config = _select(env, "--config")
+    pinned = _select(env, "--config", "21")
+
+    assert (major.returncode, major.stdout.strip()) == (0, "23")
+    assert config.stdout.strip() == str(newest)
+    assert pinned.stdout.strip() == str(brew / "opt" / "llvm@21" / "bin" / "llvm-config")
+
+
+def test_path_llvm_config_takes_precedence_over_homebrew(tmp_path):
+    env = _toolchain_path(tmp_path, {"llvm-config-22": "22.1.7"})
+    brew = tmp_path / "brew"
+    _brew_keg(brew, "llvm", "23.1.5")
+    env["HOMEBREW_PREFIX"] = str(brew)
+
+    config = _select(env, "--config")
+
+    assert config.stdout.strip() == str(tmp_path / "llvm-config-22")
